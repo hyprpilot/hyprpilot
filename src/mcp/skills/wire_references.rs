@@ -1,26 +1,27 @@
 //! Reference resolution and the reference wire shape.
 //!
-//! A skill's YAML frontmatter declares `references: [path1, path2, ...]`.
-//! Each path resolves relative to the skill bundle's directory and is
-//! addressed on the wire by a NAME — the file stem, or the reference's
-//! own frontmatter `name` where it declares one.
+//! A skill's YAML frontmatter declares `references: [path1, path2, ...]`,
+//! each resolved relative to the skill bundle's directory.
 //!
-//! **The name is looked up, never joined.** A caller supplies a name; the
-//! server matches it against this list and takes the path from the
-//! frontmatter. No caller-supplied string reaches `Path::join`, so the
-//! reference surface adds no traversal reachable from a request.
+//! **A reference is addressed by its canonical PATH.** Not by a slug,
+//! not by a name: those describe where a citation was found, while the
+//! path is what the citation IS. The same shared file is declared by
+//! dozens of skills, so a name plus a slug is one of many addresses for
+//! one file, and a caller holding `output-diff` from one skill cannot
+//! tell that another skill's citation is the same body. The path can be
+//! compared, so it de-duplicates; it is unique by construction, so
+//! nothing needs shadowing or collision rules; and it is what the
+//! manifest already publishes.
 //!
-//! **The DECLARED path never reaches the wire; the RESOLVED one does.**
-//! `../references/output-diff.md` is meaningless outside its bundle dir
-//! and is not published. The canonicalized absolute path is, as
-//! `path` — because a name is an address, not an IDENTITY, and
-//! de-duplication needs identity. The same shared file is declared by
-//! dozens of skills, so `git-commit/output-diff` and
-//! `git-push/output-diff` are one file that must not be loaded twice;
-//! meanwhile two skills' own `./references/output-diff.md` share a name
-//! and are different files. Only the resolved path separates those
-//! cases, and canonicalizing collapses `..` so two spellings of one file
-//! compare equal.
+//! **A caller-supplied path is checked against the DECLARED set, never
+//! joined.** The registry knows every path some skill actually declares;
+//! anything else is refused. So the addressing surface reaches exactly
+//! the files the skills already reference and no others.
+//!
+//! The DECLARED spelling (`../references/output-diff.md`) is meaningless
+//! outside its bundle dir and never reaches the wire — only the
+//! canonicalized absolute form, which collapses `..` so two spellings of
+//! one file compare equal.
 //!
 //! A reference may carry its own frontmatter, parsed with the loader's
 //! `split_frontmatter` rather than a second implementation, and served
@@ -28,11 +29,9 @@
 //! directly under our own header, where it reads as a delimiter rather
 //! than as data.
 
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
-use tracing::warn;
 
 use super::wire_metadata::frontmatter_json;
 use super::wire_time::FileStat;
@@ -63,154 +62,137 @@ pub fn frontmatter_references(value: &serde_yaml::Value) -> FrontmatterRefs {
     FrontmatterRefs { references: refs }
 }
 
-/// One resolved reference: how it is addressed, when it changed, and
-/// its own metadata. Built per request rather than cached with the
-/// skill — a reference is edited far more often than the skill that
-/// declares it, and caching would serve a stale convention (and a stale
-/// mtime, which is the one thing these fields exist to report) until an
-/// unrelated `reload`.
+/// One resolved reference: which file it is, what to call it, when it
+/// changed, and its own frontmatter.
+///
+/// Resolved per request rather than cached with the skill — a reference
+/// is edited far more often than the skill that declares it, and
+/// caching would serve a stale convention (and a stale mtime, the one
+/// thing these fields exist to report) until an unrelated `reload`.
 #[derive(Debug, Clone)]
 pub struct ReferenceEntry {
-    /// Wire name: the reference's frontmatter `name`, else the file
-    /// stem. Never contains a path separator.
-    pub name: String,
-    /// `None` when this entry is shadowed — a shadowed entry has no
-    /// address of its own, and pointing it at the winner's URI would be
-    /// a confidently wrong answer.
-    pub uri: Option<String>,
-    /// Canonical absolute path — the reference's IDENTITY, and the only
-    /// thing that tells a caller two skills cite the same file. `None`
-    /// when it cannot be resolved (the file is missing).
+    /// Canonical absolute path — the reference's identity AND its
+    /// address. `None` only when the file cannot be resolved.
     pub path: Option<String>,
+    /// Display label: the reference's frontmatter `name`, else the file
+    /// stem. Never an address — two skills may legitimately use one
+    /// label for different files.
+    pub name: String,
     pub stat: FileStat,
-    /// The reference's own frontmatter, verbatim.
+    /// The reference's own frontmatter, verbatim. Nothing is defaulted
+    /// in: hyprpilot enforces no invocation gate, so inventing a
+    /// `disableModelInvocation` would imply a restriction that does not
+    /// exist.
     pub metadata: Map<String, Value>,
-    /// A later declaration whose name was already taken. Kept in the
-    /// manifest (never silently dropped) and still served by the full
-    /// bundle, but not individually addressable.
-    pub shadowed: bool,
     /// Declared, but the file could not be read.
     pub missing: bool,
     /// Body with any frontmatter fence stripped.
     body: String,
 }
 
-/// Resolve every declared reference: read it, parse its frontmatter,
-/// derive its name, and stat it.
-///
-/// Name resolution is first-wins, matching how `SkillsRegistry` already
-/// resolves a slug collision across roots. A loser is marked `shadowed`
-/// and warned rather than dropped — silently losing a declared
-/// reference is the exact failure the reference surface exists to
-/// prevent.
-#[must_use]
-pub fn resolve(bundle_dir: &Path, slug: &str, refs: &FrontmatterRefs) -> Vec<ReferenceEntry> {
-    let mut taken: BTreeSet<String> = BTreeSet::new();
-    let mut out = Vec::with_capacity(refs.references.len());
-
-    for rel in &refs.references {
-        let path = bundle_dir.join(rel);
-        let stat = FileStat::read(&path);
-        let (frontmatter, body, missing) = match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let (fm, body) = super::loader::split_frontmatter(&text);
-                (fm, body.to_string(), false)
-            }
-            Err(_) => (serde_yaml::Value::Null, String::new(), true),
-        };
-
-        let name = resolve_name(&frontmatter, rel);
-        let shadowed = !taken.insert(name.clone());
-        if shadowed {
-            warn!(
-                skill = slug,
-                name = %name,
-                declaration = %rel,
-                "mcp::skills: two references resolve to the same name — the first wins; \
-                 this one stays in the full bundle but is not individually addressable"
-            );
+/// Resolve one file into an entry, reading its frontmatter for a name
+/// override and its body for later bundling.
+fn entry_for(path: &Path) -> ReferenceEntry {
+    let stat = FileStat::read(path);
+    let (frontmatter, body, missing) = match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let (fm, body) = super::loader::split_frontmatter(&text);
+            (fm, body.to_string(), false)
         }
-
-        out.push(ReferenceEntry {
-            uri: (!shadowed).then(|| reference_uri(slug, &name)),
-            // Canonicalized so `../references/x.md` from two different
-            // skills collapses to one identity a caller can compare.
-            path: std::fs::canonicalize(&path).ok().map(|p| p.display().to_string()),
-            metadata: frontmatter_json(&frontmatter),
-            name,
-            stat,
-            shadowed,
-            missing,
-            body,
-        });
+        Err(_) => (serde_yaml::Value::Null, String::new(), true),
+    };
+    ReferenceEntry {
+        path: std::fs::canonicalize(path).ok().map(|p| p.display().to_string()),
+        name: resolve_name(&frontmatter, path),
+        stat,
+        metadata: frontmatter_json(&frontmatter),
+        missing,
+        body,
     }
-
-    out
 }
 
-/// A reference's wire name: its frontmatter `name` when it declares a
-/// usable one, else the file stem.
+/// Resolve every reference a skill declares, in declaration order.
+#[must_use]
+pub fn resolve(bundle_dir: &Path, refs: &FrontmatterRefs) -> Vec<ReferenceEntry> {
+    refs.references
+        .iter()
+        .map(|rel| entry_for(&bundle_dir.join(rel)))
+        .collect()
+}
+
+/// Resolve an explicit list of already-validated paths.
 ///
-/// A declared name carrying a path separator, or one that is blank, is
-/// rejected back to the stem — the name rides a URI segment, and a
-/// `/`-bearing name would produce a URI that parses as something else
-/// entirely.
-fn resolve_name(frontmatter: &serde_yaml::Value, rel: &str) -> String {
+/// The caller is responsible for having checked each path against the
+/// declared set — this function reads what it is given.
+#[must_use]
+pub fn resolve_paths(paths: &[String]) -> Vec<ReferenceEntry> {
+    paths.iter().map(|p| entry_for(Path::new(p))).collect()
+}
+
+/// Every canonical path a skill declares. Built once per `reload` so a
+/// load request can be validated without touching the filesystem.
+#[must_use]
+pub fn declared_paths(bundle_dir: &Path, refs: &FrontmatterRefs) -> Vec<String> {
+    refs.references
+        .iter()
+        .filter_map(|rel| std::fs::canonicalize(bundle_dir.join(rel)).ok())
+        .map(|p| p.display().to_string())
+        .collect()
+}
+
+/// A reference's display name: its frontmatter `name` when it declares
+/// a usable one, else the file stem.
+fn resolve_name(frontmatter: &serde_yaml::Value, path: &Path) -> String {
     let declared = frontmatter
         .get("name")
         .and_then(serde_yaml::Value::as_str)
         .map(str::trim)
-        .filter(|n| !n.is_empty() && !n.contains('/') && !n.contains('\\'));
+        .filter(|n| !n.is_empty());
     match declared {
         Some(name) => name.to_string(),
-        None => stem(rel),
+        None => stem(path),
     }
 }
 
 /// The file stem — filename without its final extension. Extensions are
-/// a storage detail; the wire addresses `output-diff`, not
-/// `output-diff.md`.
-fn stem(rel: &str) -> String {
-    Path::new(rel)
-        .file_stem()
+/// a storage detail; the label is `output-diff`, not `output-diff.md`.
+fn stem(path: &Path) -> String {
+    path.file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or(rel)
-        .to_string()
+        .map_or_else(|| path.display().to_string(), str::to_string)
 }
 
-fn reference_uri(slug: &str, name: &str) -> String {
-    format!("hyprpilot://references/{slug}/{name}")
-}
-
-/// Render a JSON scalar as a bare YAML value. Strings lose their quotes
-/// — these are paths, names and timestamps, and the header is read, not
-/// parsed back. Anything non-scalar is JSON-encoded rather than dropped.
+/// Render a JSON scalar as a YAML value. Strings are quoted when they
+/// could otherwise be misread — a value containing `:`, `#`, a newline,
+/// or leading/trailing space would break the block or change its
+/// meaning. Anything non-scalar is JSON-encoded, which is valid YAML.
 fn scalar(value: &Value) -> String {
     match value {
-        Value::String(s) => s.clone(),
+        Value::String(s)
+            if !s.is_empty()
+                && s.trim() == s
+                && !s.contains([':', '#', '\n', '\r', '"', '\'', '[', ']', '{', '}', ','])
+                && !s.starts_with(['-', '&', '*', '!', '|', '>', '%', '@', '`', '?']) =>
+        {
+            s.clone()
+        }
+        Value::String(s) => Value::String(s.clone()).to_string(),
         other => other.to_string(),
     }
 }
 
 impl ReferenceEntry {
-    /// This entry's manifest row: what it is called, how to fetch it,
-    /// which file it actually is, and when it changed.
+    /// This entry's manifest row: which file it is, what to call it,
+    /// and when it changed. `path` is both the identity and the address
+    /// to pass back to `load_skill_references`.
     #[must_use]
     pub fn manifest_row(&self) -> Value {
         let mut row = Map::new();
-        row.insert("name".into(), Value::String(self.name.clone()));
-        if let Some(uri) = &self.uri {
-            row.insert("uri".into(), Value::String(uri.clone()));
-        }
-        // Identity, so a caller holding this file under another skill's
-        // name can tell it already has it.
         if let Some(path) = &self.path {
             row.insert("path".into(), Value::String(path.clone()));
         }
+        row.insert("name".into(), Value::String(self.name.clone()));
         self.stat.extend(&mut row);
-        if self.shadowed {
-            row.insert("shadowed".into(), Value::Bool(true));
-        }
         if self.missing {
             row.insert("status".into(), Value::String("not-found".into()));
         }
@@ -222,19 +204,16 @@ impl ReferenceEntry {
 
     /// Header emitted before this reference's body in a bundle.
     ///
-    /// YAML-shaped and self-delimiting, because a bundle is appended to
-    /// the skill body: a bare `--- <basename> ---` renders as a
+    /// YAML-shaped and self-delimiting, because a bundle may be appended
+    /// to a skill body: a bare `--- <basename> ---` renders as a
     /// horizontal rule mid-document, so a reader cannot tell where the
     /// skill stops and a reference starts. This block can only be a
     /// delimiter.
-    /// Built from [`Self::manifest_row`] so the two can never disagree:
-    /// a reference you actually fetched carries the SAME full metadata
-    /// the manifest advertised — including `path`, so a reader can tell
-    /// this is the file it already holds under another skill's name.
     ///
-    /// Full detail is affordable here and not in a listing: this is
-    /// emitted once per reference you deliberately asked for, whereas
-    /// `resources/list` pays for every skill in the catalogue.
+    /// Built from [`Self::manifest_row`] so a reference you fetched
+    /// carries the SAME metadata the manifest advertised. Full detail is
+    /// affordable here and not in a listing: this is emitted once per
+    /// reference you deliberately asked for.
     fn header(&self) -> String {
         let mut out = String::from("---\nreference:\n");
         let Value::Object(row) = self.manifest_row() else {
@@ -256,54 +235,16 @@ impl ReferenceEntry {
     }
 }
 
-/// Concatenate the selected references, each preceded by its header.
+/// Concatenate `entries`, each preceded by its header.
 ///
-/// `select` of `None` bundles everything. `Some(names)` bundles exactly
-/// those, in the caller's order; **an empty slice bundles nothing** —
-/// an explicitly empty selection must never decay into its opposite,
-/// the same rule `--no-delegates` follows for an empty profile scope.
-///
-/// An unknown name is an `Err` naming every unknown entry: addressing a
-/// reference that does not exist is a caller error, and answering it
-/// with a partial bundle would let the caller believe it received what
-/// it asked for. A DECLARED name whose file cannot be read is different
-/// — that is skill-data rot, and it surfaces as a `status: not-found`
-/// header in its declared position so the gap is visible where it
-/// belongs.
-///
-/// A repeated name is served ONCE. Without that, `["x", "x", "x"]`
-/// returns three copies of one body — a caller assembling a selection
-/// from several steps of a skill would amplify its own response for no
-/// gain.
-pub fn bundle(entries: &[ReferenceEntry], select: Option<&[String]>) -> Result<String, Vec<String>> {
-    let chosen: Vec<&ReferenceEntry> = match select {
-        None => entries.iter().collect(),
-        Some(names) => {
-            let mut chosen: Vec<&ReferenceEntry> = Vec::with_capacity(names.len());
-            let mut unknown = Vec::new();
-            let mut seen = BTreeSet::new();
-            for name in names {
-                if !seen.insert(name.clone()) {
-                    continue;
-                }
-                // A shadowed entry is not individually addressable — it
-                // has no URI, so accepting it by name here would make
-                // the name resolve to two different things depending on
-                // which door the caller used.
-                match entries.iter().find(|e| &e.name == name && !e.shadowed) {
-                    Some(entry) => chosen.push(entry),
-                    None => unknown.push(name.clone()),
-                }
-            }
-            if !unknown.is_empty() {
-                return Err(unknown);
-            }
-            chosen
-        }
-    };
-
+/// A declared file that cannot be read contributes its header alone,
+/// carrying `status: not-found` **in its declared position** — a
+/// trailing summary would say a reference is missing without saying
+/// where it belonged.
+#[must_use]
+pub fn bundle(entries: &[ReferenceEntry]) -> String {
     let mut out = String::new();
-    for entry in chosen {
+    for entry in entries {
         if !out.is_empty() {
             out.push('\n');
         }
@@ -315,27 +256,16 @@ pub fn bundle(entries: &[ReferenceEntry], select: Option<&[String]>) -> Result<S
             }
         }
     }
-    Ok(out)
+    out
 }
 
-/// The manifest as a JSON array — the full working view, for
-/// `read_skill` and `load_skill_references`.
+/// The manifest as a JSON array.
 #[must_use]
 pub fn manifest(entries: &[ReferenceEntry]) -> Value {
     Value::Array(entries.iter().map(ReferenceEntry::manifest_row).collect())
 }
 
-/// The individually addressable entry for `name`, if any.
-///
-/// Shadowed entries are excluded for the same reason `bundle` excludes
-/// them: a name must resolve to one thing regardless of which door the
-/// caller used.
-#[must_use]
-pub fn find<'a>(entries: &'a [ReferenceEntry], name: &str) -> Option<&'a ReferenceEntry> {
-    entries.iter().find(|e| e.name == name && !e.shadowed)
-}
-
-/// A text manifest naming every reference and its URI.
+/// A text manifest naming every reference and the path that fetches it.
 ///
 /// This is the safety net for the paths where structured metadata does
 /// not reach the model: a skill RESOURCE read returns text plus `_meta`,
@@ -349,15 +279,15 @@ pub fn manifest_footer(entries: &[ReferenceEntry], slug: &str) -> String {
     }
     let mut out = format!(
         "\n---\nskill_references:\n  skill: {slug}\n  count: {}\n  \
-         note: bodies are NOT included above - read a uri below, or call \
+         note: bodies are NOT included above - pass the paths below to \
          `load_skill_references`\n  available:\n",
         entries.len()
     );
     for entry in entries {
-        out.push_str(&format!("    - name: {}\n", entry.name));
-        match &entry.uri {
-            Some(uri) => out.push_str(&format!("      uri: {uri}\n")),
-            None => out.push_str("      shadowed: true\n"),
+        out.push_str(&format!("    - name: {}\n", scalar(&Value::String(entry.name.clone()))));
+        match &entry.path {
+            Some(path) => out.push_str(&format!("      path: {path}\n")),
+            None => out.push_str("      status: not-found\n"),
         }
     }
     out.push_str("---\n");
@@ -388,6 +318,15 @@ pub fn append_references(body: &str, slug: &str, count: usize, bundle: &str) -> 
     out
 }
 
+/// Canonicalize a caller-supplied path so it can be compared against
+/// the declared set. Returns `None` when it does not resolve.
+#[must_use]
+pub fn canonical(raw: &str) -> Option<String> {
+    std::fs::canonicalize(PathBuf::from(raw))
+        .ok()
+        .map(|p| p.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -416,32 +355,80 @@ mod tests {
         assert!(frontmatter_references(&value).references.is_empty());
     }
 
-    /// The name is the stem for BOTH declaration forms — the shared
-    /// `../references/x.md` and the skill-local `./references/x.md` —
-    /// and never carries the extension.
+    /// The path is the identity: two skills citing one shared file must
+    /// produce the SAME path, or a caller cannot tell it already holds
+    /// the body. Two skills' own local files must NOT.
     #[test]
-    fn the_name_is_the_stem_for_both_declaration_forms() {
+    fn one_file_has_one_path_and_distinct_files_do_not() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("references")).unwrap();
+        fs::write(root.path().join("references/shared.md"), "shared").unwrap();
+        for skill in ["skill-a", "skill-b"] {
+            fs::create_dir_all(root.path().join(skill).join("references")).unwrap();
+            fs::write(root.path().join(skill).join("references/local.md"), "local").unwrap();
+        }
+
+        let a = resolve(
+            &root.path().join("skill-a"),
+            &refs(&["../references/shared.md", "./references/local.md"]),
+        );
+        let b = resolve(
+            &root.path().join("skill-b"),
+            &refs(&["../references/shared.md", "./references/local.md"]),
+        );
+
+        assert_eq!(a[0].path, b[0].path, "one shared file must have one identity");
+        assert_ne!(a[1].path, b[1].path, "distinct local files must not collide");
+        // The LABEL collides where the path does not — which is exactly
+        // why the label is not the address.
+        assert_eq!(a[1].name, b[1].name);
+    }
+
+    /// Two references with the same label inside ONE skill are both
+    /// fully addressable — there is no shadowing, because the address
+    /// is the path and paths are unique by construction.
+    #[test]
+    fn a_repeated_label_shadows_nothing() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("references")).unwrap();
-        fs::create_dir_all(dir.path().join("../shared")).ok();
-        fs::write(dir.path().join("references/local.md"), "local body").unwrap();
+        fs::write(dir.path().join("references/dup.md"), "LOCAL").unwrap();
+        fs::write(dir.path().join("dup.md"), "SHARED").unwrap();
 
-        let entries = resolve(dir.path(), "s", &refs(&["./references/local.md"]));
+        let entries = resolve(dir.path(), &refs(&["dup.md", "./references/dup.md"]));
 
-        assert_eq!(entries[0].name, "local");
-        assert_eq!(entries[0].uri.as_deref(), Some("hyprpilot://references/s/local"));
+        assert_eq!(entries[0].name, entries[1].name, "labels collide");
+        assert_ne!(entries[0].path, entries[1].path, "addresses do not");
+        assert!(entries.iter().all(|e| e.path.is_some()));
+        let all = bundle(&entries);
+        assert!(all.contains("SHARED") && all.contains("LOCAL"));
     }
 
-    /// `file_stem` strips only the LAST extension, so a dotted filename
-    /// keeps its inner dots. Harmless for URI parsing (the split is on
-    /// `/`), but pinned so it is a decision rather than a surprise.
+    /// The declared spelling never reaches the wire — only the resolved
+    /// form, which has no `..` left to follow.
     #[test]
-    fn a_dotted_filename_keeps_its_inner_dots() {
-        assert_eq!(stem("../references/plan.v2.md"), "plan.v2");
+    fn only_the_canonical_path_is_published() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("references")).unwrap();
+        fs::write(dir.path().join("references/output-diff.md"), "body").unwrap();
+
+        let entries = resolve(dir.path(), &refs(&["./references/output-diff.md"]));
+
+        for surface in [
+            manifest(&entries).to_string(),
+            bundle(&entries),
+            manifest_footer(&entries, "git-commit"),
+        ] {
+            assert!(
+                !surface.contains("./references/"),
+                "declared spelling leaked: {surface}"
+            );
+            assert!(!surface.contains(".."), "unresolved traversal leaked: {surface}");
+        }
+        assert!(entries[0].path.as_ref().unwrap().ends_with("references/output-diff.md"));
     }
 
-    /// A reference's own frontmatter renames it, and the fence is
-    /// stripped from the served body.
+    /// A reference's own frontmatter renames it and rides through, and
+    /// its fence is consumed rather than replayed as a second delimiter.
     #[test]
     fn frontmatter_renames_the_reference_and_the_fence_is_stripped() {
         let dir = tempdir().unwrap();
@@ -451,234 +438,98 @@ mod tests {
         )
         .unwrap();
 
-        let entries = resolve(dir.path(), "s", &refs(&["a.md"]));
+        let entries = resolve(dir.path(), &refs(&["a.md"]));
 
         assert_eq!(entries[0].name, "renamed");
-        assert_eq!(entries[0].uri.as_deref(), Some("hyprpilot://references/s/renamed"));
-        let bundled = bundle(&entries, None).unwrap();
-        // Our header, then the body — the reference's own fence is
-        // consumed into `metadata`, never replayed as a second `---`
-        // block that a reader would take for a delimiter.
+        let bundled = bundle(&entries);
         assert!(bundled.ends_with("---\nthe actual body\n"), "{bundled}");
         assert_eq!(bundled.matches("\n---\n").count(), 1, "exactly one fence: {bundled}");
-        // Its keys survive, inside our header rather than loose above
-        // the body.
         assert!(bundled.contains("    title: A"));
     }
 
-    /// A declared name that cannot ride a URI segment falls back to the
-    /// stem rather than producing a URI that parses as something else.
+    /// Nothing is invented into a reference's metadata. hyprpilot
+    /// enforces no invocation gate, so a stamped `disableModelInvocation`
+    /// would imply a restriction that does not exist.
     #[test]
-    fn an_unusable_declared_name_falls_back_to_the_stem() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("a.md"), "---\nname: \"has/slash\"\n---\nbody\n").unwrap();
-        fs::write(dir.path().join("b.md"), "---\nname: \"   \"\n---\nbody\n").unwrap();
-
-        let entries = resolve(dir.path(), "s", &refs(&["a.md", "b.md"]));
-
-        assert_eq!(entries[0].name, "a");
-        assert_eq!(entries[1].name, "b");
-    }
-
-    /// A reference's frontmatter rides through verbatim, and NOTHING is
-    /// defaulted into it. hyprpilot enforces no invocation gate — a
-    /// stamped `disableModelInvocation` would imply a restriction that
-    /// does not exist, on every entry.
-    #[test]
-    fn reference_frontmatter_rides_through_without_invented_keys() {
+    fn no_keys_are_invented_into_reference_metadata() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a.md"), "body\n").unwrap();
-        fs::write(dir.path().join("b.md"), "---\nowner: captain\n---\nbody\n").unwrap();
 
-        let entries = resolve(dir.path(), "s", &refs(&["a.md", "b.md"]));
+        let entries = resolve(dir.path(), &refs(&["a.md"]));
 
-        assert!(
-            entries[0].metadata.is_empty(),
-            "no frontmatter means no metadata, not a fabricated default: {:?}",
-            entries[0].metadata
-        );
-        assert_eq!(
-            entries[1].metadata.get("owner").and_then(Value::as_str),
-            Some("captain")
-        );
+        assert!(entries[0].metadata.is_empty(), "{:?}", entries[0].metadata);
     }
 
-    /// The canonical path is the reference's IDENTITY: two skills citing
-    /// one shared file must produce the SAME path, or a caller cannot
-    /// tell it already holds the body.
-    #[test]
-    fn two_skills_citing_one_file_report_the_same_path() {
-        let root = tempdir().unwrap();
-        fs::create_dir_all(root.path().join("references")).unwrap();
-        fs::write(root.path().join("references/shared.md"), "shared body").unwrap();
-        fs::create_dir_all(root.path().join("skill-a")).unwrap();
-        fs::create_dir_all(root.path().join("skill-b")).unwrap();
-
-        let a = resolve(
-            &root.path().join("skill-a"),
-            "skill-a",
-            &refs(&["../references/shared.md"]),
-        );
-        let b = resolve(
-            &root.path().join("skill-b"),
-            "skill-b",
-            &refs(&["../references/shared.md"]),
-        );
-
-        assert!(a[0].path.is_some());
-        assert_eq!(a[0].path, b[0].path, "one file must have one identity");
-        assert_ne!(a[0].uri, b[0].uri, "but each skill addresses it under its own slug");
-    }
-
-    /// First-wins on a name collision: the loser keeps its manifest row
-    /// (never silently dropped) but has no URI of its own, and is still
-    /// carried by the full bundle.
-    #[test]
-    fn a_name_collision_shadows_the_loser_without_dropping_it() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("references")).unwrap();
-        fs::write(dir.path().join("references/dup.md"), "local body").unwrap();
-        fs::write(dir.path().join("dup.md"), "shared body").unwrap();
-
-        let entries = resolve(dir.path(), "s", &refs(&["dup.md", "./references/dup.md"]));
-
-        assert_eq!(entries.len(), 2, "the loser is kept, not dropped");
-        assert!(!entries[0].shadowed);
-        assert_eq!(entries[0].uri.as_deref(), Some("hyprpilot://references/s/dup"));
-        assert!(entries[1].shadowed);
-        assert_eq!(
-            entries[1].uri, None,
-            "a shadowed entry must not advertise the winner's uri"
-        );
-
-        // Still served by the full bundle.
-        let all = bundle(&entries, None).unwrap();
-        assert!(all.contains("shared body"));
-        assert!(all.contains("local body"));
-
-        // But not addressable by name — the name resolves to one thing.
-        let picked = bundle(&entries, Some(&["dup".to_string()])).unwrap();
-        assert!(picked.contains("shared body"));
-        assert!(!picked.contains("local body"));
-    }
-
-    /// An explicitly empty selection bundles NOTHING. Letting `[]` mean
-    /// "everything" is the same footgun `--no-delegates` exists to avoid:
-    /// an empty list must never decay into its opposite.
-    #[test]
-    fn an_empty_selection_bundles_nothing_rather_than_everything() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("a.md"), "alpha").unwrap();
-        let entries = resolve(dir.path(), "s", &refs(&["a.md"]));
-
-        assert!(bundle(&entries, Some(&[])).unwrap().is_empty());
-        assert!(bundle(&entries, None).unwrap().contains("alpha"));
-    }
-
-    /// An unknown name is an error naming every unknown entry — a
-    /// partial bundle would let the caller believe it got what it asked
-    /// for.
-    #[test]
-    fn unknown_names_error_and_are_all_named() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("a.md"), "alpha").unwrap();
-        let entries = resolve(dir.path(), "s", &refs(&["a.md"]));
-
-        let err = bundle(
-            &entries,
-            Some(&["a".to_string(), "nope".to_string(), "also-nope".to_string()]),
-        )
-        .unwrap_err();
-
-        assert_eq!(err, vec!["nope", "also-nope"]);
-    }
-
-    /// A declared-but-unreadable file is skill-data rot, not a caller
-    /// error: it surfaces as a marker IN ITS DECLARED POSITION, because
-    /// a trailing summary would say a reference is missing without
-    /// saying where it belonged.
+    /// A declared-but-unreadable file is skill-data rot: it keeps its
+    /// declared position and says so, rather than vanishing.
     #[test]
     fn a_missing_file_keeps_its_declared_position_as_a_marker() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("b.md"), "beta").unwrap();
 
-        let entries = resolve(dir.path(), "s", &refs(&["gone.md", "b.md"]));
-        let bundled = bundle(&entries, None).unwrap();
+        let entries = resolve(dir.path(), &refs(&["gone.md", "b.md"]));
+        let bundled = bundle(&entries);
 
         assert!(entries[0].missing);
+        assert!(entries[0].path.is_none(), "an unresolvable file has no address");
         let gone = bundled.find("name: gone").unwrap();
         let beta = bundled.find("name: b\n").unwrap();
         assert!(gone < beta, "a missing reference stays in declaration order");
         assert!(bundled.contains("status: not-found"));
     }
 
-    /// The DECLARED path stays internal — it is meaningless outside its
-    /// bundle dir. The RESOLVED one is published as identity, but only
-    /// on the manifest: the bundle header and footer are for reading,
-    /// not for locating.
+    /// `declared_paths` is what a load request is validated against, so
+    /// it must agree with the manifest's `path` exactly.
     #[test]
-    fn the_declared_path_stays_internal_and_only_the_manifest_carries_identity() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("references")).unwrap();
-        fs::write(dir.path().join("references/output-diff.md"), "body").unwrap();
-
-        let entries = resolve(dir.path(), "git-commit", &refs(&["./references/output-diff.md"]));
-
-        for surface in [
-            manifest(&entries).to_string(),
-            bundle(&entries, None).unwrap(),
-            manifest_footer(&entries, "git-commit"),
-        ] {
-            assert!(
-                !surface.contains("./references/output-diff.md"),
-                "the declared spelling leaked: {surface}"
-            );
-        }
-        assert!(manifest(&entries).to_string().contains("\"path\":"));
-        assert!(!manifest_footer(&entries, "git-commit").contains("path:"));
-    }
-
-    /// A repeated name is served once — a caller assembling a selection
-    /// across several steps must not amplify its own response.
-    #[test]
-    fn a_repeated_selection_is_served_once() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("a.md"), "ALPHA-BODY").unwrap();
-        let entries = resolve(dir.path(), "s", &refs(&["a.md"]));
-
-        let out = bundle(&entries, Some(&["a".into(), "a".into(), "a".into()])).unwrap();
-
-        assert_eq!(out.matches("ALPHA-BODY").count(), 1);
-    }
-
-    #[test]
-    fn the_manifest_carries_name_uri_and_timestamps() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("a.md"), "alpha").unwrap();
-
-        let rows = manifest(&resolve(dir.path(), "s", &refs(&["a.md"])));
-        let row = &rows[0];
-
-        assert_eq!(row["name"], "a");
-        assert_eq!(row["uri"], "hyprpilot://references/s/a");
-        assert_eq!(row["size"], 5);
-        assert!(row["modified"].as_str().unwrap().ends_with('Z'));
-    }
-
-    /// The footer is the in-band signal for clients that never surface
-    /// `_meta` — it must name every reference and how to reach it.
-    #[test]
-    fn the_footer_names_every_reference_and_says_bodies_are_absent() {
+    fn declared_paths_match_the_manifest_addresses() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a.md"), "alpha").unwrap();
         fs::write(dir.path().join("b.md"), "beta").unwrap();
 
-        let footer = manifest_footer(&resolve(dir.path(), "s", &refs(&["a.md", "b.md"])), "s");
+        let declared = declared_paths(dir.path(), &refs(&["a.md", "b.md", "gone.md"]));
+        let entries = resolve(dir.path(), &refs(&["a.md", "b.md", "gone.md"]));
+
+        let addresses: Vec<String> = entries.iter().filter_map(|e| e.path.clone()).collect();
+        assert_eq!(declared, addresses);
+        assert_eq!(declared.len(), 2, "an unresolvable declaration contributes no address");
+    }
+
+    #[test]
+    fn resolve_paths_reads_exactly_what_it_is_given() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "ALPHA").unwrap();
+        fs::write(dir.path().join("b.md"), "BETA").unwrap();
+        let declared = declared_paths(dir.path(), &refs(&["a.md", "b.md"]));
+
+        let out = bundle(&resolve_paths(&declared[..1]));
+
+        assert!(out.contains("ALPHA"));
+        assert!(!out.contains("BETA"));
+    }
+
+    /// A value that would break the YAML block gets quoted rather than
+    /// silently corrupting the header a reader relies on as a delimiter.
+    #[test]
+    fn header_values_that_would_break_yaml_are_quoted() {
+        assert_eq!(scalar(&Value::String("output-diff".into())), "output-diff");
+        assert_eq!(scalar(&Value::String("has: colon".into())), "\"has: colon\"");
+        assert_eq!(scalar(&Value::String("two\nlines".into())), "\"two\\nlines\"");
+        assert_eq!(scalar(&Value::String("- leading dash".into())), "\"- leading dash\"");
+        assert_eq!(scalar(&Value::String(" padded ".into())), "\" padded \"");
+        assert_eq!(scalar(&serde_json::json!(["a", "b"])), "[\"a\",\"b\"]");
+    }
+
+    #[test]
+    fn the_footer_names_every_reference_and_its_path() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "alpha").unwrap();
+        fs::write(dir.path().join("b.md"), "beta").unwrap();
+
+        let footer = manifest_footer(&resolve(dir.path(), &refs(&["a.md", "b.md"])), "s");
 
         assert!(footer.contains("count: 2"));
         assert!(footer.contains("NOT included"));
-        assert!(footer.contains("uri: hyprpilot://references/s/a"));
-        assert!(footer.contains("uri: hyprpilot://references/s/b"));
+        assert_eq!(footer.matches("      path: /").count(), 2);
     }
 
     #[test]

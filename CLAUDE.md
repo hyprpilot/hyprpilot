@@ -428,94 +428,79 @@ Skills reach the agent **only** through the skills server.
   JSON).
 - **`hyprpilot mcp skills`** (`mcp/server/skills_server.rs`): an `rmcp` stdio
   server. Resources: `hyprpilot://skills` (the catalogue index —
-  markdown, leads with how to chain the schemes below; the bare
-  form cannot collide with a slug because every slug URI carries a
-  `skills/` prefix), `hyprpilot://skills/<slug>` (body **plus a manifest
-  footer**), `hyprpilot://references/<slug>/<name>` (ONE reference) and
-  `hyprpilot://references/<slug>` (all of them — a parallel top-level
-  scheme, NOT a `/references` segment nested under the slug; the nested
-  form broke client URI autocomplete). Tools: `list_skills`,
-  `read_skill`, `list_skill_references`, `load_skill_references`,
-  `reload` (rescan dirs). Reference URIs are TEMPLATES only — see the
-  `resources/list` bullet below.
-- **A reference is addressed by NAME — its file stem, or its own
-  frontmatter `name`.** `../references/output-diff.md` is `output-diff`,
-  the same word skill prose cites, so the address and the body agree.
-  The name is **looked up, never joined**: a caller supplies a name, the
-  server takes the path from the frontmatter, so no request-supplied
-  string reaches `Path::join`.
-- **The DECLARED path never reaches the wire; the RESOLVED one does, as
-  `path`.** The declared spelling is meaningless outside its bundle dir
-  (which is why `skill_block` drops the raw `references` array, the same
-  way it drops `title`/`description` — another field carries it better).
-  The canonicalized absolute path IS published, because a name is an
-  ADDRESS and de-duplication needs an IDENTITY: `git-commit/output-diff`
-  and `git-push/output-diff` are one file that must not be loaded twice,
-  while two skills' own `./references/output-diff.md` share a name and
-  are different files. Canonicalizing collapses `..` so two spellings of
-  one file compare equal.
-- **`list_skill_references { slug? }` is the dedup surface.** Metadata,
-  no bodies; one skill, or the whole catalogue when the slug is omitted.
-  Its text projection groups citations by `path` and leads with the
-  files cited by more than one skill — measured on the live root, 479
-  references across 103 skills resolve to 60 shared files. `list_skills`
-  deliberately does NOT resolve references (it reports `referenceCount`
-  and is served purely from cache); resolving there would read every
-  declared file of every skill on every catalogue call.
-- **`resources/list` NEVER enumerates a reference URI** — neither the
-  per-skill bundle nor the per-reference form. Both are resource
-  TEMPLATES, which cost one entry regardless of catalogue size. This is
-  a measured context-budget decision, not a style one: on a 124-skill
-  root the listing is 128 entries / ~105 KB (~26k tokens); adding one
-  bundle entry per skill took it to 231 / ~170 KB, 48% of it `_meta`,
-  with each bundle entry repeating its OWN skill's block verbatim.
-  Enumerating all 479 references would reach ~607 entries and ~500 KB —
-  over 120k tokens before a single skill is read.
+  markdown; the bare form cannot collide with a slug because every slug
+  URI carries a `skills/` prefix) and `hyprpilot://skills/<slug>` (body
+  **plus a manifest footer**). That is the WHOLE resource surface —
+  there is no reference URI; see the `resources/list` bullet below.
+  Tools: `list_skills`, `read_skill`, `list_skill_references`,
+  `load_skill_references`, `reload` (rescan dirs).
+- **A reference is addressed by its canonical PATH**, not a slug or a
+  name. A path is what the citation IS; a slug-and-name is one of many
+  addresses for one shared file, which is exactly what makes double
+  loading invisible. Addressing by path de-duplicates (two citations of
+  one file are one path, and a repeated path is served once), spans
+  skills in a single call, and needs no collision rule — paths are
+  unique by construction, so two references sharing a LABEL inside one
+  skill are both fully addressable. There is no shadowing.
+- **A caller-supplied path is CHECKED, never joined.** `SkillsCache
+  .declared` holds every canonical path some skill declares, built once
+  per `reload` because it is structural; a load request is validated
+  against it, so the surface reaches exactly the files the skills
+  already reference. The DECLARED spelling
+  (`../references/output-diff.md`) never reaches the wire — it is
+  meaningless outside its bundle dir, and publishing both would offer a
+  caller two addresses of which only one works. That is why
+  `skill_block` drops the raw `references` array, the same way it drops
+  `title`/`description`: another field carries it better.
 - **Reference BODIES are opt-in; the MANIFEST is not.** `read_skill`
-  defaults to body + manifest (`name` / `uri` / `size` / `modified` /
-  `created` / `metadata` per entry); `bundle: true` adds every body.
-  `load_skill_references { slug, references: [...] }` fetches named ones,
-  omitted fetches all, and an **explicitly empty array fetches none** —
-  same rule as `--no-delegates`, an empty list must never decay into its
-  opposite. An unknown name is an error naming what exists, not a
-  partial bundle the caller would mistake for complete. The reason is
-  duplication, not size: references are shared (one is declared by 56
-  skills), so the old always-bundle default re-sent conventions already
-  in context — `read_skill git-commit` was ~34 KB, now 12.6 KB.
-  The manifest is what keeps the flipped default from being a silent
-  gap, which is why it also rides the RESOURCE path as a text FOOTER: a
-  resource read returns text plus `_meta`, and many clients never
-  surface `_meta` to the model, so an attached skill would otherwise
-  lose its references with no in-context signal at all.
-- **First-wins on a name collision**, matching `SkillsRegistry`'s
-  slug policy. The loser keeps its manifest row marked `shadowed: true`
-  with **no `uri`** (pointing it at the winner's file would be
-  confidently wrong), is still served by the full bundle, and is warned.
-  Never silently dropped. A declared-but-unreadable file is different —
-  that is skill-data rot, and it surfaces as a `status: not-found` block
-  **in its declared position** (a trailing summary would say a reference
-  is missing without saying where it belonged). Addressing it
-  individually by URI errors instead: a resource read has no in-band
-  marker convention.
+  defaults to body + manifest (`path` / `name` / `size` / `modified` /
+  `created` / `metadata` per row); `bundle: true` adds every body.
+  `load_skill_references { references: [path] }` fetches by path.
+  The reason is duplication, not size: references are shared (479
+  citations across 103 skills resolve to 60 shared files), so the old
+  always-bundle default re-sent conventions already in context —
+  `read_skill git-commit` was ~34 KB, now 12.6 KB. The manifest is what
+  keeps the flipped default from being a silent gap, which is why it
+  also rides the RESOURCE path as a text FOOTER: a resource read returns
+  text plus `_meta`, and many clients never surface `_meta` to the
+  model, so an attached skill would otherwise lose its references with
+  no in-context signal at all.
+- **`list_skill_references { slug }` takes a REQUIRED slug.** A
+  whole-catalogue scan was a six-figure payload — the single largest
+  thing this server could produce — and per-skill listing answers the
+  same question incrementally, since comparing paths needs only the
+  skill in hand. `list_skills` does NOT resolve references either (it
+  reports `referenceCount`, served purely from cache); resolving there
+  would read every declared file of every skill on every catalogue call.
+- **`resources/list` is the catalogue and skill bodies, NOTHING else.**
+  There is no reference URI at all — not per-skill, not per-reference.
+  This is measured, not stylistic: on a 127-skill root the listing is
+  128 entries / ~105 KB (~26k tokens); adding one bundle entry per skill
+  took it to 231 / ~170 KB, 48% of it `_meta`, each bundle entry
+  repeating its OWN skill's block verbatim. Enumerating all 479
+  references would reach ~607 entries and ~500 KB — over 120k tokens
+  before a single skill is read.
+- **A declared-but-unreadable file** keeps its declared position as a
+  `status: not-found` marker in the manifest and any bundle (a trailing
+  summary would say a reference is missing without saying where it
+  belonged) and carries no path, so it cannot be fetched.
 - **A reference may carry its own frontmatter**, parsed by the loader's
   `split_frontmatter` rather than a second implementation, and served
   with the fence STRIPPED — leaving it would put a bare `---` directly
   under our own `reference:` header, where it reads as a delimiter
-  rather than as data. Its keys project into the manifest entry's
+  rather than as data. Its keys project into the manifest row's
   `metadata` VERBATIM; nothing is defaulted in. In particular there is
   no `disableModelInvocation` default: hyprpilot enforces no invocation
   gate anywhere (the key is honoured by the AGENT, per its own
-  `AGENTS.md` tiers), so stamping it on every entry would imply a
-  restriction that does not exist.
+  `AGENTS.md` tiers), so stamping it would imply a restriction that does
+  not exist.
 - **A FETCHED reference carries FULL metadata.** The bundle header is
   built from the same `manifest_row` the listing advertises, so the two
-  cannot drift, and a single-reference resource read returns that row
-  under its own `io.hyprpilot/reference` key — NOT its declaring skill's
-  block, which would answer a question the caller did not ask and hide
-  the `path` that tells them whether they already hold the file. Full
-  detail is affordable there and not in a listing: it is emitted once
-  per reference deliberately requested, where `resources/list` pays for
-  the whole catalogue.
+  cannot drift. Full detail is affordable there and not in a listing: it
+  is emitted once per reference deliberately requested, where
+  `resources/list` pays for the whole catalogue. Header values that
+  would break the YAML block (a `:`, a newline, a leading `-`) are
+  quoted, so a hand-authored frontmatter value cannot forge a delimiter.
 - **Timestamps are `modified` + `created`, never atime**
   (`skills/wire_time.rs`, RFC 3339 UTC via `chrono` — already compiled
   in transitively via `rmcp`, so making it direct costs nothing). atime
@@ -528,15 +513,12 @@ Skills reach the agent **only** through the skills server.
   the skill — a reference changes far more often than its declaring
   skill, and caching would serve a stale convention (and a stale mtime,
   the one thing these fields exist to report) until an unrelated
-  `reload`.
+  `reload`. Only the declared-path allow-list is cached, because it is
+  structural.
 - Bundles delimit each file with a `reference:` YAML block carrying its
-  name and uri, under a `skill_references:` banner naming the skill and
-  count, so an appended bundle can never be mistaken for more skill
+  full manifest row, under a `skill_references:` banner naming the skill
+  and count, so an appended bundle can never be mistaken for more skill
   body.
-- **`list_skills` carries reference NAMES only**, not the full manifest:
-  it is the routing view ("which skill?"), and full manifests across a
-  large catalogue would add tens of kilobytes to every call. `read_skill`
-  carries the addressable detail.
 - Skills are discovered by directory scan — the same
   `SkillsRegistry` discovery the launcher uses — so editing a skill
   and calling `reload` refreshes without restarting the session.

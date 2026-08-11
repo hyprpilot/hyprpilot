@@ -78,12 +78,12 @@ pub fn skill_block(frontmatter: &Map<String, Value>, path: &Path) -> Map<String,
     block.remove("title");
     block.remove("description");
     // Dropped for the same reason, one layer out: the resolved
-    // reference MANIFEST carries every declared reference with the name
-    // and URI that actually address it. Passing the raw array through
-    // as well would publish the declared filesystem paths
-    // (`../references/output-diff.md`), which is precisely what a
-    // consumer would then read directly instead of going through the
-    // server — defeating the point of addressing references by URI.
+    // reference MANIFEST carries every declared reference with the
+    // canonical path that actually addresses it. The raw array holds
+    // the DECLARED spelling (`../references/output-diff.md`), which is
+    // meaningless outside its bundle dir and cannot be passed to
+    // `load_skill_references` — publishing both would offer a caller
+    // two addresses, only one of which works.
     block.remove("references");
     // Runtime-derived, not present in frontmatter.
     block.insert("path".to_string(), Value::String(path.display().to_string()));
@@ -101,21 +101,6 @@ pub fn skill_block(frontmatter: &Map<String, Value>, path: &Path) -> Map<String,
 pub fn skill_meta(block: &Map<String, Value>) -> MetaObject {
     let mut meta = Map::new();
     meta.insert(META_KEY_SKILL.to_string(), Value::Object(block.clone()));
-    MetaObject(meta)
-}
-
-/// The `_meta` key for a REFERENCE resource. Distinct from
-/// [`META_KEY_SKILL`] because it describes a different thing: reading
-/// one reference and getting its declaring skill's metadata answers a
-/// question the caller did not ask, and hides the `path` that tells it
-/// whether it already holds this file.
-pub const META_KEY_REFERENCE: &str = "io.hyprpilot/reference";
-
-/// Wrap a reference's manifest row under [`META_KEY_REFERENCE`].
-#[must_use]
-pub fn reference_meta(row: Value) -> MetaObject {
-    let mut meta = Map::new();
-    meta.insert(META_KEY_REFERENCE.to_string(), row);
     MetaObject(meta)
 }
 

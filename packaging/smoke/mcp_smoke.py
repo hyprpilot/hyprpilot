@@ -210,66 +210,93 @@ text = read.get("content", [{}])[0].get("text", "")
 
 check("read_skill does NOT bundle by default",
       "SHARED-OUTPUT-DIFF-BODY" not in text)
-check("read_skill text carries the manifest footer",
-      "skill_references:" in text and "uri: hyprpilot://references/refskill/output-diff" in text)
-check("manifest names every declaration",
+check("read_skill text carries the manifest footer with paths",
+      "skill_references:" in text and text.count("      path: /") == 4)
+check("manifest names every declaration in order",
       [e.get("name") for e in manifest] == ["output-diff", "renamed", "dup", "dup", "gone"],
       str([e.get("name") for e in manifest]))
 check("a reference's own frontmatter renames it and rides through",
       manifest[1].get("metadata", {}).get("owner") == "captain")
 check("nothing is invented into a reference with no frontmatter",
       manifest[0].get("metadata") in (None, {}), str(manifest[0].get("metadata")))
-check("the manifest carries the canonical path as identity",
-      os.path.isabs(manifest[0].get("path", "")) and ".." not in manifest[0]["path"],
-      manifest[0].get("path"))
-check("the shadowed duplicate has no uri of its own",
-      manifest[3].get("shadowed") is True and "uri" not in manifest[3])
-check("a declared-but-missing file is marked, not dropped",
-      manifest[4].get("status") == "not-found")
+check("every readable reference has a canonical absolute path",
+      all(os.path.isabs(e["path"]) and ".." not in e["path"] for e in manifest[:4]))
+check("a repeated LABEL shadows nothing - both are addressable",
+      manifest[2]["name"] == manifest[3]["name"]
+      and manifest[2]["path"] != manifest[3]["path"])
+check("a declared-but-missing file is marked and has no address",
+      manifest[4].get("status") == "not-found" and "path" not in manifest[4])
 check("timestamps are RFC 3339 UTC",
       manifest[0].get("modified", "").endswith("Z") and len(manifest[0].get("modified", "")) == 20,
       manifest[0].get("modified"))
-check("no declared path reaches the wire",
-      "../references/" not in json.dumps(sc))
+check("the declared spelling never reaches the wire",
+      "../references/" not in json.dumps(sc) and "./references/" not in json.dumps(sc))
 check("metadata drops the raw references array",
       "references" not in sc.get("metadata", {}))
 
 bundled = tool_result(s.call("tools/call", {
     "name": "read_skill", "arguments": {"slug": "refskill", "bundle": True}}))
-btext = bundled.get("content", [{}])[0].get("text", "")
-check("bundle:true carries the bodies", "SHARED-OUTPUT-DIFF-BODY" in btext)
+check("bundle:true carries the bodies",
+      "SHARED-OUTPUT-DIFF-BODY" in bundled.get("content", [{}])[0].get("text", ""))
 
-one = tool_result(s.call("resources/read", {
-    "uri": "hyprpilot://references/refskill/output-diff"}))
-otext = one.get("contents", [{}])[0].get("text", "")
-check("single-reference URI returns just that reference",
+listed_refs = tool_result(s.call("tools/call", {
+    "name": "list_skill_references", "arguments": {"slug": "refskill"}}))
+lsc = listed_refs.get("structuredContent", {})
+check("list_skill_references scopes to the requested skill",
+      lsc.get("slug") == "refskill" and len(lsc.get("references", [])) == 5)
+check("list_skill_references carries no bodies",
+      "SHARED-OUTPUT-DIFF-BODY" not in json.dumps(listed_refs))
+check("an unknown slug is refused",
+      "error" in json.dumps(tool_result(s.call("tools/call", {
+          "name": "list_skill_references", "arguments": {"slug": "nope"}})).get("content", [])).lower()
+      or tool_result(s.call("tools/call", {
+          "name": "list_skill_references", "arguments": {"slug": "nope"}})).get("isError") is True)
+
+shared_path = manifest[0]["path"]
+local_dup = manifest[3]["path"]
+
+one = tool_result(s.call("tools/call", {
+    "name": "load_skill_references", "arguments": {"references": [shared_path]}}))
+otext = one.get("structuredContent", {}).get("body", "")
+check("a path fetches exactly that reference",
       "SHARED-OUTPUT-DIFF-BODY" in otext and "TITLED-BODY" not in otext)
 
-missing = s.call("resources/read", {"uri": "hyprpilot://references/refskill/nope"})
-check("an unknown reference name errors and lists what exists",
-      "nope" in json.dumps(missing.get("error", {}))
-      and "output-diff" in json.dumps(missing.get("error", {})))
-
-picked = tool_result(s.call("tools/call", {
+several = tool_result(s.call("tools/call", {
     "name": "load_skill_references",
-    "arguments": {"slug": "refskill", "references": ["output-diff", "renamed"]}}))
-ptext = picked.get("structuredContent", {}).get("body", "")
-check("an array fetches exactly the named references",
-      "SHARED-OUTPUT-DIFF-BODY" in ptext and "TITLED-BODY" in ptext
-      and "SHARED-DUP-BODY" not in ptext)
+    "arguments": {"references": [shared_path, manifest[1]["path"]]}}))
+stext = several.get("structuredContent", {}).get("body", "")
+check("an array fetches exactly the named paths",
+      "SHARED-OUTPUT-DIFF-BODY" in stext and "TITLED-BODY" in stext
+      and "SHARED-DUP-BODY" not in stext)
 
-empty = tool_result(s.call("tools/call", {
+dupe = tool_result(s.call("tools/call", {
     "name": "load_skill_references",
-    "arguments": {"slug": "refskill", "references": []}}))
-check("an EMPTY array fetches nothing, not everything",
-      empty.get("structuredContent", {}).get("body") == "")
+    "arguments": {"references": [shared_path, shared_path, shared_path]}}))
+check("a repeated path is served once, not amplified",
+      dupe.get("structuredContent", {}).get("body", "").count("SHARED-OUTPUT-DIFF-BODY") == 1)
 
-every = tool_result(s.call("tools/call", {
-    "name": "load_skill_references", "arguments": {"slug": "refskill"}}))
-etext = every.get("structuredContent", {}).get("body", "")
-check("an omitted array fetches everything",
-      all(m in etext for m in
-          ("SHARED-OUTPUT-DIFF-BODY", "TITLED-BODY", "SHARED-DUP-BODY", "LOCAL-DUP-BODY")))
+# The same file is cited by two skills; ONE path fetches it for both,
+# which is the whole point of addressing by identity.
+other = tool_result(s.call("tools/call", {
+    "name": "list_skill_references", "arguments": {"slug": "otherskill"}}))
+other_path = other["structuredContent"]["references"][0]["path"]
+check("two skills citing one file report the SAME path",
+      other_path == shared_path, f"{other_path} vs {shared_path}")
+
+check("a shadow-free duplicate label is still individually fetchable",
+      "LOCAL-DUP-BODY" in tool_result(s.call("tools/call", {
+          "name": "load_skill_references", "arguments": {"references": [local_dup]}}
+      )).get("structuredContent", {}).get("body", ""))
+
+undeclared = tool_result(s.call("tools/call", {
+    "name": "load_skill_references", "arguments": {"references": ["/etc/passwd"]}}))
+check("a path no skill declares is refused",
+      undeclared.get("isError") is True
+      or "no skill declares" in json.dumps(undeclared))
+
+check("a missing `references` argument is refused",
+      tool_result(s.call("tools/call", {
+          "name": "load_skill_references", "arguments": {}})).get("isError") is True)
 
 res = tool_result(s.call("resources/read", {"uri": "hyprpilot://skills/refskill"}))
 rtext = res.get("contents", [{}])[0].get("text", "")
@@ -278,46 +305,16 @@ check("the skill RESOURCE stops bundling but keeps the footer",
 
 templates = [t["uriTemplate"] for t in
              tool_result(s.call("resources/templates/list")).get("resourceTemplates", [])]
-check("the per-reference template is advertised",
-      "hyprpilot://references/{slug}/{reference}" in templates, str(templates))
+check("only the skill template is advertised",
+      templates == ["hyprpilot://skills/{slug}"], str(templates))
 
-# A declared-but-unreadable file is a marker inside a bundle, but an
-# ERROR when addressed on its own — a resource read has no in-band
-# marker convention, so returning the header alone would hand back
-# something the caller would mistake for the file.
-gone_uri = s.call("resources/read", {"uri": "hyprpilot://references/refskill/gone"})
-check("a missing file errors when addressed individually",
-      "error" in gone_uri, json.dumps(gone_uri.get("result", {}))[:120])
-gone_bundle = tool_result(s.call("tools/call", {
-    "name": "load_skill_references", "arguments": {"slug": "refskill"}}))
-check("but stays a positional marker inside the bundle",
-      "status: not-found" in gone_bundle.get("structuredContent", {}).get("body", ""))
-
-dupe = tool_result(s.call("tools/call", {
-    "name": "load_skill_references",
-    "arguments": {"slug": "refskill", "references": ["output-diff", "output-diff"]}}))
-check("a repeated name is served once, not amplified",
-      dupe.get("structuredContent", {}).get("body", "").count("SHARED-OUTPUT-DIFF-BODY") == 1)
-
-one_skill = tool_result(s.call("tools/call", {
-    "name": "list_skill_references", "arguments": {"slug": "refskill"}}))
-osc = one_skill.get("structuredContent", {})
-check("list_skill_references scopes to one skill",
-      [e["slug"] for e in osc.get("skills", [])] == ["refskill"])
-check("list_skill_references carries no bodies",
-      "SHARED-OUTPUT-DIFF-BODY" not in json.dumps(osc)
-      and "SHARED-OUTPUT-DIFF-BODY" not in one_skill.get("content", [{}])[0].get("text", ""))
-
-every_skill = tool_result(s.call("tools/call", {
-    "name": "list_skill_references", "arguments": {}}))
-etext2 = every_skill.get("content", [{}])[0].get("text", "")
-check("omitting the slug scans every skill",
-      {e["slug"] for e in every_skill.get("structuredContent", {}).get("skills", [])}
-      == {"refskill", "otherskill"})
-check("two skills citing one file are reported as SHARED",
-      "SHARED - 1 file(s)" in etext2 and "refskill/output-diff" in etext2
-      and "otherskill/output-diff" in etext2,
-      etext2.split("SHARED - ")[-1][:90] if "SHARED - " in etext2 else "no SHARED section")
+listed_res = tool_result(s.call("resources/list")).get("resources", [])
+check("no reference URI is enumerated as a resource",
+      not [r for r in listed_res if r["uri"].startswith("hyprpilot://references/")],
+      str([r["uri"] for r in listed_res]))
+check("a former reference URI now resolves to nothing",
+      "error" in s.call("resources/read",
+                        {"uri": f"hyprpilot://references/refskill/output-diff"}))
 s.stop()
 
 # ── 3. mcp harness — the NON-declaring client (fallback path) ─────────
