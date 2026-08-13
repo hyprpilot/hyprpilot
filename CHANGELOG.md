@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.11.1](https://github.com/hyprpilot/hyprpilot/compare/v3.11.0...v3.11.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **mcp:** emit the cache fields 2026-07-28 requires on every result ([#239](https://github.com/hyprpilot/hyprpilot/issues/239)) ([99da3f2](https://github.com/hyprpilot/hyprpilot/commit/99da3f2824200bc52e409c8a09d0872e20ffd452))
+
 ## [3.11.0](https://github.com/hyprpilot/hyprpilot/compare/v3.10.0...v3.11.0) (2026-08-13)
 
 
