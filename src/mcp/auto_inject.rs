@@ -65,27 +65,50 @@ pub fn build_tools_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPDef
     })
 }
 
-/// Build the harness catalog entry.
+/// Build the harness catalog entry for a session that will run at
+/// `spawn_depth`.
 ///
 /// Separate from the skills entry so the two servers get independent
 /// process lifetimes and independent tool policy — auto-accepting a
 /// skill read and auto-accepting `spawn` are not the same decision.
 ///
 /// Unlike skills, this is NOT gated on having content to serve: the
-/// harness always has tools. It is gated purely on the captain enabling
-/// it, which is deliberate — see [`HarnessServerConfig`].
+/// harness always has tools. Two gates apply instead.
+///
+/// **Depth first, and it is absolute.** A session at or past
+/// `[mcp.harness] maxDepth` gets no entry even with `enabled = true` —
+/// its harness could only ever refuse `spawn`, so injecting one buys a
+/// long-lived process and seven tools that exist to error. Reading the
+/// cap from the same block being injected is what makes it
+/// self-adjusting: raise `maxDepth` and delegates get a harness again,
+/// correctly, with nothing else to change.
+///
+/// Then the captain's `enabled`, which is deliberately off by default —
+/// see [`HarnessServerConfig`].
 #[must_use]
-pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPDefinition> {
+pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf, spawn_depth: usize) -> Option<MCPDefinition> {
     let harness = cfg.harness.clone().unwrap_or_default();
+    if spawn_depth >= harness.max_depth() {
+        tracing::debug!(
+            spawn_depth,
+            max_depth = harness.max_depth(),
+            "auto_inject: harness suppressed — session is at the delegation cap"
+        );
+        return None;
+    }
     if !harness.is_enabled() {
         return None;
     }
     let exe = std::env::current_exe().ok()?;
     let mut args = vec!["mcp".to_string(), "harness".to_string()];
-    if let Some(max) = harness.max_sessions {
-        args.push("--max-sessions".to_string());
-        args.push(max.to_string());
-    }
+    args.push("--max-sessions".to_string());
+    args.push(harness.max_sessions().to_string());
+    // The sidecar enforces the same cap on `spawn` that this function
+    // enforced on injection. It cannot re-read the value: `[mcp.harness]`
+    // is per-profile and only the launcher knows which profile was
+    // picked.
+    args.push("--max-depth".to_string());
+    args.push(harness.max_depth().to_string());
     // Same shape as `--max-sessions`: the sidecar is spawned by the
     // launcher, which already resolved the PICKED profile's `[mcp]`
     // block. Re-reading config inside the sidecar cannot recover which
@@ -117,6 +140,23 @@ pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPD
     }
     for glob in harness.exclude_profiles.as_deref().unwrap_or_default() {
         args.push(format!("--exclude-profile={glob}"));
+    }
+    // Same reason a third time: the delegate overlay is the PICKED
+    // profile's `[mcp.harness.mcp]`, and the sidecar cannot work out
+    // which profile that was. Emitted only when the captain declared
+    // one — absent means every delegate keeps its own resolved `[mcp]`,
+    // which is also what a hand-started sidecar gets.
+    if let Some(delegate_mcp) = harness.delegate_mcp() {
+        match serde_json::to_string(delegate_mcp) {
+            Ok(json) => args.push(format!("--delegate-mcp={json}")),
+            // Unreachable in practice — the block is a plain typed
+            // struct — but silently dropping it would widen what
+            // delegates reach, so say so loudly rather than warn-and-go.
+            Err(err) => {
+                tracing::error!(%err, "auto_inject: delegate mcp overlay failed to serialize — not injecting the harness");
+                return None;
+            }
+        }
     }
     let raw = serde_json::json!({
         "command": exe.display().to_string(),
@@ -248,7 +288,7 @@ mod tests {
     /// get an entry for it.
     #[test]
     fn harness_is_not_injected_by_default() {
-        assert!(build_harness_definition(&default_cfg(), PathBuf::from("<test>")).is_none());
+        assert!(build_harness_definition(&default_cfg(), PathBuf::from("<test>"), 0).is_none());
     }
 
     #[test]
@@ -260,7 +300,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("enabled harness injects");
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0).expect("enabled harness injects");
         assert_eq!(def.name, crate::config::mcp::DEFAULT_HARNESS_SERVER_NAME);
     }
 
@@ -277,7 +317,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0).expect("injects");
         assert_eq!(def.hyprpilot.auto_accept_tools, vec!["*".to_string()]);
     }
 
@@ -292,7 +332,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0).expect("injects");
         let args = def.raw["args"].as_array().expect("args");
         assert!(
             !args.iter().any(|a| a == "--no-notify-on-complete"),
@@ -313,13 +353,13 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0).expect("injects");
         let args = def.raw["args"].as_array().expect("args");
         assert!(args.iter().any(|a| a == "--no-notify-on-complete"), "got: {args:?}");
     }
 
     fn harness_args(cfg: &McpConfig) -> Vec<String> {
-        let def = build_harness_definition(cfg, PathBuf::from("<test>")).expect("injects");
+        let def = build_harness_definition(cfg, PathBuf::from("<test>"), 0).expect("injects");
         def.raw["args"]
             .as_array()
             .expect("args")
@@ -399,7 +439,7 @@ mod tests {
     /// candidate list a separate question.
     #[test]
     fn an_empty_scope_still_injects_the_server() {
-        assert!(build_harness_definition(&scoped(Some(vec![]), None), PathBuf::from("<test>")).is_some());
+        assert!(build_harness_definition(&scoped(Some(vec![]), None), PathBuf::from("<test>"), 0).is_some());
     }
 
     #[test]
@@ -431,12 +471,125 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>")).expect("injects");
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0).expect("injects");
         assert_eq!(
             def.hyprpilot.auto_accept_tools,
             vec!["list_profiles".to_string()],
             "the `[mcp]`-level `*` must not survive alongside a per-server list"
         );
+    }
+
+    /// The whole point of the gate. A delegate's harness could only
+    /// refuse `spawn`, so it must not be injected however loudly the
+    /// config asks — including through the delegate overlay, which is
+    /// the one surface that could plausibly try.
+    #[test]
+    fn the_depth_gate_beats_an_explicit_enable() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+
+        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 0).is_some());
+        assert!(
+            build_harness_definition(&cfg, PathBuf::from("<test>"), 1).is_none(),
+            "a session at the default maxDepth of 1 must get no harness"
+        );
+    }
+
+    /// Reading the cap from the block being injected is what makes the
+    /// gate self-adjusting: raising `maxDepth` gives delegates a harness
+    /// again with nothing else to change.
+    #[test]
+    fn a_raised_max_depth_reopens_injection_one_level_down() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                max_depth: Some(2),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+
+        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 1).is_some());
+        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 2).is_none());
+    }
+
+    /// The sidecar enforces the same cap on `spawn` that this function
+    /// enforced on injection, so the number has to reach it — a sidecar
+    /// cannot recover which profile spawned it.
+    #[test]
+    fn the_resolved_ceilings_ride_argv() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                max_depth: Some(3),
+                max_sessions: Some(9),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let args = harness_args(&cfg);
+
+        let pair = |flag: &str| {
+            args.iter()
+                .position(|a| a == flag)
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+        };
+        assert_eq!(pair("--max-depth").as_deref(), Some("3"), "got: {args:?}");
+        assert_eq!(pair("--max-sessions").as_deref(), Some("9"), "got: {args:?}");
+    }
+
+    /// Absent means "every delegate keeps its own resolved `[mcp]`",
+    /// which is also what a hand-started sidecar gets — so the flag must
+    /// not appear merely because the harness is on.
+    #[test]
+    fn no_delegate_overlay_flag_without_a_declared_block() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+
+        assert!(
+            !harness_args(&cfg).iter().any(|a| a.starts_with("--delegate-mcp")),
+            "an undeclared overlay must not reach argv"
+        );
+    }
+
+    /// The overlay round-trips as JSON on argv and comes back as the
+    /// same block — the sidecar re-parses it into `McpConfig`.
+    #[test]
+    fn a_declared_delegate_overlay_round_trips_through_argv() {
+        let overlay = McpConfig {
+            serve: Some(ToolsServerConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                mcp: Some(Box::new(overlay.clone())),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+
+        let raw = harness_args(&cfg)
+            .into_iter()
+            .find_map(|a| a.strip_prefix("--delegate-mcp=").map(str::to_string))
+            .expect("a declared overlay rides argv");
+        let parsed: McpConfig = serde_json::from_str(&raw).expect("the sidecar can parse what we emit");
+
+        assert_eq!(parsed, overlay);
     }
 
     #[test]
@@ -459,7 +612,7 @@ mod tests {
             ..McpConfig::default()
         };
         assert!(build_tools_definition(&cfg, PathBuf::from("<test>")).is_none());
-        assert!(build_harness_definition(&cfg, PathBuf::from("<test>")).is_some());
+        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 0).is_some());
     }
 
     #[test]

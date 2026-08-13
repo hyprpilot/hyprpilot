@@ -122,6 +122,7 @@ pub struct Logging {
 #[merge(strategy = overwrite_some)]
 pub struct MultiplexerConfig {
     #[garde(skip)]
+    #[serde(alias = "setTitle")]
     pub set_title: Option<bool>,
 }
 

@@ -177,6 +177,7 @@ pub struct ProfileConfig {
     /// folds onto this list; `system_prompt = []` is the explicit
     /// "no prompt" off-switch.
     #[garde(dive)]
+    #[serde(alias = "system_prompt")]
     pub system_prompt: Option<Vec<crate::config::SystemPromptEntry>>,
     /// Profile-level MCP catalog. `None` (unset) → whatever a root
     /// `[[patches]]` entry folds on (or empty). `Some(vec![…])` →

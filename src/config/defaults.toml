@@ -28,14 +28,39 @@ set_title = true
 # per-profile; to wipe an earlier patch's field, fold a later patch
 # with `$patch: replace` inside the field body.
 #
-# Default seed: one unscoped patch that points the in-tree `hyprpilot`
-# MCP server at the XDG skills directory. Only the skills dir lives
-# here — `enabled = true`, `autoAcceptTools = ["*"]`, and
-# `autoRejectTools = []` are the typed `McpConfig::default()` the
-# resolver backfills, so those values are single-sourced in Rust and
-# not duplicated in this file.
+# Default seed: one unscoped patch carrying the skills directory and
+# the harness's tunable ceilings.
+#
+# `[mcp] enabled`, `autoAcceptTools` and `autoRejectTools` are NOT here:
+# their accessors `.expect()` a value, so they must come from the typed
+# `McpConfig::default()` the resolver backfills per-leaf, which a
+# programmatic `Config` carrying no patches also gets. The
+# `[mcp.harness]` block below is not backfilled that way (it is nested,
+# and the typed default leaves it `None`), so its numbers live here —
+# the file a captain actually edits — with the Rust fallbacks in
+# `config/mcp.rs` covering only the no-patches case. A paired test pins
+# the two equal, so they cannot drift apart.
 [[patches]]
 [patches.mcp]
+
+# `maxDepth` — how many levels of harness delegation are allowed. `1`
+# means you may spawn delegates and they may not. Read in one place: the
+# `[mcp.harness]` block a gate is deciding on. It answers both "does a
+# session at depth d get a harness injected" and "may a sidecar at depth
+# d spawn" with the same `d < maxDepth`. `0` denies both everywhere.
+#
+# Raising it is a resource decision, not a security one — a session
+# ceiling bounds one sidecar's own table, so N delegates each running N
+# sessions fans out past anything the lead can see.
+#
+# `maxSessions` — finished sessions retained per sidecar before the
+# oldest are evicted with their transcripts. A running session is never
+# evicted.
+[patches.mcp.harness]
+maxDepth = 1
+maxSessions = 64
+notifyOnComplete = true
+
 [[patches.mcp.skills.dirs]]
 dir = "~/.config/hyprpilot/skills"
 

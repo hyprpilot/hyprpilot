@@ -87,9 +87,14 @@ pub(crate) fn effective_mcp_files_with(profile: &ProfileConfig) -> Vec<crate::co
 /// Auto-inject is independent of user-declared `mcps` —
 /// `mcps = []` does not suppress the in-tree server (that's what
 /// `mcp.enabled = false` is for).
+///
+/// `spawn_depth` is the delegation depth the launched session will run
+/// at — `0` for a session the captain started. It gates the harness
+/// entry alone; see `auto_inject::build_harness_definition`.
 pub(crate) fn build_mcp_registry_with(
     profile: &ProfileConfig,
     skills: Option<&Arc<crate::mcp::skills::SkillsRegistry>>,
+    spawn_depth: usize,
 ) -> Vec<crate::mcp::MCPDefinition> {
     let mcp_cfg = effective_mcp_with(profile);
     let files = effective_mcp_files_with(profile);
@@ -111,6 +116,7 @@ pub(crate) fn build_mcp_registry_with(
         if let Some(harness) = crate::mcp::auto_inject::build_harness_definition(
             &mcp_cfg,
             std::path::PathBuf::from("<auto-injected:hyprpilot mcp harness>"),
+            spawn_depth,
         ) {
             prepend_auto_mcp_definition(&mut defs, harness);
             auto_injected.push("harness");
@@ -371,14 +377,14 @@ mod tests {
             ..McpConfig::default()
         });
 
-        assert!(build_mcp_registry_with(&profile, None).is_empty());
+        assert!(build_mcp_registry_with(&profile, None, 0).is_empty());
     }
 
     /// With no `mcp` block at all the typed defaults apply: general
     /// tools on, harness off.
     #[test]
     fn defaults_inject_tools_but_not_harness() {
-        let names: Vec<_> = build_mcp_registry_with(&bare_profile(), None)
+        let names: Vec<_> = build_mcp_registry_with(&bare_profile(), None, 0)
             .into_iter()
             .map(|d| d.name)
             .collect();

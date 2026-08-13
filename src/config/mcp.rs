@@ -24,8 +24,23 @@ use merge::Merge;
 use serde::{Deserialize, Serialize};
 
 use super::extensions::validate_globs;
-use super::merge_strategies::overwrite_some;
+use super::merge_strategies::{merge_nested, overwrite_some};
 use super::SkillEntry;
+
+/// Fallbacks for the `[mcp.harness]` ceilings, used ONLY when no
+/// `[[patches]]` seeded them — a programmatic `Config` in a test, or a
+/// captain who cleared the seed.
+///
+/// The values a real launch reads live in `defaults.toml`, the file the
+/// captain edits. These exist because `[mcp.harness]` is nested, so
+/// unlike `[mcp]`'s own leaves it is not backfilled from
+/// `McpConfig::default()` and an accessor cannot `.expect()` a value.
+/// `defaults_seed_the_harness_ceilings` pins each one to its seeded
+/// counterpart, so the pair cannot drift.
+pub const DEFAULT_MAX_SPAWN_DEPTH: usize = 1;
+
+/// See [`DEFAULT_MAX_SPAWN_DEPTH`] for why this fallback exists.
+pub const DEFAULT_MAX_SESSIONS: usize = 64;
 
 /// Default MCP server name for the skills surface.
 ///
@@ -66,8 +81,10 @@ pub struct ToolsServerConfig {
 
     /// Per-server tool policy. Falls back to the `[mcp]`-level globs.
     #[garde(custom(validate_globs))]
+    #[serde(alias = "auto_accept_tools")]
     pub auto_accept_tools: Option<Vec<String>>,
     #[garde(custom(validate_globs))]
+    #[serde(alias = "auto_reject_tools")]
     pub auto_reject_tools: Option<Vec<String>>,
 }
 
@@ -104,8 +121,10 @@ pub struct SkillsServerConfig {
 
     /// Per-server tool policy. Falls back to the `[mcp]`-level globs.
     #[garde(custom(validate_globs))]
+    #[serde(alias = "auto_accept_tools")]
     pub auto_accept_tools: Option<Vec<String>>,
     #[garde(custom(validate_globs))]
+    #[serde(alias = "auto_reject_tools")]
     pub auto_reject_tools: Option<Vec<String>>,
 }
 
@@ -123,6 +142,7 @@ pub struct HarnessServerConfig {
 
     /// Sessions retained before the oldest finished ones are evicted.
     #[garde(skip)]
+    #[serde(alias = "max_sessions")]
     pub max_sessions: Option<usize>,
 
     /// Push a completion event into the lead agent's context when a
@@ -134,14 +154,17 @@ pub struct HarnessServerConfig {
     /// is `exited` after every turn, so a ten-turn conversation emits
     /// ten events.
     #[garde(skip)]
+    #[serde(alias = "notify_on_complete")]
     pub notify_on_complete: Option<bool>,
 
     /// Per-server tool policy. Falls back to the `[mcp]`-level globs —
     /// worth tightening here, since `spawn` is the tool that runs
     /// arbitrary binaries.
     #[garde(custom(validate_globs))]
+    #[serde(alias = "auto_accept_tools")]
     pub auto_accept_tools: Option<Vec<String>>,
     #[garde(custom(validate_globs))]
+    #[serde(alias = "auto_reject_tools")]
     pub auto_reject_tools: Option<Vec<String>>,
 
     /// Which profiles THIS launch's harness may drive, as globs over
@@ -158,12 +181,49 @@ pub struct HarnessServerConfig {
     /// `globset`, so `*` crosses `/` exactly as `$match.profile` does —
     /// `personal/*` matches `personal/kilic/glm-5.2`.
     #[garde(custom(validate_globs))]
+    #[serde(alias = "include_profiles")]
     pub include_profiles: Option<Vec<String>>,
 
     /// Glob deny-list over profile ids. Beats `include_profiles` on
     /// overlap, mirroring `excludeTools` / `autoRejectTools`.
     #[garde(custom(validate_globs))]
+    #[serde(alias = "exclude_profiles")]
     pub exclude_profiles: Option<Vec<String>>,
+
+    /// How many levels of delegation this harness allows. Defaults to
+    /// [`DEFAULT_MAX_SPAWN_DEPTH`].
+    ///
+    /// Read in exactly one place — the `[mcp.harness]` block a gate is
+    /// deciding whether to act on — so it answers both questions at
+    /// once: whether a session at depth `d` gets a harness INJECTED
+    /// (`d < maxDepth`), and whether a running sidecar at depth `d` may
+    /// `spawn` (same comparison). `0` denies both everywhere.
+    ///
+    /// Raising it is a resource decision, not a security one: a session
+    /// ceiling bounds one sidecar's own table, so N delegates each
+    /// running N sessions is a fan-out no single ceiling catches and the
+    /// lead cannot see. Deliberately unbounded — the captain owns that
+    /// trade, and a validator guessing a ceiling would only be wrong
+    /// somewhere else.
+    #[garde(skip)]
+    #[serde(alias = "max_depth")]
+    pub max_depth: Option<usize>,
+
+    /// The `[mcp]` block every delegate this harness spawns receives,
+    /// overlaid per-leaf onto the delegate profile's own resolved
+    /// `[mcp]`: a key set here wins, a key left unset inherits.
+    ///
+    /// The launching session's answer to "what should the agents I
+    /// delegate to be able to reach?" — distinct from `includeProfiles`,
+    /// which answers "which of them may I reach at all?".
+    ///
+    /// `Box` because the type is mutually recursive (`McpConfig` ->
+    /// `HarnessServerConfig` -> `McpConfig`); an unboxed `Option` would
+    /// not terminate the size computation. Nesting past the first level
+    /// is inert whenever `maxDepth` denies the delegate a harness of its
+    /// own, which is the default.
+    #[garde(dive)]
+    pub mcp: Option<Box<McpConfig>>,
 }
 
 impl SkillsServerConfig {
@@ -189,6 +249,26 @@ impl HarnessServerConfig {
     pub fn notifies_on_complete(&self) -> bool {
         self.notify_on_complete.unwrap_or(true)
     }
+
+    /// Delegation levels this harness allows — see [`Self::max_depth`].
+    #[must_use]
+    pub fn max_depth(&self) -> usize {
+        self.max_depth.unwrap_or(DEFAULT_MAX_SPAWN_DEPTH)
+    }
+
+    /// Finished sessions retained per sidecar — see
+    /// [`Self::max_sessions`].
+    #[must_use]
+    pub fn max_sessions(&self) -> usize {
+        self.max_sessions.unwrap_or(DEFAULT_MAX_SESSIONS)
+    }
+
+    /// The delegate overlay, unboxed. Absent declares nothing, which
+    /// leaves every delegate on its own resolved `[mcp]`.
+    #[must_use]
+    pub fn delegate_mcp(&self) -> Option<&McpConfig> {
+        self.mcp.as_deref()
+    }
 }
 
 /// `[mcp]` block. Controls auto-injection of the in-tree
@@ -213,7 +293,7 @@ impl HarnessServerConfig {
 /// (suppresses auto-inject — nothing to serve). `Some([...])` →
 /// wholesale-replaces the default catalog.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate, Merge)]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[serde(default = "McpConfig::sparse", deny_unknown_fields, rename_all = "camelCase")]
 #[merge(strategy = overwrite_some)]
 pub struct McpConfig {
     /// `true` (default — `McpConfig::default()`, backfilled onto every
@@ -227,12 +307,21 @@ pub struct McpConfig {
 
     /// The general-tools server — `hyprpilot mcp serve`, exposing
     /// `open`. On by default.
+    ///
+    /// `merge_nested`, not the struct-level `overwrite_some`: a partial
+    /// override block must keep the sibling leaves the other layer set.
     #[garde(dive)]
+    #[merge(strategy = merge_nested)]
     pub serve: Option<ToolsServerConfig>,
 
     /// The skills server — `hyprpilot mcp skills`, exposing the skill
     /// catalog. On by default.
+    ///
+    /// `merge_nested` for the reason above, and here it is load-bearing:
+    /// wholesale replacement would let an overlay that sets only
+    /// `enabled` take `dirs` with it.
     #[garde(dive)]
+    #[merge(strategy = merge_nested)]
     pub skills: Option<SkillsServerConfig>,
 
     /// The agent harness — `hyprpilot mcp harness`, exposing
@@ -242,6 +331,7 @@ pub struct McpConfig {
     /// preference.** A profile's `command` is an arbitrary binary, so
     /// anything that can call `spawn` executes commands as this user.
     #[garde(dive)]
+    #[merge(strategy = merge_nested)]
     pub harness: Option<HarnessServerConfig>,
 
     /// Default glob patterns matching MCP tool leaf names for
@@ -252,6 +342,7 @@ pub struct McpConfig {
     /// `auto_accept_tools = ["list_*", "read_*"]`. Each pattern must
     /// be a valid glob — a malformed one rejects at config-load.
     #[garde(custom(validate_globs))]
+    #[serde(alias = "auto_accept_tools")]
     pub auto_accept_tools: Option<Vec<String>>,
 
     /// Glob patterns for auto-reject. Default `[]`
@@ -259,6 +350,7 @@ pub struct McpConfig {
     /// to the accept set. Reject beats accept on overlap. Each pattern
     /// must be a valid glob — a malformed one rejects at config-load.
     #[garde(custom(validate_globs))]
+    #[serde(alias = "auto_reject_tools")]
     pub auto_reject_tools: Option<Vec<String>>,
 }
 
@@ -291,6 +383,27 @@ impl Default for McpConfig {
 }
 
 impl McpConfig {
+    /// The **deserialization** default: every leaf absent.
+    ///
+    /// Distinct from [`Default`], which seeds the resolver's per-leaf
+    /// floor (`enabled = true`, `autoAcceptTools = ["*"]`). Container
+    /// `#[serde(default)]` fills missing fields from `Self::default()`,
+    /// so a partial block on disk used to come back carrying values its
+    /// author never wrote — invisible where `effective_mcp_with`
+    /// backfills the same numbers anyway, and wrong for
+    /// `[mcp.harness.mcp]`, where an unwritten leaf must INHERIT the
+    /// delegate's own rather than override it with a default.
+    fn sparse() -> Self {
+        Self {
+            enabled: None,
+            serve: None,
+            skills: None,
+            harness: None,
+            auto_accept_tools: None,
+            auto_reject_tools: None,
+        }
+    }
+
     /// `enabled.expect(...)` — infallible in practice: the resolver
     /// backfills the block onto `McpConfig::default()` (which seeds
     /// `enabled`) before any consumer reads it, so this can only fire
@@ -385,6 +498,133 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].dir, std::path::PathBuf::from("~/.config/hyprpilot/skills"));
         assert!(McpConfig::default().skills.is_none());
+    }
+
+    /// The wipe `merge_nested` exists to prevent. An overlay that names
+    /// only `skills.enabled` used to replace the whole `skills` block
+    /// under `overwrite_some`, taking `dirs` with it — every delegate
+    /// silently loses its skill catalogue.
+    #[test]
+    fn a_partial_nested_block_keeps_the_sibling_leaves() {
+        let mut base = McpConfig {
+            skills: Some(SkillsServerConfig {
+                dirs: Some(vec![SkillEntry {
+                    dir: std::path::PathBuf::from("/skills"),
+                    ignore: None,
+                }]),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        base.merge(McpConfig {
+            skills: Some(SkillsServerConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let skills = base.skills.expect("the block survives");
+        assert_eq!(skills.enabled, Some(false), "the overlay's leaf wins");
+        assert_eq!(
+            skills.dirs.as_deref().map(<[SkillEntry]>::len),
+            Some(1),
+            "a leaf the overlay never mentioned must survive"
+        );
+    }
+
+    /// Direction, pinned on its own. `overwrite_some` is
+    /// right-wins, so the delegate overlay has to be the RIGHT operand
+    /// — reversed, an inherited `Some` would clobber it and the whole
+    /// feature would no-op against exactly the config that motivated it.
+    #[test]
+    fn the_right_operand_wins_leaf_by_leaf() {
+        let mut base = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                max_sessions: Some(7),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        base.merge(McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let harness = base.harness.expect("the block survives");
+        assert_eq!(harness.enabled, Some(false), "a set leaf on the right overrides");
+        assert_eq!(harness.max_sessions, Some(7), "an unset leaf on the right inherits");
+    }
+
+    /// `defaults.toml` is where a captain edits these numbers; the Rust
+    /// constants only cover a `Config` carrying no patches at all. Pin
+    /// them equal so the pair cannot drift into two different answers.
+    #[test]
+    fn defaults_seed_the_harness_ceilings() {
+        let cfg: super::super::Config = toml::from_str(super::super::DEFAULTS).expect("defaults parse");
+        let patches = cfg.patches.as_deref().expect("defaults seed [[patches]]");
+        let mcp_value = patches
+            .iter()
+            .find_map(|p| p.as_object()?.get("mcp"))
+            .expect("the default patch carries an mcp field");
+        let seeded: McpConfig = serde_json::from_value(mcp_value.clone()).expect("the seed deserializes");
+        let harness = seeded.harness.expect("the seed carries [mcp.harness]");
+
+        assert_eq!(harness.max_depth, Some(DEFAULT_MAX_SPAWN_DEPTH));
+        assert_eq!(harness.max_sessions, Some(DEFAULT_MAX_SESSIONS));
+        assert_eq!(
+            harness.notify_on_complete,
+            Some(HarnessServerConfig::default().notifies_on_complete())
+        );
+        assert_eq!(
+            harness.enabled, None,
+            "seeding `enabled` would turn the harness on for everyone — it stays the captain's call"
+        );
+    }
+
+    /// A partial block must come back carrying ONLY what its author
+    /// wrote. Container `#[serde(default)]` would fill the rest from
+    /// `Default`, which seeds `enabled = true` and `["*"]` — invisible
+    /// where the resolver backfills the same values anyway, and wrong
+    /// for a delegate overlay, where an unwritten leaf has to inherit
+    /// the delegate's own instead of overriding it.
+    #[test]
+    fn a_partial_block_deserializes_sparse_not_seeded() {
+        let parsed: McpConfig = serde_json::from_str(r#"{"serve":{"enabled":false}}"#).expect("parses");
+
+        assert_eq!(parsed.serve.and_then(|s| s.enabled), Some(false));
+        assert_eq!(parsed.enabled, None, "an unwritten leaf must stay unwritten");
+        assert_eq!(parsed.auto_accept_tools, None, "including the ones Default seeds");
+    }
+
+    /// Both casings parse. `[mcp.*]` serialises camelCase, but TOML
+    /// convention is snake_case and the rest of the config tree is
+    /// snake, so a captain who writes either gets the same block.
+    #[test]
+    fn either_casing_parses_to_the_same_block() {
+        let camel: HarnessServerConfig =
+            toml::from_str("maxDepth = 2\nmaxSessions = 9\nnotifyOnComplete = false\n").expect("camelCase parses");
+        let snake: HarnessServerConfig =
+            toml::from_str("max_depth = 2\nmax_sessions = 9\nnotify_on_complete = false\n").expect("snake_case parses");
+
+        assert_eq!(camel, snake);
+    }
+
+    /// The cost of accepting both: they are distinct KEYS to the patch
+    /// engine, which merges by string before anything is typed. Mixing
+    /// spellings for one field therefore reaches serde as a duplicate
+    /// and fails loudly — pinned so the failure is a known trade rather
+    /// than a surprise, and documented at the seed in `defaults.toml`.
+    #[test]
+    fn mixing_casings_for_one_field_is_a_loud_error() {
+        let err = toml::from_str::<HarnessServerConfig>("maxDepth = 2\nmax_depth = 3\n")
+            .expect_err("one field, two spellings, one table");
+
+        assert!(err.to_string().contains("duplicate"), "got: {err}");
     }
 
     #[test]

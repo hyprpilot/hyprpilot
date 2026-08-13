@@ -22,6 +22,23 @@ pub(crate) fn overwrite_some<T>(left: &mut Option<T>, right: Option<T>) {
     }
 }
 
+/// Per-leaf merge for a nested `Option<T>` block: when both sides are
+/// `Some`, recurse into `T`'s own strategies instead of replacing the
+/// block wholesale.
+///
+/// `overwrite_some` is right for a leaf and wrong for a sub-block. A
+/// delegate overlay that sets only `[mcp.harness.mcp.skills] enabled`
+/// would, under `overwrite_some`, replace the whole `skills` block and
+/// take `dirs` with it — every delegate silently loses its skill
+/// catalogue. Recursing keeps the siblings the other layer set.
+pub(crate) fn merge_nested<T: merge::Merge>(left: &mut Option<T>, right: Option<T>) {
+    match (left.as_mut(), right) {
+        (Some(left), Some(right)) => left.merge(right),
+        (None, right) => *left = right,
+        (Some(_), None) => {}
+    }
+}
+
 /// Append strategy for a layered `Option<Vec<T>>`: concatenate the
 /// later layer's items onto the earlier layer's, preserving
 /// declaration order (earlier-layer items first, then later). Unlike

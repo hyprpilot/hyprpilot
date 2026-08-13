@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
+use merge::Merge;
 use serde_json::Value;
 
 pub use launch::{run, LaunchArgs};
@@ -35,6 +36,18 @@ pub(crate) struct SpawnRequest {
     /// `--with-config -` already drained stdin building the patches.
     /// A headless launch then has no stdin left for its prompt.
     pub stdin_consumed: bool,
+    /// Delegation depth this launch will run at. `0` for a session the
+    /// captain started; the harness passes its own depth plus one.
+    ///
+    /// Gates harness auto-injection and is stamped onto the vendor's
+    /// environment so the sidecar the vendor spawns counts from the same
+    /// place.
+    pub spawn_depth: usize,
+    /// `[mcp]` overlay from the launching harness's
+    /// `[mcp.harness.mcp]`, folded per-leaf over the resolved profile's
+    /// own block. `None` on the CLI path, which has no launching
+    /// harness to speak for it.
+    pub mcp_overlay: Option<crate::config::McpConfig>,
 }
 
 /// Which front end is driving a launch. Closed set — the two differ in
@@ -88,6 +101,8 @@ pub(crate) fn prepare(
         config_patches,
         provider_args,
         stdin_consumed,
+        spawn_depth,
+        mcp_overlay,
     } = request;
 
     // A harness launch has no real stdin to inspect: claiming "TTY" is
@@ -115,7 +130,20 @@ pub(crate) fn prepare(
             })?,
         },
     };
-    let (mut resolved, profile) = resolve_into_instance_and_profile(cfg, Some(profile_id.as_str()), &config_patches)?;
+    let (mut resolved, mut profile) =
+        resolve_into_instance_and_profile(cfg, Some(profile_id.as_str()), &config_patches)?;
+
+    // The launching harness's say over what its delegates may reach,
+    // folded last so it beats both root `[[patches]]` and the caller's
+    // `--with-config`. `overwrite_some` means the RIGHT operand wins per
+    // leaf, so the overlay goes right: a key it sets overrides, a key it
+    // leaves unset inherits the profile's own. `ResolvedProfile` above
+    // never reads `mcp`, so mutating it here cannot desync the two.
+    if let Some(overlay) = mcp_overlay {
+        let mut base = profile.mcp.take().unwrap_or_default();
+        base.merge(overlay);
+        profile.mcp = Some(base);
+    }
 
     resolved.agent.cwd = resolve_launch_cwd(cwd, resolved.agent.cwd.take());
     if mode.is_some() {
@@ -170,13 +198,13 @@ pub(crate) fn prepare(
     }
 
     let skills = build_skills_registry_with(&profile);
-    let mcp_defs = build_mcp_registry_with(&profile, Some(&skills));
+    let mcp_defs = build_mcp_registry_with(&profile, Some(&skills), spawn_depth);
 
     let provider = resolved.agent.provider;
     let model = resolved.model.clone();
     let effort = resolved.effort.clone();
     let mode = resolved.mode.clone();
-    let command = providers::build_command(
+    let mut command = providers::build_command(
         &resolved,
         system_prompt.as_deref(),
         &mcp_defs,
@@ -184,6 +212,13 @@ pub(crate) fn prepare(
         prompt.as_deref(),
         harness,
     )?;
+    // Stamped here rather than by the caller so the depth the vendor
+    // reports and the depth that gated its catalogue above are the same
+    // number. The sidecar the vendor spawns inherits it.
+    command.env.insert(
+        crate::mcp::server::harness::DEPTH_ENV.to_string(),
+        spawn_depth.to_string(),
+    );
 
     Ok(Prepared {
         command,
@@ -457,6 +492,79 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// Reproduces the config that motivated the feature: an unscoped
+    /// patch turns the harness on for every profile, so a delegate used
+    /// to inherit a harness sidecar that could only refuse `spawn`.
+    fn cfg_with_harness_on_every_profile() -> Config {
+        let mut cfg = cfg_with_profile_cwd();
+        cfg.profiles[0].mcp = Some(crate::config::McpConfig {
+            harness: Some(crate::config::mcp::HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..crate::config::McpConfig::default()
+        });
+        cfg
+    }
+
+    fn prepared_servers(cfg: &Config, spawn_depth: usize, overlay: Option<crate::config::McpConfig>) -> Vec<String> {
+        let (_, mut profile) =
+            resolve_into_instance_and_profile(cfg, Some("engineer"), &[]).expect("the fixture resolves");
+        if let Some(overlay) = overlay {
+            let mut base = profile.mcp.take().unwrap_or_default();
+            base.merge(overlay);
+            profile.mcp = Some(base);
+        }
+
+        build_mcp_registry_with(&profile, None, spawn_depth)
+            .into_iter()
+            .map(|def| def.name)
+            .collect()
+    }
+
+    /// The lead keeps its harness; the delegate it launches does not.
+    /// One config, two depths, opposite answers — which is the whole
+    /// point of gating on depth rather than on a config flag.
+    #[test]
+    fn a_delegate_inherits_no_harness_from_an_unscoped_enable() {
+        let cfg = cfg_with_harness_on_every_profile();
+
+        assert!(
+            prepared_servers(&cfg, 0, None).iter().any(|n| n == "hyprpilot_harness"),
+            "the session the captain started keeps its harness"
+        );
+        assert!(
+            !prepared_servers(&cfg, 1, None).iter().any(|n| n == "hyprpilot_harness"),
+            "a delegate must not inherit one it can only refuse with"
+        );
+    }
+
+    /// The overlay is the general surface: it reaches servers the depth
+    /// gate says nothing about, and leaves untouched what it does not
+    /// name.
+    #[test]
+    fn the_delegate_overlay_overrides_named_servers_and_inherits_the_rest() {
+        let cfg = cfg_with_harness_on_every_profile();
+        let overlay = crate::config::McpConfig {
+            serve: Some(crate::config::mcp::ToolsServerConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let with_overlay = prepared_servers(&cfg, 1, Some(overlay));
+
+        assert!(
+            !with_overlay.iter().any(|n| n == "hyprpilot"),
+            "the overlay turned the general-tools server off: {with_overlay:?}"
+        );
+        assert!(
+            prepared_servers(&cfg, 1, None).iter().any(|n| n == "hyprpilot"),
+            "and it was on without the overlay, so the overlay is what moved it"
+        );
     }
 
     #[test]

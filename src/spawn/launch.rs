@@ -131,6 +131,16 @@ pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
             config_patches,
             provider_args: args.provider_args,
             stdin_consumed,
+            // A CLI launch inherits its depth rather than being told
+            // one: `hyprpilot <profile>` run from inside a delegate's
+            // own shell is still at that delegate's depth, so it must
+            // not hand itself a harness the delegate was denied.
+            spawn_depth: std::env::var(crate::mcp::server::harness::DEPTH_ENV)
+                .ok()
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .unwrap_or(0),
+            // No launching harness on this path to speak for delegates.
+            mcp_overlay: None,
         },
     )
 }
