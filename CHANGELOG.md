@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.13.0](https://github.com/hyprpilot/hyprpilot/compare/v3.12.0...v3.13.0) (2026-08-13)
+
+
+### Features
+
+* **harness:** read a session's answer without paging its transcript ([#243](https://github.com/hyprpilot/hyprpilot/issues/243)) ([39892ae](https://github.com/hyprpilot/hyprpilot/commit/39892aefd215867ce1b6113d08f0bdc5401a6d5a))
+
 ## [3.12.0](https://github.com/hyprpilot/hyprpilot/compare/v3.11.1...v3.12.0) (2026-08-13)
 
 
