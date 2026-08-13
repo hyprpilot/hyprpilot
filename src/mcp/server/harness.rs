@@ -47,15 +47,68 @@ pub(crate) const DEPTH_ENV: &str = "HYPRPILOT_SPAWN_DEPTH";
 /// it rather than a second address.
 pub(crate) const SESSION_URI_PREFIX: &str = "hyprpilot://sessions/";
 
-/// Render a handle as its resource URI.
-pub(crate) fn session_uri(handle: &str) -> String {
-    format!("{SESSION_URI_PREFIX}{handle}")
+/// Render one view of a session as its resource URI. `SessionView::Status`
+/// is the bare handle, so the URI that existed before the other views
+/// were added still means what it meant.
+pub(crate) fn session_view_uri(handle: &str, view: SessionView) -> String {
+    format!("{SESSION_URI_PREFIX}{handle}{}", view.suffix())
 }
 
-/// Recover the handle from a session URI. `None` for any other scheme,
-/// so `read_resource` can reject rather than guess.
+/// Which projection of a session a URI addresses.
+///
+/// One session, three reads, so a caller fetches the part it wants
+/// rather than the whole transcript and a `jq` pipeline. `Status` is the
+/// bare handle; the others are `/<view>` suffixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionView {
+    /// What `session_status` returns — state, exit code, `hasResult`.
+    Status,
+    /// The latest turn's answer, extracted per vendor, or the upstream
+    /// error when the run failed. The thing a caller almost always
+    /// wanted, without the transcript it had to page to get it.
+    Result,
+    /// The raw event stream, capped. `session_read` remains the way to
+    /// page a long one — a resource read has no cursor.
+    Transcript,
+}
+
+impl SessionView {
+    fn parse(view: &str) -> Option<Self> {
+        match view {
+            "result" => Some(Self::Result),
+            "transcript" => Some(Self::Transcript),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn suffix(self) -> &'static str {
+        match self {
+            Self::Status => "",
+            Self::Result => "/result",
+            Self::Transcript => "/transcript",
+        }
+    }
+
+    /// Every view, so `resources/list` and the tests enumerate one list.
+    pub(crate) const ALL: [Self; 3] = [Self::Status, Self::Result, Self::Transcript];
+}
+
+/// Recover the handle and view from a session URI. `None` for any other
+/// scheme or an unknown view, so `read_resource` rejects rather than
+/// guesses — and so the subscription filter cannot acknowledge a URI
+/// that could never be served.
+pub(crate) fn parse_session_uri(uri: &str) -> Option<(&str, SessionView)> {
+    let rest = uri.strip_prefix(SESSION_URI_PREFIX).filter(|r| !r.is_empty())?;
+    match rest.split_once('/') {
+        None => Some((rest, SessionView::Status)),
+        Some((handle, view)) if !handle.is_empty() => SessionView::parse(view).map(|v| (handle, v)),
+        Some(_) => None,
+    }
+}
+
+/// Recover just the handle. `None` for any other scheme.
 pub(crate) fn session_handle_from_uri(uri: &str) -> Option<&str> {
-    uri.strip_prefix(SESSION_URI_PREFIX).filter(|h| !h.is_empty())
+    parse_session_uri(uri).map(|(handle, _)| handle)
 }
 
 /// A session projected for `resources/list`. Three fields, on purpose —
@@ -615,6 +668,89 @@ impl Harness {
     /// `session_read` returns the transcript itself, which runs to tens
     /// of kilobytes. This is the cheap poll: a handle lookup plus one
     /// `stat`.
+    /// One view of a session, for `resources/read`.
+    ///
+    /// Returns the text plus whether the session has FINISHED, which
+    /// decides the cache ttl at the call site: a running session's
+    /// result and transcript change under the caller, so promising a day
+    /// of freshness for them would be a lie the notification cannot
+    /// correct in time.
+    pub(crate) fn session_view(&self, handle: &str, view: SessionView) -> Result<(String, bool), String> {
+        if view == SessionView::Status {
+            let (_, payload) = self.session_status(handle)?;
+            let finished = payload.get("status").and_then(Value::as_str) == Some("exited");
+            let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
+            return Ok((text, finished));
+        }
+
+        let found = self.sessions.with(handle, |session| {
+            (
+                session.turns_path(),
+                session.stderr_path(),
+                session.exit_code(),
+                session.provider,
+                session.status() == SessionStatus::Exited,
+            )
+        });
+        let Some((path, stderr, exit_code, provider, finished)) = found else {
+            return Err(format!(
+                "unknown session `{handle}`. Call `session_list` for live handles."
+            ));
+        };
+
+        let text = match view {
+            SessionView::Status => unreachable!("handled above"),
+            SessionView::Result => {
+                // The whole file, not a tail: the latest turn's boundary
+                // is found by slicing events, and a tail can cut the
+                // marker that defines where that turn began.
+                let body = std::fs::read_to_string(&path).unwrap_or_default();
+                let answer = super::transcript::extract(&body, provider).render();
+                // A LAUNCH failure — a flag the vendor rejected — writes
+                // its usage dump to stderr and leaves the transcript
+                // EMPTY, so the extraction above has nothing to find.
+                // Without this, the one read that is meant to say what
+                // happened comes back blank for the one case where the
+                // session never started. Gated on `finished`: an empty
+                // result on a running turn just means "not yet".
+                if !answer.is_empty() || !finished {
+                    // Either there IS an answer, or the turn is still
+                    // running and an empty read just means "not yet".
+                    answer
+                } else {
+                    // Finished with nothing to show. Three ways that
+                    // happens, and a blank read describes none of them.
+                    // A LAUNCH failure — a flag the vendor rejected —
+                    // writes its usage dump to stderr and leaves the
+                    // transcript EMPTY, so the extraction above had
+                    // nothing to find. Failing that, the exit code is
+                    // still more than silence.
+                    let dump = std::fs::read_to_string(&stderr).unwrap_or_default();
+                    match dump.trim() {
+                        "" => format!(
+                            "error: the session exited with code {} and produced no answer",
+                            exit_code.map_or_else(|| "?".to_string(), |c| c.to_string())
+                        ),
+                        dump => format!("error: the session failed to launch\n\n{dump}"),
+                    }
+                }
+            }
+            SessionView::Transcript => {
+                // Capped like `session_read`, and truncated from the
+                // FRONT: the answer is at the end, so dropping the head
+                // keeps what a caller reading a transcript came for.
+                let (tail, truncated) = tail_of(&path, usize::MAX);
+                if truncated {
+                    format!("[earlier events omitted — page the full stream with `session_read`]\n{tail}")
+                } else {
+                    tail
+                }
+            }
+        };
+
+        Ok((text, finished))
+    }
+
     pub(crate) fn session_status(&self, handle: &str) -> Result<(String, Value), String> {
         self.sessions
             .with(handle, |session| {
@@ -1611,7 +1747,40 @@ mod tests {
     fn a_session_uri_round_trips_to_its_handle() {
         let handle = "d4cbf498-7eb4-4c47-9a96-d0662c2be165";
 
-        assert_eq!(session_handle_from_uri(&session_uri(handle)), Some(handle));
+        assert_eq!(
+            session_handle_from_uri(&session_view_uri(handle, SessionView::Status)),
+            Some(handle)
+        );
+    }
+
+    /// Every view round-trips, and the bare handle is the status view
+    /// — so the URI that existed before the other views were added
+    /// still means what it meant.
+    #[test]
+    fn every_view_round_trips_and_the_bare_handle_is_status() {
+        let handle = "d4cbf498-7eb4-4c47-9a96-d0662c2be165";
+
+        assert_eq!(
+            parse_session_uri(&session_view_uri(handle, SessionView::Status)),
+            Some((handle, SessionView::Status))
+        );
+        for view in SessionView::ALL {
+            assert_eq!(
+                parse_session_uri(&session_view_uri(handle, view)),
+                Some((handle, view)),
+                "{view:?} must survive the round trip"
+            );
+        }
+    }
+
+    /// An unknown view must be REFUSED, not silently read as the status.
+    /// The subscription filter is built on this parser, so accepting one
+    /// would acknowledge a URI that can never be served or fired for.
+    #[test]
+    fn an_unknown_view_is_refused() {
+        assert_eq!(parse_session_uri("hyprpilot://sessions/abc/bogus"), None);
+        assert_eq!(parse_session_uri("hyprpilot://sessions/abc/"), None);
+        assert_eq!(parse_session_uri("hyprpilot://sessions//result"), None);
     }
 
     /// `read_resource` must reject rather than guess: a URI from another

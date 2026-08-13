@@ -212,7 +212,35 @@ Every session is also a **resource** — `hyprpilot://sessions/<handle>` — so 
  "params": {"uri": "hyprpilot://sessions/<handle>"}}
 ```
 
-`resources/read` on that URI returns exactly what `session_status` returns — state, exit code, `hasResult` — so a woken client answers "did it finish, and how" in one read. It is **not** the transcript: output stays behind `session_read` or `jq` on `files.transcript`, which is where the size lives.
+### Three views of a session
+
+A session is addressable in three ways, so you fetch the part you want instead of the whole transcript:
+
+| URI                                        | What it returns                                                                              | Type   |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------- | ------ |
+| `hyprpilot://sessions/<handle>`            | What `session_status` returns — state, exit code, `hasResult`                                | JSON   |
+| `hyprpilot://sessions/<handle>/result`     | **The latest turn's answer**, extracted per vendor — or the upstream error if the run failed | text   |
+| `hyprpilot://sessions/<handle>/transcript` | The raw event stream, capped                                                                 | NDJSON |
+
+`/result` is the one that saves work. It does server-side what the `jq` recipes did by hand: finds the vendor's answer event, scopes it to the **latest** turn, and joins multi-block answers. It never comes back blank for a finished session — the three ways a run produces no answer each report themselves:
+
+| What happened                           | What `/result` says                                 |
+| --------------------------------------- | --------------------------------------------------- |
+| Upstream failure (auth, quota, model)   | the `error` event's message                         |
+| Launch failure (vendor rejected a flag) | `failed to launch`, plus the usage dump from stderr |
+| Exited with nothing at all              | `exited with code N and produced no answer`         |
+
+That matters because those land in _different places_ — an upstream error is inside the transcript, a launch failure is in `stderr.log` with the transcript empty — so checking only one reports "the agent returned nothing" for a billing error. Two ways that goes wrong by hand, both silent, are structurally impossible here: it slices by event rather than by line (so a multi-line answer can't be truncated to its last line), and it never reports an earlier turn's answer as the reply to this one.
+
+`/transcript` is capped and truncated from the front, since the answer is at the end. A resource read has no cursor, so **`session_read` remains the way to page a long one**.
+
+An unknown view is refused rather than read as the status.
+
+::: tip TTL depends on whether it's still moving
+
+A finished session's views carry the 24-hour TTL. A **running** session's carry `ttlMs: 0` — its result and transcript change under you, and the notification that fires at turn end cannot retroactively correct a day-long cache taken a second earlier.
+
+:::
 
 `resources/list` enumerates sessions as handle / profile / status. Useful for recovering a handle, but the point is subscribing to one you already hold.
 

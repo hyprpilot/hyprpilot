@@ -234,6 +234,17 @@ impl Subscriptions {
         }
     }
 
+    /// Deliver `resources/updated` for several URIs at once.
+    ///
+    /// One event can invalidate more than one view of the same thing —
+    /// a turn ending changes a session's status, its answer and its
+    /// transcript — and a subscriber may hold any subset of them.
+    pub(super) async fn resources_updated(&self, peer: &rmcp::service::Peer<RoleServer>, uris: Vec<String>) {
+        for uri in uris {
+            self.resource_updated(peer, uri).await;
+        }
+    }
+
     /// Deliver `notifications/resources/list_changed`. Same channel
     /// choice as [`Self::resource_updated`].
     pub(super) async fn resource_list_changed(&self, peer: &rmcp::service::Peer<RoleServer>) {

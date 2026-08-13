@@ -24,6 +24,7 @@ pub mod rpc;
 pub mod sessions;
 pub mod skills_server;
 pub mod tools;
+pub mod transcript;
 
 /// Top-level args for `hyprpilot mcp <subcommand>`.
 #[derive(Debug, Args)]

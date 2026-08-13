@@ -373,15 +373,32 @@ missing. Do not re-merge them.
 | `mcp skills` | `hyprpilot_skills` | `server/skills_server.rs` | skills tools + resources | on |
 | `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) + session resources | **off** |
 
-**Sessions are resources** — `hyprpilot://sessions/<handle>`, so a
-caller can `subscriptions/listen` on one handle and be WOKEN when its
-turn ends instead of polling `session_status` or watching `done.json`
-from a shell. The listing carries handle / profile / status and nothing
-else, and `resources/read` returns the same payload `session_status`
-does. **Deliberately not the transcript**: a read is capped at 60 kB and
-routinely far larger on disk, so `session_read` (or `jq` on
-`files.transcript`) stays the way to get output — the value here is
-subscribing to a handle you already hold, not browsing.
+**Sessions are resources in THREE views** — `hyprpilot://sessions/
+<handle>` (status), `/result` and `/transcript` — so a caller can
+`subscriptions/listen` on a handle and be WOKEN when its turn ends
+instead of polling `session_status` or watching `done.json`, and then
+read only the part it wants.
+
+`/result` is the load-bearing one: `server/transcript.rs` does the
+per-vendor extraction the `jq` recipes did by hand, and the two silent
+failures are structurally impossible there — it slices by EVENT so a
+multi-line answer cannot be truncated to its last line (`tail -n1` did
+exactly that), and an `error` event OUTRANKS text so an upstream 402
+cannot report as "returned nothing". It never returns blank for a
+finished session: the three no-answer shapes land in different places —
+`error` event in the transcript, launch failure in `stderr.log` with the
+transcript EMPTY, or neither — so it falls through transcript, stderr,
+exit code and names which one happened. `/transcript` is capped and cut
+from the front, since the answer is at the end; `session_read` stays
+the pager because a resource read has no cursor.
+
+**TTL is conditional here, unlike everywhere else**: a running session's
+views carry `ttlMs: 0`, because they change under the caller and the
+turn-end notification cannot retroactively correct a cache taken a
+second before it. Only a finished session gets the 24h ttl. An unknown
+view is refused rather than read as the status — the subscription filter
+is built on the same parser, so accepting one would acknowledge a URI
+that can never be served.
 
 `server/rpc.rs` owns the plumbing all three import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
