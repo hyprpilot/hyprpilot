@@ -89,68 +89,139 @@ pub(super) const RESULT_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 /// shared intermediary should serve them to anyone else.
 pub(super) const RESULT_CACHE_SCOPE: CacheScope = CacheScope::Private;
 
-/// The live `subscriptions/listen` stream, when the client opened one.
-///
-/// A stdio sidecar serves exactly ONE client, so at most one stream is
-/// open at a time — which is what lets a notification choose its channel
-/// instead of fanning out to a set.
-///
-/// This exists because `Peer::notify_*` is an unconditional pipe send.
-/// It reaches every client regardless of what they subscribed to, and it
-/// carries no `io.modelcontextprotocol/subscriptionId` — so a conforming
-/// `2026-07-28` client, which correlates stream notifications by that
-/// id, never sees it on the stream it opened. Only
-/// [`rmcp::service::SubscriptionSink`] filters against the accepted
-/// filter and stamps the id.
-#[derive(Clone, Default)]
-pub(super) struct Subscriptions(Arc<tokio::sync::RwLock<Option<rmcp::service::SubscriptionSink>>>);
+/// Anything held by id in a [`Registry`]. Exists so the add/remove
+/// bookkeeping — the part that had the bug — is testable without a live
+/// MCP service to mint a real sink from.
+pub(super) trait Keyed {
+    fn key(&self) -> &rmcp::model::RequestId;
+}
 
-impl Subscriptions {
-    /// Hold the stream's sink for as long as the stream lives.
-    ///
-    /// rmcp has already acknowledged the subscription by the time this
-    /// runs, so the only job here is to keep the sink reachable and to
-    /// let go when the client cancels — returning `Ok(())` is what marks
-    /// a graceful teardown.
-    pub(super) async fn run(&self, context: rmcp::service::SubscriptionContext) {
-        self.0.write().await.replace(context.sink().clone());
-        context.cancelled().await;
-        self.0.write().await.take();
+impl Keyed for rmcp::service::SubscriptionSink {
+    fn key(&self) -> &rmcp::model::RequestId {
+        self.id()
+    }
+}
+
+/// An id-keyed set of live entries.
+///
+/// `remove` matches on the key rather than clearing, which is the whole
+/// point: `listen(A)`, `listen(B)`, `cancel(A)` is legal and is how a
+/// client changes its filter, so A's teardown must not take B with it.
+#[derive(Debug)]
+pub(super) struct Registry<T>(Arc<tokio::sync::RwLock<Vec<T>>>);
+
+impl<T> Clone for Registry<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T> Default for Registry<T> {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::RwLock::new(Vec::new())))
+    }
+}
+
+impl<T: Keyed + Clone> Registry<T> {
+    async fn add(&self, entry: T) {
+        self.0.write().await.push(entry);
     }
 
-    /// Deliver `notifications/resources/updated`, preferring the stream.
+    async fn remove(&self, key: &rmcp::model::RequestId) {
+        self.0.write().await.retain(|open| open.key() != key);
+    }
+
+    /// Snapshot, so sends happen without the lock held — a send awaits
+    /// the transport, and holding a read guard across that would stall
+    /// every teardown behind it.
+    async fn snapshot(&self) -> Vec<T> {
+        self.0.read().await.clone()
+    }
+}
+
+/// Every open `subscriptions/listen` stream.
+///
+/// A LIST, not a slot. rmcp runs each request in its own task, so two
+/// `listen` calls are legal and the natural filter-change sequence is
+/// listen(new) then cancel(old) — with a single slot, the cancelling
+/// stream tears down the surviving stream's sink and every later
+/// notification silently degrades to an untagged broadcast.
+///
+/// This exists because `Peer::notify_*` is an unconditional pipe send.
+/// It ignores the accepted filter and carries no
+/// `io.modelcontextprotocol/subscriptionId` — so a conforming
+/// `2026-07-28` client, which correlates stream notifications by that
+/// id, never sees it on the stream it opened. Only
+/// [`rmcp::service::SubscriptionSink`] filters and stamps.
+#[derive(Clone, Default)]
+pub(super) struct Subscriptions(Registry<rmcp::service::SubscriptionSink>);
+
+impl Subscriptions {
+    /// Hold this stream's sink for as long as the stream lives.
+    ///
+    /// rmcp has already acknowledged the subscription by the time this
+    /// runs, so the job is to keep the sink reachable and to remove
+    /// exactly THIS one on teardown — keyed by request id, because a
+    /// sibling stream may have registered in between.
+    pub(super) async fn run(&self, context: rmcp::service::SubscriptionContext) {
+        let sink = context.sink().clone();
+        let id = sink.id().clone();
+        self.0.add(sink).await;
+        context.cancelled().await;
+        self.0.remove(&id).await;
+    }
+
+    /// Snapshot of the open sinks.
+    ///
+    /// Cloned so the sends happen without the lock held — a sink send
+    /// awaits the transport, and holding a read guard across that would
+    /// stall every `run()` teardown behind it.
+    async fn streams(&self) -> Vec<rmcp::service::SubscriptionSink> {
+        self.0.snapshot().await
+    }
+
+    /// Deliver `notifications/resources/updated`.
+    ///
+    /// Offered to EVERY open stream: a refusal by one must not silence
+    /// another. A refusal is not a failure — the client declared what it
+    /// wants, and broadcasting past its filter would defeat the
+    /// declaration — so it still counts as handled. The broadcast is the
+    /// fallback only when no stream exists, which is the case for every
+    /// client on an older revision.
     pub(super) async fn resource_updated(&self, peer: &rmcp::service::Peer<RoleServer>, uri: String) {
-        if let Some(sink) = self.0.read().await.as_ref() {
-            match sink.notify_resource_updated(uri.clone()).await {
-                Ok(()) => return,
-                // Not an error: the client subscribed to other URIs, so
-                // this one is genuinely none of its business. Falling
-                // through to a broadcast would defeat the filter.
-                Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => return,
-                Err(err) => {
-                    tracing::debug!(%err, %uri, "mcp::server: subscription send failed — falling back to broadcast");
+        let streams = self.streams().await;
+        if !streams.is_empty() {
+            let mut handled = false;
+            for sink in &streams {
+                match sink.notify_resource_updated(uri.clone()).await {
+                    Ok(()) | Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => handled = true,
+                    Err(err) => tracing::debug!(%err, %uri, "mcp::server: subscription send failed"),
                 }
             }
+            if handled {
+                return;
+            }
         }
-        // No stream, or the stream broke. This is the only channel a
-        // client on an older revision has, and the one they have always
-        // had.
         let param = rmcp::model::ResourceUpdatedNotificationParam::new(uri.clone());
         if let Err(err) = peer.notify_resource_updated(param).await {
             tracing::debug!(%err, %uri, "mcp::server: resource-updated notification failed");
         }
     }
 
-    /// Deliver `notifications/resources/list_changed`, preferring the
-    /// stream. Same channel choice as [`Self::resource_updated`].
+    /// Deliver `notifications/resources/list_changed`. Same channel
+    /// choice as [`Self::resource_updated`].
     pub(super) async fn resource_list_changed(&self, peer: &rmcp::service::Peer<RoleServer>) {
-        if let Some(sink) = self.0.read().await.as_ref() {
-            match sink.notify_resource_list_changed().await {
-                Ok(()) => return,
-                Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => return,
-                Err(err) => {
-                    tracing::debug!(%err, "mcp::server: subscription send failed — falling back to broadcast");
+        let streams = self.streams().await;
+        if !streams.is_empty() {
+            let mut handled = false;
+            for sink in &streams {
+                match sink.notify_resource_list_changed().await {
+                    Ok(()) | Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => handled = true,
+                    Err(err) => tracing::debug!(%err, "mcp::server: subscription send failed"),
                 }
+            }
+            if handled {
+                return;
             }
         }
         if let Err(err) = peer.notify_resource_list_changed().await {
@@ -413,6 +484,59 @@ mod tests {
             CacheScope::Private,
             "these results are scoped to one captain's config — no shared intermediary may serve them on"
         );
+    }
+
+    /// A fake entry so the registry's bookkeeping — the part that had
+    /// the bug — is testable without a live service to mint a sink from.
+    #[derive(Clone, Debug, PartialEq)]
+    struct Entry(rmcp::model::RequestId);
+
+    impl Keyed for Entry {
+        fn key(&self) -> &rmcp::model::RequestId {
+            &self.0
+        }
+    }
+
+    fn entry(id: i64) -> Entry {
+        Entry(rmcp::model::RequestId::Number(id))
+    }
+
+    /// The bug this type was rebuilt for.
+    ///
+    /// rmcp runs each request in its own task, so `listen(A)`,
+    /// `listen(B)`, `cancel(A)` is legal — and is how a client changes
+    /// its filter. The previous single-slot version had A's teardown
+    /// clear B's sink, after which every notification silently degraded
+    /// to an untagged broadcast. Reverting `remove` to a clear fails
+    /// here.
+    #[tokio::test]
+    async fn cancelling_one_stream_leaves_its_sibling_registered() {
+        let registry = Registry::default();
+        registry.add(entry(10)).await;
+        registry.add(entry(11)).await;
+
+        registry.remove(&rmcp::model::RequestId::Number(10)).await;
+
+        assert_eq!(
+            registry.snapshot().await,
+            vec![entry(11)],
+            "the surviving stream must still be reachable, or its client goes silent"
+        );
+    }
+
+    /// Teardown must be idempotent and must not touch strangers: rmcp
+    /// can drop a `run` future without cancellation, so a second removal
+    /// of an already-gone id is ordinary.
+    #[tokio::test]
+    async fn removing_an_unknown_stream_is_a_no_op() {
+        let registry = Registry::default();
+        registry.add(entry(1)).await;
+
+        registry.remove(&rmcp::model::RequestId::Number(99)).await;
+        registry.remove(&rmcp::model::RequestId::Number(1)).await;
+        registry.remove(&rmcp::model::RequestId::Number(1)).await;
+
+        assert!(registry.snapshot().await.is_empty());
     }
 
     /// The acknowledgment is the client's CONTRACT for what it will

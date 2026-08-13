@@ -739,7 +739,13 @@ impl ServerHandler for SkillsServer {
         // `hyprpilot://skills` (the catalogue index) and
         // `hyprpilot://skills/<slug>` are the only URIs this server ever
         // fires for.
-        super::rpc::accept_resource_subscriptions(requested, |uri| uri.starts_with(SKILLS_URI_ROOT))
+        super::rpc::accept_resource_subscriptions(requested, |uri| {
+            // Exact index, or a `/`-delimited slug. Without the
+            // separator `hyprpilot://skillsfoo` would be acknowledged
+            // and then never fire — the "waiting forever" contract this
+            // filter exists to close.
+            uri == SKILLS_URI_ROOT || uri.starts_with(&format!("{SKILLS_URI_ROOT}/"))
+        })
     }
 
     /// Hold the subscription stream open so notifications can ride it.

@@ -222,6 +222,8 @@ Results carry `ttlMs` of 24 hours — longer than a sidecar lives — so a clien
 
 **Two delivery channels, chosen per notification.** With a `subscriptions/listen` stream open, notifications ride that stream — filtered to the URIs you subscribed to and tagged with `io.modelcontextprotocol/subscriptionId`, which is what a conforming client correlates on. With no stream, they are sent as plain unsolicited notifications, which is the only channel a client on an older revision has and exactly what it received before.
 
+**Opening a stream replaces broadcasts entirely.** Anything outside your accepted filter is dropped, not delivered some other way — the filter is a declaration, and honouring it means honouring the parts you left out. So subscribe to `resourcesListChanged` too if you want to hear about sessions appearing and disappearing, not just the handle you named. Multiple streams may be open at once; each is filtered and tagged independently, so cancelling one never silences another.
+
 ### Watching from a shell
 
 Every session directory gets a `done.json` when its turn's process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. Its path rides on `spawn` / `session_send` / `session_read` results as `sessionInfo.files.done`.
