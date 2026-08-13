@@ -21,7 +21,6 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
-use rmcp::ServiceExt;
 
 use super::harness::{DelegatePolicy, Harness};
 use super::rpc::{
@@ -1095,10 +1094,7 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     let subscriptions_for_hook = handler.subscriptions.clone();
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
-    let running = handler
-        .serve((stdin, stdout))
-        .await
-        .map_err(|err| anyhow::anyhow!("mcp harness: serve failed at init: {err}"))?;
+    let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
 
     // The peer exists only once `serve()` has returned, which is also
     // the earliest a session can exist — so installing the hook here is

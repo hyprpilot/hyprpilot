@@ -19,7 +19,6 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
-use rmcp::ServiceExt;
 
 use crate::config::mcp::DEFAULT_TOOLS_SERVER_NAME;
 
@@ -135,10 +134,7 @@ pub async fn run_tools(_args: ToolsArgs, _config: super::ConfigSource) -> anyhow
     tracing::info!("mcp: starting the general-tools server");
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
-    let running = ToolsServer
-        .serve((stdin, stdout))
-        .await
-        .map_err(|e| anyhow::anyhow!("mcp::server::tools: serve failed at init: {e}"))?;
+    let running = super::rpc::serve_from_first_byte(ToolsServer, (stdin, stdout));
 
     wait_for_shutdown(running).await;
 

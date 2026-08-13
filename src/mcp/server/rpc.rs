@@ -291,6 +291,40 @@ pub(super) fn accept_resource_subscriptions(
     Some(accepted)
 }
 
+/// Start serving from the connection's FIRST byte, with no handshake
+/// phase of our own.
+///
+/// `ServiceExt::serve` runs rmcp's pre-loop handshake, which handles a
+/// non-`initialize` opener INLINE — `service.handle_request(..).await`
+/// completes before the serve loop is spawned. A long-lived opener
+/// therefore deadlocks the process: `subscriptions/listen` acknowledges
+/// through `Peer::send_notification`, which awaits a oneshot only the
+/// loop can fire, so the ack waits on a loop that is waiting on the ack.
+/// Nothing is read or written again, ever.
+///
+/// That is not a hypothetical ordering. Claude Code's v2 MCP runtime
+/// probes `server/discover` on a DISPOSABLE second process, then opens
+/// the real transport with `subscriptions/listen` as its first request —
+/// so the deadlock is the normal path for a server that implements
+/// subscriptions, and only for those. It reports `connected` (the throwaway
+/// probe succeeded) and then times out fetching tools.
+///
+/// `serve_directly` spawns the loop from byte zero, so every request —
+/// opener included — runs in its own task. The legacy flow is unchanged:
+/// rmcp's default `initialize` still records `peer_info` and negotiates
+/// against `supported_protocol_versions`.
+pub(super) fn serve_from_first_byte<H, T, E, A>(
+    handler: H,
+    transport: T,
+) -> rmcp::service::RunningService<RoleServer, H>
+where
+    H: ServerHandler,
+    T: rmcp::transport::IntoTransport<RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    rmcp::service::serve_directly(handler, transport, None)
+}
+
 /// Return once the MCP transport closes or a termination signal
 /// arrives, whichever comes first.
 pub(super) async fn wait_for_shutdown<H: ServerHandler>(running: rmcp::service::RunningService<RoleServer, H>) {
