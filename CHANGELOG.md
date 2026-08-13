@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.12.0](https://github.com/hyprpilot/hyprpilot/compare/v3.11.1...v3.12.0) (2026-08-13)
+
+
+### Features
+
+* **mcp:** wake clients through subscriptions and cache until invalidated ([#241](https://github.com/hyprpilot/hyprpilot/issues/241)) ([4e28f4f](https://github.com/hyprpilot/hyprpilot/commit/4e28f4fd1da707dfa456c2fc0f91b24b45d05c8b))
+
 ## [3.11.1](https://github.com/hyprpilot/hyprpilot/compare/v3.11.0...v3.11.1) (2026-08-13)
 
 
