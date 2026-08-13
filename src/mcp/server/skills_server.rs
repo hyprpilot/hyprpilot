@@ -89,7 +89,10 @@ use crate::config::mcp::DEFAULT_SKILLS_SERVER_NAME;
 use crate::config::ResolvedSkillEntry;
 use crate::mcp::skills::SkillsRegistry;
 
-use super::rpc::{empty_object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown};
+use super::rpc::{
+    empty_object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown, RESULT_CACHE_SCOPE,
+    RESULT_TTL_MS,
+};
 use crate::mcp::skills::wire_metadata::{frontmatter_json, skill_block, skill_meta};
 use crate::mcp::skills::wire_references::{
     self, append_references, frontmatter_references, FrontmatterRefs, ReferenceEntry,
@@ -703,7 +706,9 @@ impl ServerHandler for SkillsServer {
                 empty_object_schema(),
             ),
         ];
-        Ok(ListToolsResult::with_all_items(tools))
+        Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(RESULT_TTL_MS)
+            .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
     async fn call_tool(
@@ -890,7 +895,9 @@ impl ServerHandler for SkillsServer {
             // size, and `list_skill_references` answers "what does this
             // skill cite" far more cheaply than a listing can.
         }
-        Ok(ListResourcesResult::with_all_items(resources))
+        Ok(ListResourcesResult::with_all_items(resources)
+            .with_ttl_ms(RESULT_TTL_MS)
+            .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
     async fn list_resource_templates(
@@ -901,7 +908,9 @@ impl ServerHandler for SkillsServer {
         let templates = vec![rmcp::model::ResourceTemplate::new("hyprpilot://skills/{slug}", "skill")
             .with_description("Full SKILL.md body for the addressed skill slug.")
             .with_mime_type("text/markdown")];
-        Ok(ListResourceTemplatesResult::with_all_items(templates))
+        Ok(ListResourceTemplatesResult::with_all_items(templates)
+            .with_ttl_ms(RESULT_TTL_MS)
+            .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
     async fn read_resource(
@@ -919,6 +928,8 @@ impl ServerHandler for SkillsServer {
                     text: catalogue_markdown(&cache),
                     meta: None,
                 }])
+                .with_ttl_ms(RESULT_TTL_MS)
+                .with_cache_scope(RESULT_CACHE_SCOPE)
                 .into())
             }
             Some(ParsedUri::Skill(slug)) => {
@@ -941,6 +952,8 @@ impl ServerHandler for SkillsServer {
                     text: format!("{}{}", skill.body, wire_references::manifest_footer(&entries, slug)),
                     meta: Some(skill_meta(&skill.meta_block)),
                 }])
+                .with_ttl_ms(RESULT_TTL_MS)
+                .with_cache_scope(RESULT_CACHE_SCOPE)
                 .into())
             }
             None => Err(rmcp::ErrorData::invalid_params(

@@ -23,7 +23,10 @@ use rmcp::ServiceExt;
 
 use crate::config::mcp::DEFAULT_TOOLS_SERVER_NAME;
 
-use super::rpc::{object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown};
+use super::rpc::{
+    object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown, RESULT_CACHE_SCOPE,
+    RESULT_TTL_MS,
+};
 
 /// Args for `hyprpilot mcp serve`. None today — the server is
 /// stateless and takes no catalog. The struct exists so the subcommand
@@ -70,7 +73,9 @@ impl ServerHandler for ToolsServer {
                     .into(),
             ),
             open_object_schema(),
-        )]))
+        )])
+        .with_ttl_ms(RESULT_TTL_MS)
+        .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
     async fn call_tool(
