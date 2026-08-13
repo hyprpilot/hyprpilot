@@ -8,44 +8,25 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use rmcp::model::{CallToolResponse, CallToolResult, ContentBlock, ProtocolVersion};
+use rmcp::model::{CacheScope, CallToolResponse, CallToolResult, ContentBlock, ProtocolVersion};
 use rmcp::service::RoleServer;
 use rmcp::ServerHandler;
 
-/// The protocol versions the general-tools and skills servers negotiate.
+/// The protocol versions every in-tree server negotiates.
 ///
 /// A DECLARATION, not `KNOWN_VERSIONS` by default. rmcp echoes back
 /// whatever the client asks within the supported set, so inheriting the
 /// default would let an SDK upgrade silently widen what we speak.
 ///
-/// `2026-07-28` is deliberately absent here. It changes the wire for a
-/// peer that negotiates it — `resultType` on every result (SEP-2322) and
-/// `ping` answering `-32601` (SEP-2260), both measured over stdio — and
-/// these two servers gain nothing in return: neither serves tasks. Only
-/// the harness opts in, and only for spec legitimacy; the task path was
-/// measured working at 2025-11-25 too, so even there the revision is not
-/// load-bearing.
-///
-/// No consumer reaches it regardless — measured against a real
-/// handshake: claude 2.1.220 and opencode 1.18.11 negotiate `2025-11-25`,
-/// codex 0.146.0 `2025-06-18`.
+/// One set for all three servers. `2026-07-28` used to belong to the
+/// harness alone, on the reasoning that Tasks shipped alongside it and
+/// the other two gained nothing from `resultType` on every result
+/// (SEP-2322) or `ping` answering `-32601` (SEP-2260). That split was
+/// wrong in the direction that matters: the revision's requirements land
+/// on `tools/list`, which every server serves, so excluding it from two
+/// servers only hid the work rather than avoiding it. See
+/// [`RESULT_TTL_MS`] for the requirement itself.
 pub(super) fn supported_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
-    Cow::Borrowed(&[
-        ProtocolVersion::V_2024_11_05,
-        ProtocolVersion::V_2025_03_26,
-        ProtocolVersion::V_2025_06_18,
-        ProtocolVersion::V_2025_11_25,
-    ])
-}
-
-/// The harness server's set — the above plus `2026-07-28`.
-///
-/// SEP-2663 is negotiated per-request via the extension mechanism, not by
-/// protocol version, so a task result is reachable at `2025-11-25` and
-/// this is not required to make the feature work. It is included so a
-/// client that speaks the revision Tasks was published alongside gets a
-/// server that speaks it too, rather than being silently downgraded.
-pub(super) fn harness_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
     Cow::Borrowed(&[
         ProtocolVersion::V_2024_11_05,
         ProtocolVersion::V_2025_03_26,
@@ -54,6 +35,41 @@ pub(super) fn harness_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
         ProtocolVersion::V_2026_07_28,
     ])
 }
+
+/// Freshness hint stamped on every cacheable result (SEP-2549).
+///
+/// **`2026-07-28` makes `ttlMs` and `cacheScope` REQUIRED**, not
+/// optional: `ListToolsResult extends PaginatedResult, CacheableResult`,
+/// and `CacheableResult` declares both without `?`. rmcp models them as
+/// `Option` for backward compatibility and defaults them to `None`, so a
+/// server that just calls `with_all_items` emits neither and a client
+/// validating the revision it negotiated rejects the listing outright:
+///
+/// ```text
+/// Invalid result for tools/list:
+///   ttlMs:      expected number, received undefined
+///   cacheScope: expected one of "public" | "private"
+/// ```
+///
+/// That is not a partial failure — the session reports `connected` and
+/// then has NO TOOLS AT ALL, because the listing is the door. Claude Code
+/// 2.2.x negotiates `2026-07-28` and hit exactly this.
+///
+/// `0` because nothing we serve is safely cacheable for a duration: the
+/// skills catalogue changes on `reload`, and the profile list changes
+/// whenever the captain edits config. Emitting them at older revisions
+/// is harmless — the spec's `Result` is an open map, so an extra key is
+/// permitted everywhere.
+///
+/// Stamp them on EVERY list and read result, on every server. A result
+/// that forgets is invisible until a client upgrades.
+pub(super) const RESULT_TTL_MS: u64 = 0;
+
+/// Companion to [`RESULT_TTL_MS`]. `Private` is the conservative choice
+/// and matches what the reference SDKs default to: these results are
+/// scoped to one captain's config and one process's catalogue, so no
+/// shared intermediary should serve them to anyone else.
+pub(super) const RESULT_CACHE_SCOPE: CacheScope = CacheScope::Private;
 
 /// Return once the MCP transport closes or a termination signal
 /// arrives, whichever comes first.
@@ -227,40 +243,52 @@ mod tests {
     /// an SDK upgrade that adds a revision has to break this test rather
     /// than silently widen what our servers speak.
     #[test]
-    fn the_negotiable_sets_are_declared_not_inherited() {
-        for set in [supported_protocol_versions(), harness_protocol_versions()] {
-            for expected in [
-                ProtocolVersion::V_2024_11_05,
-                ProtocolVersion::V_2025_03_26,
-                ProtocolVersion::V_2025_06_18,
-                ProtocolVersion::V_2025_11_25,
-            ] {
-                assert!(
-                    supported_contains(&set, &expected),
-                    "dropping {expected:?} would cut off a client that negotiates it — codex is on 2025-06-18"
-                );
-            }
+    fn the_negotiable_set_is_declared_not_inherited() {
+        let set = supported_protocol_versions();
+        for expected in [
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_11_25,
+            ProtocolVersion::V_2026_07_28,
+        ] {
+            assert!(
+                supported_contains(&set, &expected),
+                "dropping {expected:?} would cut off a client that negotiates it — codex is on 2025-06-18"
+            );
         }
         assert_eq!(
-            harness_protocol_versions().len(),
+            set.len(),
             ProtocolVersion::KNOWN_VERSIONS.len(),
-            "a revision rmcp added is not automatically one we speak — add it here deliberately"
+            "a revision rmcp added is not automatically one we speak — add it here deliberately, \
+             and only once every cacheable result carries what that revision requires"
         );
     }
 
-    /// `2026-07-28` belongs to the harness ALONE. `mcp serve` and
-    /// `mcp skills` serve no tasks, so adopting it there would buy them
-    /// `resultType` on every result and a broken `ping` for nothing.
+    /// One set, all three servers. The split that gave the harness its
+    /// own was wrong in the direction that matters: `2026-07-28`'s
+    /// requirements land on `tools/list`, which every server serves, so
+    /// excluding two of them hid the work instead of avoiding it.
     #[test]
-    fn only_the_harness_speaks_the_tasks_revision() {
+    fn every_server_negotiates_the_same_set() {
         assert!(
-            supported_contains(&harness_protocol_versions(), &ProtocolVersion::V_2026_07_28),
-            "the harness opts in"
+            supported_contains(&supported_protocol_versions(), &ProtocolVersion::V_2026_07_28),
+            "a client on the current revision must not be silently downgraded"
         );
-        assert!(
-            !supported_contains(&supported_protocol_versions(), &ProtocolVersion::V_2026_07_28),
-            "the task-free servers must not inherit a wire change they gain nothing from"
+    }
+
+    /// The fields `2026-07-28` makes REQUIRED on a cacheable result.
+    /// Omitting them is not a partial failure — a validating client
+    /// rejects `tools/list` and the session comes up with no tools at
+    /// all. `0` / `private` because nothing we serve is safely cacheable
+    /// for a duration or across users.
+    #[test]
+    fn cacheable_results_are_stamped_conservatively() {
+        assert_eq!(
+            RESULT_TTL_MS, 0,
+            "a non-zero ttl would let a client serve a stale catalogue"
         );
+        assert_eq!(RESULT_CACHE_SCOPE, CacheScope::Private);
     }
 
     fn supported_contains(set: &[ProtocolVersion], want: &ProtocolVersion) -> bool {

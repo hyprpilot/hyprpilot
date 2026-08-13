@@ -379,17 +379,41 @@ missing. Do not re-merge them.
 used to live in the skills server purely because that server was written
 first — five of the helpers had no caller there at all.
 
-**The negotiable protocol set is CAPPED at `2025-11-25`**
-(`rpc::supported_protocol_versions`, overridden on all three
-`ServerHandler`s). rmcp's default is `KNOWN_VERSIONS` and negotiation
-echoes back whatever the client asks within it, so the default would let
-a vendor CLI's own release change our wire shape: `2026-07-28` adds
-`resultType` to every tool result (SEP-2322) and answers `ping` with
-`-32601` (SEP-2260) — both verified over stdio. The cap makes the
-supported set a declaration rather than an emergent property; raising it
-is a deliberate change with its own verification. Clients below it are
-unaffected (codex negotiates 2025-06-18, claude 2025-11-25), and a
-client asking higher negotiates down. A test pins the exclusion.
+**The negotiable protocol set is ONE declaration through
+`2026-07-28`** (`rpc::supported_protocol_versions`, overridden on all
+three `ServerHandler`s — one function, no per-server variant). rmcp's
+default is `KNOWN_VERSIONS` and negotiation echoes back whatever the
+client asks within it, so inheriting the default would let a vendor
+CLI's own release change our wire shape. Declaring it keeps the set a
+statement rather than an emergent property; a client below it is
+unaffected (codex negotiates 2025-06-18) and one asking higher
+negotiates down.
+
+**Every cacheable result MUST carry `ttlMs` + `cacheScope`**
+(`rpc::RESULT_TTL_MS` / `RESULT_CACHE_SCOPE`, stamped at all seven
+sites: `tools/list` on each server, plus `resources/list`,
+`resources/templates/list` and both `resources/read` arms on skills).
+`2026-07-28` makes them REQUIRED — `ListToolsResult extends
+PaginatedResult, CacheableResult`, and `CacheableResult` declares both
+without `?` — while rmcp models them `Option` for back-compat and
+defaults them to `None`. A server that just calls `with_all_items`
+emits neither, and a client validating the revision it negotiated
+rejects the listing: `ttlMs: expected number, received undefined`. That
+is not partial breakage — the listing is the door, so the session
+reports `connected` and has NO TOOLS AT ALL. Claude Code 2.2.x
+negotiates `2026-07-28` and hit exactly this against the harness, which
+was the one server that had opted in.
+
+`0` / `private` because nothing here is safely cacheable for a duration
+or across users: the skills catalogue changes on `reload` and the
+profile list changes when the captain edits config. Emitting them at
+older revisions is harmless — the spec's `Result` is an open map. The
+earlier per-server split (harness opts in, the other two capped) was
+wrong in the direction that matters: the revision's requirements land
+on `tools/list`, which every server serves, so excluding two of them
+hid the work rather than avoiding it. A new result type that forgets
+the stamp is invisible until a client upgrades — tests pin the
+constants and the set.
 
 `tool_error` / `structured_with_text` return rmcp 3's `CallToolResponse`
 envelope, converting at that single point so no `call_tool` body deals

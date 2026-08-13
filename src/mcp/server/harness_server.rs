@@ -26,7 +26,8 @@ use rmcp::ServiceExt;
 use super::harness::{DelegatePolicy, Harness};
 use super::rpc::{
     empty_object_schema, object_schema, optional_bool, optional_string, optional_string_array, optional_u64,
-    optional_usize, require_string, structured_with_text, tool_error, wait_for_shutdown,
+    optional_usize, require_string, structured_with_text, tool_error, wait_for_shutdown, RESULT_CACHE_SCOPE,
+    RESULT_TTL_MS,
 };
 use crate::config::mcp::DEFAULT_HARNESS_SERVER_NAME;
 
@@ -51,7 +52,7 @@ impl HarnessServer {
 
 impl ServerHandler for HarnessServer {
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
-        super::rpc::harness_protocol_versions()
+        super::rpc::supported_protocol_versions()
     }
 
     fn get_info(&self) -> ServerInfo {
@@ -103,7 +104,9 @@ impl ServerHandler for HarnessServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, rmcp::ErrorData> {
-        Ok(ListToolsResult::with_all_items(harness_tools()))
+        Ok(ListToolsResult::with_all_items(harness_tools())
+            .with_ttl_ms(RESULT_TTL_MS)
+            .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
     /// SEP-2663 poll. The task id names one TURN of one session, so a
