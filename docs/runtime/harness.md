@@ -265,19 +265,34 @@ Results carry `ttlMs` of 24 hours — longer than a sidecar lives — so a clien
 
 ### Watching from a shell
 
-Every session directory gets a `done.json` when its turn's process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. Its path rides on `spawn` / `session_send` / `session_read` results as `sessionInfo.files.done`.
+**Every turn owns a directory**, and the layout is what makes the rest of this page work:
 
-This is the vendor-neutral completion signal, and the one a **shell** watcher can use, since a bash loop cannot call an MCP tool:
-
-```bash
-[ ! -d "$SESSION_DIR" ] || [ -f "$SESSION_DIR/done.json" ]
+```txt
+/tmp/hyprpilot-session-XXXX/
+├── session.json          crash-recovery breadcrumb (session-scoped)
+└── turns/
+    ├── 1/
+    │   ├── turns.jsonl   this turn's transcript
+    │   ├── stderr.log    this turn's stderr
+    │   └── done.json     this turn's completion marker
+    └── 2/ …
 ```
 
-Both halves are required. The marker is advisory: reaping, eviction and shutdown all remove the directory, so a watcher that only tests for the file waits forever on a session that was cleaned up.
+`sessionInfo.files` names the session's paths plus **this turn's** — `dir`, `turnsDir`, `turn`, `turnDir`, `transcript`, `stderr`, `done`, `breadcrumb`. Earlier turns are not listed: they are `<turnsDir>/<n>/` for every `n` up to `turn`, which is inferable, and enumerating them would grow the payload with every turn while saying nothing new.
+
+A turn's output being its own file is why reading turn 1 cannot reach into turn 2, why "stderr is non-empty" means _this_ turn wrote it, and why a fresh turn needs no marker cleared before it starts.
+
+Each turn gets its `done.json` when its process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. This is the vendor-neutral completion signal, and the one a **shell** watcher can use, since a bash loop cannot call an MCP tool:
+
+```bash
+[ ! -d "$TURN_DIR" ] || [ -f "$TURN_DIR/done.json" ]
+```
+
+Both halves are required. The marker is advisory: reaping, eviction and shutdown remove the whole session directory, so a watcher that only tests for the file waits forever on a session that was cleaned up.
 
 `{"handle": "…", "exitCode": 0, "finishedAt": 1785584247}`
 
-It is **cleared when a turn starts**, not only written when one ends — `session_send` reuses the handle and directory, so a watcher armed for the next turn would otherwise fire instantly on the previous turn's leftover.
+Arm it on `turnDir` from the call that started the turn. A marker can no longer be stale: turn N+1 writes into its own directory, so nothing from turn N is in it.
 
 ### Completion notifications (Claude Code channels)
 

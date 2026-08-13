@@ -642,11 +642,12 @@ impl Harness {
                 session.status(),
                 session.exit_code(),
                 session.turns_path(),
+                session.turn,
             )
         }) else {
             return json!({ "session": handle, "status": "exited" });
         };
-        let (profile, provider, status, exit_code, turns) = snapshot;
+        let (profile, provider, status, exit_code, turns, turn) = snapshot;
 
         let mut out = json!({
             "session": handle,
@@ -671,7 +672,7 @@ impl Harness {
             // running session always gets one: without a resume point a
             // poller would fall back to `tail` and lose its place.
             if truncated || status != SessionStatus::Exited {
-                out["nextCursor"] = json!(encode_cursor(next));
+                out["nextCursor"] = json!(encode_cursor(turn, next));
             }
         }
 
@@ -727,10 +728,14 @@ impl Harness {
         if dump.is_empty() {
             return format!("error: the session exited with code {code} and produced no answer");
         }
-        if turn == 1 && body.trim().is_empty() {
-            return format!("error: the session failed to launch\n\n{dump}");
+        // Per-turn stderr makes this exact rather than a guess: an
+        // empty transcript beside a non-empty stderr means THIS turn
+        // never got going, whichever turn it is. With one shared stderr
+        // it could have been an earlier turn's wreckage.
+        if body.trim().is_empty() {
+            return format!("error: turn {turn} failed to launch\n\n{dump}");
         }
-        format!("error: the turn produced no answer (exit {code}). Its stderr:\n\n{dump}")
+        format!("error: turn {turn} produced no answer (exit {code}). Its stderr:\n\n{dump}")
     }
 
     /// One view of a session, for `resources/read`. Reads whole files,
@@ -755,36 +760,29 @@ impl Harness {
         }
 
         let found = self.sessions.with(handle, |session| {
+            let wanted = turn.unwrap_or(session.turn);
             (
-                session.turns_path(),
-                session.stderr_path(),
+                session.turn_transcript(wanted),
+                session.turn_stderr(wanted),
+                session.turn_dir(wanted),
                 session.exit_code(),
                 session.turn,
-                turn.unwrap_or(session.turn),
-                session
-                    .turn_record(turn.unwrap_or(session.turn))
-                    .map(|r| r.transcript_from),
-                // Where the NEXT turn began, which is where this one
-                // ended. Without it a turn's slice runs to EOF and
-                // swallows every later turn's output.
-                session
-                    .turn_record(turn.unwrap_or(session.turn) + 1)
-                    .map(|r| r.transcript_from),
+                wanted,
                 session.provider,
                 session.status() == SessionStatus::Exited,
             )
         });
-        let Some((path, stderr, exit_code, current, wanted, turn_from, turn_to, provider, running_now)) = found else {
+        let Some((path, stderr, turn_dir, exit_code, current, wanted, provider, running_now)) = found else {
             return Err(format!(
                 "unknown session `{handle}`. Call `session_list` for live handles."
             ));
         };
-        // A turn the session never reached has no slice to read.
-        let Some(turn_from) = turn_from else {
+        // A turn the session never reached has no directory to read.
+        if wanted > current || !turn_dir.exists() {
             return Err(format!(
                 "session `{handle}` has no turn {wanted} — it is on turn {current}."
             ));
-        };
+        }
         // Only the CURRENT turn can still be running; an earlier one is
         // finished by definition, so its views are cacheable even while
         // the session works on something else.
@@ -794,42 +792,29 @@ impl Harness {
         let text = match view {
             SessionView::Status => unreachable!("handled above"),
             SessionView::Result => {
-                // The whole file, not a tail: the latest turn's boundary
-                // is found by slicing events, and a tail can cut the
-                // marker that defines where that turn began.
+                // The turn's OWN file. No offsets and no boundary
+                // hunting: a turn writes into `turns/<n>/`, so its
+                // output is a whole file rather than a byte range of a
+                // shared one, and reading it cannot reach into the next
+                // turn's.
                 let body = std::fs::read_to_string(&path).unwrap_or_default();
-                // Sliced by the offset recorded when THIS turn started,
-                // not by guessing a boundary from the events. The
-                // transcript is append-only across turns and a turn that
-                // DIES emits no terminal event, so nothing in the file
-                // itself marks where the newest turn began — two turns'
-                // output is otherwise indistinguishable.
-                let this_turn = match turn_to {
-                    Some(to) => body.get(turn_from as usize..to as usize),
-                    None => body.get(turn_from as usize..),
-                }
-                .unwrap_or(&body);
-                let extracted = super::transcript::extract(this_turn, provider);
-                // A RUNNING turn has not produced its answer yet, and
-                // the latest COMPLETED turn's answer is a different
-                // question. Showing it here reads as a fresh reply.
                 if !finished {
                     // The turn has not produced its answer yet, and the
-                    // PREVIOUS turn's answer is a different question.
+                    // previous turn's answer is a different question.
                     String::new()
                 } else {
-                    match extracted {
-                        // Finished with nothing in its own slice: killed
+                    match super::transcript::extract(&body, provider) {
+                        // Finished with nothing of its own: killed
                         // mid-run, or it died. Say which.
-                        super::transcript::Answer::Pending => Self::no_answer(&stderr, exit_code, turn, this_turn),
+                        super::transcript::Answer::Pending => Self::no_answer(&stderr, exit_code, turn, &body),
                         answer => answer.render(),
                     }
                 }
             }
             SessionView::Stderr => {
-                // Append-mode across turns, like the transcript, so an
-                // earlier turn's wreckage stays visible. Capped the same
-                // way and cut from the front.
+                // This turn's own stderr. Nothing from an earlier turn
+                // can appear here, which is what makes "stderr is
+                // non-empty" mean THIS turn wrote it.
                 let (tail, truncated) = tail_of(&stderr, usize::MAX);
                 if truncated {
                     format!("[earlier output omitted]\n{tail}")
@@ -987,13 +972,23 @@ impl Harness {
                     "startedAt": unix_secs(session.created_at),
                     "lastTurnAt": unix_secs(session.last_turn_at),
                     "pid": session.pid(),
-                    // Every file the session owns, named once. A caller
-                    // with shell access can `jq` the transcript directly
-                    // rather than paging it through `session_read` — that
-                    // is a feature, so the paths are first-class rather
-                    // than derivable from a sibling.
+                    // The session's own files, plus THIS turn's. A
+                    // caller with shell access can `jq` the transcript
+                    // directly rather than paging it through
+                    // `session_read` — that is a feature, so the paths
+                    // are first-class rather than derived from a
+                    // sibling.
+                    //
+                    // Earlier turns are deliberately NOT enumerated:
+                    // they live at `<turnsDir>/<n>/` for every `n` from
+                    // 1 to `turn`, which is inferable, and listing them
+                    // would grow this payload with every turn while
+                    // saying nothing new.
                     "files": {
                         "dir": session.dir_path().display().to_string(),
+                        "turnsDir": session.dir_path().join("turns").display().to_string(),
+                        "turn": session.turn,
+                        "turnDir": session.turn_dir(session.turn).display().to_string(),
                         "transcript": session.turns_path().display().to_string(),
                         "stderr": session.stderr_path().display().to_string(),
                         "done": session.done_path().display().to_string(),
@@ -1079,14 +1074,24 @@ impl Harness {
         cursor: Option<String>,
         watch: Option<WatchOptions>,
     ) -> Result<Value, String> {
+        let cursor = cursor.as_deref().map(decode_cursor).transpose()?;
+        // A cursor names its turn, so a resume reads the file it was
+        // taken from — not whatever turn is current now. Without a
+        // cursor the read is of the current turn.
         let paths = self
             .sessions
             .with(handle, |session| {
-                (session.turns_path(), session.stderr_path(), session.status())
+                let turn = cursor.map_or(session.turn, |(turn, _)| turn);
+                (
+                    turn,
+                    session.turn_transcript(turn),
+                    session.turn_stderr(turn),
+                    session.status(),
+                )
             })
             .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))?;
-        let (turns, stderr_path, mut status) = paths;
-        let offset = cursor.as_deref().map(decode_cursor).transpose()?;
+        let (turn, turns, stderr_path, mut status) = paths;
+        let offset = cursor.map(|(_, offset)| offset);
 
         // Following streams from `offset` forward; a tail-follow would
         // have no stable resume point. The follow's own text/cursor are
@@ -1129,7 +1134,7 @@ impl Harness {
         // running session always gets one — without a resume point a
         // poller would fall back to `tail` and lose its place.
         if truncated || status != SessionStatus::Exited {
-            out["nextCursor"] = json!(encode_cursor(next_offset));
+            out["nextCursor"] = json!(encode_cursor(turn, next_offset));
         }
         // Only surface stderr when it has something — an empty diagnostic
         // channel is noise in every successful result.
@@ -1495,16 +1500,28 @@ fn tail_of(path: &std::path::Path, lines: usize) -> (String, bool) {
 /// verbatim, never parse or synthesise it. Hex keeps that honest: there
 /// is no arithmetic to do on `"1a2b"`, whereas a raw byte offset invites
 /// a caller to compute a position and skip bytes it never read.
-fn encode_cursor(offset: u64) -> String {
-    format!("{offset:x}")
+/// A cursor names the TURN as well as the offset.
+///
+/// Each turn writes its own file, so a bare offset is meaningless
+/// against a different one: paging turn 1, sending turn 2, then reusing
+/// the old cursor would read turn 2's bytes from turn 1's position.
+/// Still opaque — hex, `turn.offset` — so a caller cannot synthesise a
+/// position it never read.
+fn encode_cursor(turn: u32, offset: u64) -> String {
+    format!("{turn:x}.{offset:x}")
 }
 
-fn decode_cursor(raw: &str) -> Result<u64, String> {
-    u64::from_str_radix(raw, 16).map_err(|_| {
+fn decode_cursor(raw: &str) -> Result<(u32, u64), String> {
+    let invalid = || {
         format!(
             "invalid cursor `{raw}`. Pass a `nextCursor` from a previous result verbatim, or omit it to read the tail."
         )
-    })
+    };
+    let (turn, offset) = raw.split_once('.').ok_or_else(invalid)?;
+    Ok((
+        u32::from_str_radix(turn, 16).map_err(|_| invalid())?,
+        u64::from_str_radix(offset, 16).map_err(|_| invalid())?,
+    ))
 }
 
 fn read_from(path: &std::path::Path, offset: u64) -> (String, bool, u64) {
@@ -2513,7 +2530,9 @@ impl Harness {
                 // block included, so a task-mode caller and a normal one
                 // read the same bytes. A structured-only payload renders
                 // as "Unknown" in opencode.
-                let payload = self.describe(handle, Some(true), Some(record.transcript_from));
+                // From byte 0: a turn writes its own file, so the
+                // start of this turn IS the start of the file.
+                let payload = self.describe(handle, Some(true), Some(0));
                 let summary = super::harness_server::launch_summary(&payload);
                 let mut result = rmcp::model::CallToolResult::structured(payload);
                 result.content = vec![rmcp::model::ContentBlock::text(summary)];

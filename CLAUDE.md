@@ -377,13 +377,24 @@ missing. Do not re-merge them.
 <handle>` (status), `/result`, `/transcript` and `/stderr` — plus two
 indexes, `hyprpilot://sessions` (what `session_list` returns) and
 `hyprpilot://profiles` (what `list_profiles` returns, same delegate
-scope). Every view is also addressable PER TURN
-(`…/turns/<n>/<view>`), sliced by the byte offset recorded when that
-turn started and bounded by the next turn's — NOT by guessing a boundary
-from the events. Nothing in the transcript marks where a turn begins and
-a turn that dies emits no terminal event, so a heuristic mis-attributes
-one turn's error to the next; an unbounded slice swallows every later
-turn. Both were live bugs. `resources/list` names the indexes and ONE entry per session,
+scope). **Each turn owns a directory** — `turns/<n>/{turns.jsonl,stderr.log,
+done.json}` under the session, with `session.json` session-scoped. That
+layout is load-bearing three ways: a turn's output IS its file, so
+reading turn N cannot reach turn N+1 and needs no byte offsets; its
+stderr is its own, so "stderr is non-empty" means THIS turn wrote it
+rather than an earlier one; and a fresh turn is a fresh directory, so no
+completion marker has to be cleared before it starts. `sessionInfo.files`
+names the session's paths plus the CURRENT turn's (`turn`, `turnDir`,
+`turnsDir`); earlier turns are inferable from the turn number and are
+deliberately not enumerated. `session_read`'s cursor carries its turn
+(`turn.offset`, hex) — a bare offset would address the wrong file once
+the next turn started.
+
+Every view is also addressable PER TURN
+(`…/turns/<n>/<view>`). Guessing the boundary from the events was
+a live bug twice — a heuristic mis-attributed one turn's error to the
+next, then an unbounded slice swallowed every later turn — which is what
+the per-turn layout retires rather than patches. `resources/list` names the indexes and ONE entry per session,
 never one per view — four views across 64 retained sessions is 256 rows
 every client pays for on connect, the bloat the skills listing already
 measured and cut. The views ride a resource TEMPLATE instead.

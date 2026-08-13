@@ -55,6 +55,8 @@ use crate::spawn::providers::SpawnCommand;
 pub(crate) const SESSION_DIR_PREFIX: &str = "hyprpilot-session-";
 
 /// The vendor's structured event stream (child stdout).
+/// Directory holding one subdirectory per turn.
+pub(crate) const TURNS_DIR: &str = "turns";
 pub(crate) const TURNS_FILE: &str = "turns.jsonl";
 /// Child stderr, kept separate so a vendor's diagnostics never corrupt
 /// the JSONL line framing `session_read` depends on.
@@ -196,10 +198,6 @@ pub(crate) enum TurnOutcome {
 pub(crate) struct TurnRecord {
     pub turn: u32,
     pub outcome: TurnOutcome,
-    /// Byte offset into the transcript where this turn's output begins.
-    /// The transcript is append-only across turns, so this is what makes
-    /// a finished turn's output still addressable later.
-    pub transcript_from: u64,
     /// Whether a SEP-2663 task handle was actually handed to the caller
     /// for this turn.
     ///
@@ -228,15 +226,42 @@ impl Session {
         self.dir.path()
     }
 
-    pub(crate) fn turns_path(&self) -> PathBuf {
-        self.dir.path().join(TURNS_FILE)
+    /// One turn's own directory — `turns/<n>` under the session.
+    ///
+    /// Per turn rather than one appended file per session, and that is
+    /// load-bearing rather than tidy. A turn's output IS its file, so
+    /// reading turn N needs no byte offsets and cannot swallow turn
+    /// N+1; its stderr is its own, so "stderr is non-empty" means THIS
+    /// turn wrote it rather than some earlier one; and a fresh turn gets
+    /// a fresh directory, so no completion marker has to be cleared
+    /// before it starts.
+    pub(crate) fn turn_dir(&self, turn: u32) -> PathBuf {
+        self.dir.path().join(TURNS_DIR).join(turn.to_string())
     }
 
-    /// Where the completion marker lands. Advisory — the directory is
-    /// removed on reap, eviction and shutdown, so a watcher must treat
-    /// a MISSING directory as finished too, not just a present marker.
+    pub(crate) fn turn_transcript(&self, turn: u32) -> PathBuf {
+        self.turn_dir(turn).join(TURNS_FILE)
+    }
+
+    pub(crate) fn turn_stderr(&self, turn: u32) -> PathBuf {
+        self.turn_dir(turn).join(STDERR_FILE)
+    }
+
+    pub(crate) fn turn_done(&self, turn: u32) -> PathBuf {
+        self.turn_dir(turn).join(DONE_FILE)
+    }
+
+    /// The CURRENT turn's transcript.
+    pub(crate) fn turns_path(&self) -> PathBuf {
+        self.turn_transcript(self.turn)
+    }
+
+    /// Where the current turn's completion marker lands. Advisory — the
+    /// directory is removed on reap, eviction and shutdown, so a watcher
+    /// must treat a MISSING directory as finished too, not just a
+    /// present marker.
     pub(crate) fn done_path(&self) -> PathBuf {
-        self.dir.path().join(DONE_FILE)
+        self.turn_done(self.turn)
     }
 
     /// The session's own directory. 0700, removed when the session is
@@ -252,8 +277,9 @@ impl Session {
         self.dir.path().join(BREADCRUMB_FILE)
     }
 
+    /// The CURRENT turn's stderr.
     pub(crate) fn stderr_path(&self) -> PathBuf {
-        self.dir.path().join(STDERR_FILE)
+        self.turn_stderr(self.turn)
     }
 
     pub(crate) fn exit_code(&self) -> Option<i32> {
@@ -293,14 +319,6 @@ impl Session {
             live.outcome = TurnOutcome::Exited(code);
         }
         Some(live)
-    }
-
-    /// Byte length of the transcript, used as the start offset of the
-    /// turn about to begin. Zero for a fresh session or an unreadable
-    /// file — a start offset that reads from the beginning is wrong only
-    /// cosmetically, whereas failing a launch over it would not be.
-    fn transcript_len(&self) -> u64 {
-        std::fs::metadata(self.turns_path()).map(|m| m.len()).unwrap_or(0)
     }
 
     /// A receiver that resolves once the child exits. Cloned out so the
@@ -448,15 +466,10 @@ impl SessionTable {
                 *slot = sealed;
             }
         }
-        let transcript_from = session.transcript_len();
-
-        // Append, so the conversation stays ONE transcript and the byte
-        // offsets a caller is paging through remain valid across turns.
         let launched = launch_child(
             &command,
             session.dir.path(),
             handle,
-            true,
             self.on_exit.get().cloned(),
             session.turn + 1,
         )
@@ -467,7 +480,6 @@ impl SessionTable {
         session.turns.push(TurnRecord {
             turn: session.turn,
             outcome: TurnOutcome::Running,
-            transcript_from,
             task_minted: false,
             started_at: rmcp::task_manager::current_timestamp(),
             finished_at: None,
@@ -629,8 +641,7 @@ impl SessionTable {
         // The resolved cwd, so a follow-up turn replays to the same
         // directory even when this one fell back to `$PWD`.
         launch.cwd = command.cwd.clone();
-        let Launched { pid, pgid, done } =
-            launch_child(&command, dir.path(), &handle, false, self.on_exit.get().cloned(), 1)?;
+        let Launched { pid, pgid, done } = launch_child(&command, dir.path(), &handle, self.on_exit.get().cloned(), 1)?;
 
         let now = SystemTime::now();
         let session = Session {
@@ -646,7 +657,6 @@ impl SessionTable {
             turns: vec![TurnRecord {
                 turn: 1,
                 outcome: TurnOutcome::Running,
-                transcript_from: 0,
                 task_minted: false,
                 started_at: rmcp::task_manager::current_timestamp(),
                 finished_at: None,
@@ -685,24 +695,28 @@ struct Launched {
 /// Start one vendor process against a session directory.
 ///
 /// Shared by the first turn and every later one. `append` keeps a resumed
-/// turn writing into the SAME `turns.jsonl`, so a conversation reads back
-/// as one continuous transcript and byte offsets stay meaningful across
-/// turns.
+/// turn writing into its OWN `turns/<n>/` directory, so a turn's output
+/// is a whole file rather than a byte range of one — which is what makes
+/// reading turn N unable to swallow turn N+1, its stderr unambiguously
+/// its own, and its completion marker safe without a clear step.
 fn launch_child(
     command: &SpawnCommand,
     dir: &Path,
     handle: &str,
-    append: bool,
     on_exit: Option<ExitHook>,
     turn: u32,
 ) -> Result<Launched> {
+    // This turn's own directory. A fresh turn is a fresh directory, so
+    // there is no previous turn's output to append past and no
+    // completion marker to clear before the process can finish.
+    let turn_dir = dir.join(TURNS_DIR).join(turn.to_string());
+    std::fs::create_dir_all(&turn_dir).with_context(|| format!("mcp harness: create {}", turn_dir.display()))?;
     let open = |name: &str| -> Result<std::fs::File> {
-        let path = dir.join(name);
+        let path = turn_dir.join(name);
         std::fs::OpenOptions::new()
             .write(true)
             .create(true)
-            .append(append)
-            .truncate(!append)
+            .truncate(true)
             .open(&path)
             .with_context(|| format!("mcp harness: open {}", path.display()))
     };
@@ -758,13 +772,9 @@ fn launch_child(
 
     write_breadcrumb(dir, handle, pid, pgid);
 
-    // Clear any previous turn's marker BEFORE the process can finish.
-    // `session_send` reuses the handle and the directory, so a watcher
-    // armed for turn N+1 would otherwise fire instantly on turn N's
-    // leftover. Unconditional: on a fresh `spawn` the file cannot exist
-    // and the failed unlink is cheaper than a `stat` first.
-    let done_path = dir.join(DONE_FILE);
-    let _ = std::fs::remove_file(&done_path);
+    // No marker to clear: this turn's directory is new, so the only
+    // `done.json` that can appear in it is this turn's.
+    let done_path = turn_dir.join(DONE_FILE);
 
     let (tx, done) = watch::channel(None);
     let waiter_handle = handle.to_string();
@@ -1410,7 +1420,7 @@ mod tests {
     /// transcript, so a conversation is one entry and one file however
     /// many turns it runs.
     #[tokio::test]
-    async fn respawn_keeps_the_handle_and_appends_to_one_transcript() {
+    async fn respawn_keeps_the_handle_and_gives_each_turn_its_own_files() {
         let table = table();
         let mut first = sleeper("0");
         first.program = "echo".into();
@@ -1438,14 +1448,24 @@ mod tests {
         while done.borrow().is_none() {
             done.changed().await.unwrap();
         }
-        let transcript = std::fs::read_to_string(table.with(&handle, |s| s.turns_path()).unwrap()).unwrap();
+        // Each turn owns its file, so reading one cannot reach the
+        // other — the property that makes a turn addressable at all.
+        let one = std::fs::read_to_string(table.with(&handle, |s| s.turn_transcript(1)).unwrap()).unwrap();
+        let two = std::fs::read_to_string(table.with(&handle, |s| s.turn_transcript(2)).unwrap()).unwrap();
+        assert!(one.contains("turn-one"), "turn 1 keeps its own output: {one:?}");
         assert!(
-            transcript.contains("turn-one"),
-            "the earlier turn survives: {transcript:?}"
+            !one.contains("turn-two"),
+            "turn 1 must not see a later turn's output: {one:?}"
         );
+        assert!(two.contains("turn-two"), "turn 2 keeps its own output: {two:?}");
         assert!(
-            transcript.contains("turn-two"),
-            "the new turn is appended: {transcript:?}"
+            !two.contains("turn-one"),
+            "turn 2 must not inherit the earlier turn's output: {two:?}"
+        );
+        // The current-turn accessors follow the session's turn number.
+        assert_eq!(
+            table.with(&handle, |s| s.turns_path()).unwrap(),
+            table.with(&handle, |s| s.turn_transcript(2)).unwrap()
         );
     }
 
