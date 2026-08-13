@@ -739,13 +739,13 @@ impl ServerHandler for SkillsServer {
         // `hyprpilot://skills` (the catalogue index) and
         // `hyprpilot://skills/<slug>` are the only URIs this server ever
         // fires for.
-        super::rpc::accept_resource_subscriptions(requested, |uri| {
-            // Exact index, or a `/`-delimited slug. Without the
-            // separator `hyprpilot://skillsfoo` would be acknowledged
-            // and then never fire — the "waiting forever" contract this
-            // filter exists to close.
-            uri == SKILLS_URI_ROOT || uri.starts_with(&format!("{SKILLS_URI_ROOT}/"))
-        })
+        // Delegates to the same parser `read_resource` uses, so an
+        // acknowledged URI is by construction one this server can serve
+        // and fire for. Re-implementing the match here is how
+        // `hyprpilot://skillsfoo` — and an empty slug — got acknowledged
+        // and then never fired, which is the "waiting forever" contract
+        // this filter exists to close.
+        super::rpc::accept_resource_subscriptions(requested, |uri| parse_uri(uri).is_some())
     }
 
     /// Hold the subscription stream open so notifications can ride it.
@@ -1216,6 +1216,23 @@ mod tests {
             body: String::new(),
             refs: frontmatter_references(&frontmatter),
         }
+    }
+
+    /// The acknowledgment is a promise to notify, so it must accept
+    /// exactly the URIs this server can fire for. A prefix match with no
+    /// separator accepted `hyprpilot://skillsfoo`; an empty slug
+    /// addresses nothing.
+    #[test]
+    fn only_addressable_skill_uris_are_acknowledged() {
+        let ok = |uri: &str| parse_uri(uri).is_some();
+
+        assert!(ok("hyprpilot://skills"), "the catalogue index is fireable");
+        assert!(ok("hyprpilot://skills/git-commit"));
+
+        assert!(!ok("hyprpilot://skillsfoo"), "a missing separator is not a slug");
+        assert!(!ok("hyprpilot://skills/"), "an empty slug addresses nothing");
+        assert!(!ok("hyprpilot://sessions/abc"), "another server's scheme");
+        assert!(!ok("file:///etc/passwd"));
     }
 
     /// Build a cache from `(slug, body)` pairs — the delta is about

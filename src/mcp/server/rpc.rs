@@ -63,11 +63,12 @@ pub(super) fn supported_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
 ///
 /// That only works because the invalidation is real. Every mutable
 /// surface pairs the ttl with a signal: `reload` diffs the catalogue and
-/// fires `resources/list_changed` for membership plus
-/// `resources/updated` per changed skill, and a harness turn ending
-/// fires `resources/updated` for its session. `tools/list` needs no
-/// signal because the tool set is compiled in and cannot change while
-/// the process lives.
+/// fires `resources/list_changed` for ANY change — not only membership,
+/// because a client that cannot subscribe has no other signal — plus
+/// `resources/updated` per changed URI as the precision for
+/// subscribers. A harness turn starting or ending fires the same pair
+/// for its session. `tools/list` needs no signal because the tool set is
+/// compiled in and cannot change while the process lives.
 ///
 /// Delivery is two channels, picked per notification by
 /// [`Subscriptions`]: the `subscriptions/listen` stream when the client
@@ -139,20 +140,6 @@ impl<T: Keyed + Clone> Registry<T> {
     }
 }
 
-/// Every open `subscriptions/listen` stream.
-///
-/// A LIST, not a slot. rmcp runs each request in its own task, so two
-/// `listen` calls are legal and the natural filter-change sequence is
-/// listen(new) then cancel(old) — with a single slot, the cancelling
-/// stream tears down the surviving stream's sink and every later
-/// notification silently degrades to an untagged broadcast.
-///
-/// This exists because `Peer::notify_*` is an unconditional pipe send.
-/// It ignores the accepted filter and carries no
-/// `io.modelcontextprotocol/subscriptionId` — so a conforming
-/// `2026-07-28` client, which correlates stream notifications by that
-/// id, never sees it on the stream it opened. Only
-/// [`rmcp::service::SubscriptionSink`] filters and stamps.
 /// What one stream did with a notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StreamOutcome {
@@ -177,6 +164,20 @@ pub(super) fn needs_broadcast(outcomes: &[StreamOutcome]) -> bool {
     outcomes.iter().all(|outcome| *outcome == StreamOutcome::Broken)
 }
 
+/// Every open `subscriptions/listen` stream.
+///
+/// A LIST, not a slot. rmcp runs each request in its own task, so two
+/// `listen` calls are legal and the natural filter-change sequence is
+/// listen(new) then cancel(old) — with a single slot, the cancelling
+/// stream tears down the surviving stream's sink and every later
+/// notification silently degrades to an untagged broadcast.
+///
+/// This exists because `Peer::notify_*` is an unconditional pipe send.
+/// It ignores the accepted filter and carries no
+/// `io.modelcontextprotocol/subscriptionId` — so a conforming
+/// `2026-07-28` client, which correlates stream notifications by that
+/// id, never sees it on the stream it opened. Only
+/// [`rmcp::service::SubscriptionSink`] filters and stamps.
 #[derive(Clone, Default)]
 pub(super) struct Subscriptions(Registry<rmcp::service::SubscriptionSink>);
 

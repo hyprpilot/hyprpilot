@@ -459,9 +459,10 @@ emits `resources/list_changed` plus `resources/updated` per changed
 slug and for the catalogue index, and a reload that changed nothing
 emits **nothing**. Firing spuriously would make every reload cost a
 full re-fetch and teach clients to ignore us. On the harness, a turn
-starting or ending emits `resources/updated` for its session, and
-`spawn` / `session_kill` emit `list_changed` — the session listing
-mutates, so under this ttl it has to say so. The exit hook is installed
+starting emits `resources/updated` for its session; a turn ending emits
+`updated` AND `list_changed`, because the listing embeds live status;
+`spawn` emits `list_changed`, and `session_kill` emits both. The session
+listing mutates, so under this ttl it has to say so. The exit hook is installed
 UNCONDITIONALLY: `notifyOnComplete` names the Claude channel push alone,
 and gating the whole hook on it also skipped `seal_turn` and the session
 `resources/updated`, which are correctness rather than noise.
