@@ -27,8 +27,8 @@ use std::sync::RwLock;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use yaml_serde::Value as YamlValue;
 use tracing::{debug, warn};
+use yaml_serde::Value as YamlValue;
 
 /// Directory-name slug. Constructor enforces the
 /// `[a-z0-9][a-z0-9_-]*` shape so filesystem + RPC lookups share one

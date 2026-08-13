@@ -509,19 +509,71 @@ mod tests {
         cfg
     }
 
-    fn prepared_servers(cfg: &Config, spawn_depth: usize, overlay: Option<crate::config::McpConfig>) -> Vec<String> {
-        let (_, mut profile) =
-            resolve_into_instance_and_profile(cfg, Some("engineer"), &[]).expect("the fixture resolves");
-        if let Some(overlay) = overlay {
-            let mut base = profile.mcp.take().unwrap_or_default();
-            base.merge(overlay);
-            profile.mcp = Some(base);
-        }
+    /// Drives the REAL `prepare`, not a re-implementation of its fold —
+    /// a helper that folded the overlay itself would keep passing with
+    /// the production fold deleted.
+    fn prepared(cfg: &Config, spawn_depth: usize, mcp_overlay: Option<crate::config::McpConfig>) -> Prepared {
+        prepare(
+            cfg,
+            SpawnRequest {
+                profile_id: Some("engineer".into()),
+                prompt: Some("hi".into()),
+                cwd: None,
+                mode: None,
+                config_patches: Vec::new(),
+                provider_args: Vec::new(),
+                stdin_consumed: true,
+                spawn_depth,
+                mcp_overlay,
+            },
+            LaunchOrigin::Harness,
+            None,
+        )
+        .expect("the fixture prepares")
+    }
 
-        build_mcp_registry_with(&profile, None, spawn_depth)
-            .into_iter()
-            .map(|def| def.name)
-            .collect()
+    /// The projected catalogue, read back off the argv the vendor will
+    /// actually receive.
+    fn prepared_servers(cfg: &Config, spawn_depth: usize, overlay: Option<crate::config::McpConfig>) -> Vec<String> {
+        let prepared = prepared(cfg, spawn_depth, overlay);
+        // An empty catalogue emits no `--mcp-config` at all, which is a
+        // real outcome here: gate the harness off and disable `serve`
+        // and there is nothing left to project.
+        let Some(config_path) = prepared.command.args.iter().find(|a| a.ends_with(".json")) else {
+            return Vec::new();
+        };
+        let body = std::fs::read_to_string(config_path).expect("the temp config is readable");
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid json");
+
+        let mut names: Vec<String> = parsed["mcpServers"]
+            .as_object()
+            .expect("mcpServers map")
+            .keys()
+            .cloned()
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Without the stamp every delegate reports depth 0, and the two
+    /// gates that read it — injection here, `spawn` in the sidecar —
+    /// both reopen. Nothing else in the suite would notice.
+    #[test]
+    fn prepare_stamps_the_launch_depth_onto_the_vendor_environment() {
+        let cfg = cfg_with_harness_on_every_profile();
+
+        for depth in [0, 1, 4] {
+            let prepared = prepared(&cfg, depth, None);
+            assert_eq!(
+                prepared
+                    .command
+                    .env
+                    .get(crate::mcp::server::harness::DEPTH_ENV)
+                    .map(String::as_str),
+                Some(depth.to_string().as_str()),
+                "the vendor must inherit the depth its catalogue was gated on"
+            );
+        }
     }
 
     /// The lead keeps its harness; the delegate it launches does not.

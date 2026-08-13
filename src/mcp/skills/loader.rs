@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use yaml_serde::Value as YamlValue;
 use tracing::warn;
+use yaml_serde::Value as YamlValue;
 
 use super::{Skill, SkillSlug};
 

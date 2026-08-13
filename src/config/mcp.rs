@@ -601,6 +601,29 @@ mod tests {
         assert_eq!(parsed.auto_accept_tools, None, "including the ones Default seeds");
     }
 
+    /// The alias has to be the OTHER spelling, which depends on whether
+    /// the struct renames. `[mcp.*]` serialises camelCase so its alias is
+    /// the snake one; a struct with no `rename_all` already serialises
+    /// snake, so aliasing it to its own field name is a no-op that reads
+    /// like coverage. Both directions pinned here, across both kinds of
+    /// struct, so the mistake cannot come back silently.
+    #[test]
+    fn aliases_cover_the_other_spelling_on_both_kinds_of_struct() {
+        // Renamed struct: wire is camelCase, alias adds snake.
+        let renamed: HarnessServerConfig = toml::from_str("max_depth = 4\n").expect("snake alias on a camel struct");
+        assert_eq!(renamed.max_depth, Some(4));
+
+        // Unrenamed struct: wire is snake, alias must add camelCase.
+        let plain: super::super::ProfileConfig =
+            serde_json::from_value(serde_json::json!({ "id": "p", "agent": "a", "systemPrompt": [] }))
+                .expect("camel alias on a snake struct");
+        assert_eq!(plain.system_prompt.as_deref(), Some([].as_slice()));
+
+        let plain: super::super::MultiplexerConfig =
+            toml::from_str("setTitle = true\n").expect("camel alias on a snake struct");
+        assert_eq!(plain.set_title, Some(true));
+    }
+
     /// Both casings parse. `[mcp.*]` serialises camelCase, but TOML
     /// convention is snake_case and the rest of the config tree is
     /// snake, so a captain who writes either gets the same block.

@@ -417,9 +417,12 @@ Skills reach the agent **only** through the skills server.
   wholesale. `overwrite_some` is right for a leaf and wrong for a
   sub-block: a delegate overlay naming only `skills.enabled` would
   otherwise replace the whole `skills` block and take `dirs` with it.
-  Only `effective_mcp_with` calls `McpConfig::merge`, and its left
-  operand is `McpConfig::default()` with all three `None`, so the change
-  is inert on the existing path.
+  Two call sites: `effective_mcp_with`, whose left operand is
+  `McpConfig::default()` with all three `None` (so the change is inert
+  there), and the delegate fold in `spawn::prepare`, which is the one
+  that needs it. `overwrite_some` is RIGHT-wins, so the overlay is the
+  right operand — reversed, an inherited `Some` clobbers it and the
+  feature no-ops against exactly the config that motivated it.
 - **Both casings parse**, at the serde layer only: `[mcp.*]` serializes
   camelCase while the rest of the tree is snake_case, so every
   multi-word field carries a `#[serde(alias)]` for the other spelling.

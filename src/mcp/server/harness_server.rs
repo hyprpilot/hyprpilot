@@ -296,7 +296,7 @@ pub struct HarnessArgs {
     /// lower it where temp space is tight.
     #[arg(
         long = "max-sessions",
-        default_value_t = super::harness::DEFAULT_MAX_SESSIONS,
+        default_value_t = crate::config::mcp::DEFAULT_MAX_SESSIONS,
         value_name = "N"
     )]
     pub max_sessions: usize,
@@ -340,7 +340,7 @@ pub struct HarnessArgs {
     /// back to the seeded default.
     #[arg(
         long = "max-depth",
-        default_value_t = super::harness::DEFAULT_MAX_SPAWN_DEPTH,
+        default_value_t = crate::config::mcp::DEFAULT_MAX_SPAWN_DEPTH,
         value_name = "N"
     )]
     pub max_depth: usize,

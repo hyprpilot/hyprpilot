@@ -44,20 +44,13 @@ pub(crate) const DEPTH_ENV: &str = "HYPRPILOT_SPAWN_DEPTH";
 /// agent that can exhaust the host.
 const MAX_LIVE_SESSIONS: usize = 8;
 
-/// Fallback for `--max-sessions`: how many sessions the table retains
-/// before evicting the oldest FINISHED ones.
-///
-/// A conversation no longer grows this — `session_send` reuses its
-/// session — so the only thing that does is distinct `spawn`s, which the
-/// caller controls. This bounds a long-lived sidecar's memory and its
-/// transcript directories without an API the caller has to remember to
-/// call; `session_kill` on a finished session reaps it immediately for
-/// callers that would rather be explicit.
-///
-/// The value a real launch uses is seeded in `defaults.toml` and
-/// resolved by the launcher; this is the clap default a hand-started
-/// sidecar falls back to.
-pub use crate::config::mcp::{DEFAULT_MAX_SESSIONS, DEFAULT_MAX_SPAWN_DEPTH};
+// Both ceilings a real launch uses are seeded in `defaults.toml` and
+// resolved by the launcher, which hands them to `Harness::new`. The
+// fallbacks in `config::mcp` cover only a hand-started sidecar (via the
+// clap defaults) and the fixtures below — nothing here reads them
+// outside tests.
+#[cfg(test)]
+use crate::config::mcp::{DEFAULT_MAX_SESSIONS, DEFAULT_MAX_SPAWN_DEPTH};
 
 /// Cap on bytes returned by a single `session_read` / inline `spawn`
 /// result. Well under Hermes' 150000-byte tool-output limit, so a

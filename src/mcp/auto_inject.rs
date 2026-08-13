@@ -88,15 +88,19 @@ pub fn build_tools_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPDef
 #[must_use]
 pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf, spawn_depth: usize) -> Option<MCPDefinition> {
     let harness = cfg.harness.clone().unwrap_or_default();
+    if !harness.is_enabled() {
+        return None;
+    }
+    // After `enabled`, so the suppression line fires only where the
+    // captain actually asked for a harness and the cap is why they did
+    // not get one. Ordered the other way it logged for every profile
+    // that never wanted one.
     if spawn_depth >= harness.max_depth() {
         tracing::debug!(
             spawn_depth,
             max_depth = harness.max_depth(),
             "auto_inject: harness suppressed — session is at the delegation cap"
         );
-        return None;
-    }
-    if !harness.is_enabled() {
         return None;
     }
     let exe = std::env::current_exe().ok()?;
