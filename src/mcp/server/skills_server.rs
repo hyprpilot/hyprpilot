@@ -73,7 +73,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Context;
 use clap::Args;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListResourceTemplatesResult,
@@ -82,7 +81,6 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
-use rmcp::ServiceExt;
 use tokio::sync::RwLock;
 
 use crate::config::mcp::DEFAULT_SKILLS_SERVER_NAME;
@@ -148,10 +146,7 @@ async fn run(handler: SkillsServer) -> anyhow::Result<()> {
     let _ = handler.reload_skills().await;
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
-    let running = handler
-        .serve((stdin, stdout))
-        .await
-        .context("mcp::server::skills_server: serve failed at init")?;
+    let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
 
     // Race the transport against SIGTERM/SIGHUP. Without this a
     // supervisor stopping the sidecar would skip every destructor and
@@ -718,6 +713,16 @@ impl ServerHandler for SkillsServer {
                 env!("CARGO_PKG_VERSION").to_string(),
             ))
             .with_instructions(self.instructions())
+    }
+
+    /// Record the negotiated protocol version as the peer's, per
+    /// `rpc::initialize_negotiated`.
+    async fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
+        Ok(super::rpc::initialize_negotiated(self, request, &context))
     }
 
     /// Accept the `subscriptions/listen` opt-in at `2026-07-28`.
@@ -1575,5 +1580,189 @@ metadata:
             block.get("bundleDir").and_then(serde_json::Value::as_str),
             Some("/tmp/plan-hard")
         );
+    }
+}
+
+#[cfg(test)]
+mod opener_tests {
+    use super::{SkillsArgs, SkillsServer};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    const META: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"t","version":"1"},"io.modelcontextprotocol/clientCapabilities":{"roots":{"listChanged":true}}}"#;
+
+    /// Drive one opener sequence against a real skills server over an
+    /// in-memory duplex and return every line it wrote.
+    ///
+    /// The opener is a PARAMETER because rmcp gives the connection's
+    /// first request its own code path: `initialize` negotiates,
+    /// anything else with valid 2026 `_meta` takes the stateless
+    /// branch. A smoke test that only ever opens with `initialize`
+    /// exercises one of them and reports the other as covered.
+    async fn opener_run(opener: &str, expect_ack: bool) -> Vec<String> {
+        let handler = SkillsServer::new(
+            SkillsArgs { skill_dirs: Vec::new() },
+            crate::mcp::server::ConfigSource::default(),
+        )
+        .expect("build skills server");
+
+        let (mut client_tx, server_rx) = tokio::io::duplex(1 << 16);
+        let (server_tx, client_rx) = tokio::io::duplex(1 << 16);
+        let running = crate::mcp::server::rpc::serve_from_first_byte(handler, (server_rx, server_tx));
+
+        client_tx.write_all(opener.as_bytes()).await.unwrap();
+        client_tx
+            .write_all(
+                format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{{{META}}}}}\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        client_tx.flush().await.unwrap();
+
+        // Read per line with its own bound, and stop on the first quiet
+        // gap rather than on a line count. The failure this guards
+        // produces NOTHING, so a reader that waits for a fixed number of
+        // lines hangs on the healthy path too and reports both as empty.
+        let mut lines = Vec::new();
+        let mut buf = BufReader::new(client_rx).lines();
+        while let Ok(Ok(Some(line))) = tokio::time::timeout(std::time::Duration::from_secs(5), buf.next_line()).await {
+            lines.push(line);
+            // Stop as soon as the post-opener request is answered —
+            // that is the whole question. Waiting for a quiet gap would
+            // add its full timeout to every healthy run.
+            // Stop once everything expected has arrived. The ack is a
+            // NOTIFICATION, so it can land either side of the response —
+            // breaking on the response alone drops it on a fast run.
+            if answered(&lines, "1") && (!expect_ack || acknowledged(&lines)) {
+                break;
+            }
+        }
+        drop(client_tx);
+        running.cancel().await.ok();
+        lines
+    }
+
+    fn acknowledged(lines: &[String]) -> bool {
+        lines.iter().any(|l| l.contains("subscriptions/acknowledged"))
+    }
+
+    /// A RESULT for `id`, not merely a message carrying it. Matching an
+    /// error too would let a `tools/list` that started failing satisfy a
+    /// test whose whole question is whether the server still answers.
+    fn answered(lines: &[String], id: &str) -> bool {
+        lines.iter().any(|l| {
+            serde_json::from_str::<serde_json::Value>(l).ok().is_some_and(|v| {
+                v.get("result").is_some()
+                    && v.get("id").map(|i| i.to_string().trim_matches('"').to_string()) == Some(id.to_string())
+            })
+        })
+    }
+
+    /// The negotiated version must be what the peer is RECORDED as, not
+    /// what it asked for. rmcp's in-loop `initialize` records the
+    /// request verbatim, so without `initialize_negotiated` a client
+    /// told `2025-11-25` still receives `2026-07-28` result shapes —
+    /// and one validating the revision it agreed rejects the listing,
+    /// which is the same failure the `ttlMs` stamp exists for.
+    ///
+    /// Sequenced deliberately: requests now run concurrently, so a
+    /// client that pipelines past `initialize` can be answered before
+    /// the negotiated version is recorded. The spec forbids that, and
+    /// this test asserts the behaviour a conforming client sees.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_down_negotiated_session_is_not_served_a_newer_result_shape() {
+        let handler = SkillsServer::new(
+            SkillsArgs { skill_dirs: Vec::new() },
+            crate::mcp::server::ConfigSource::default(),
+        )
+        .expect("build skills server");
+        let (mut client_tx, server_rx) = tokio::io::duplex(1 << 16);
+        let (server_tx, client_rx) = tokio::io::duplex(1 << 16);
+        let running = crate::mcp::server::rpc::serve_from_first_byte(handler, (server_rx, server_tx));
+        let mut reader = BufReader::new(client_rx).lines();
+
+        async fn next_json(reader: &mut tokio::io::Lines<BufReader<tokio::io::DuplexStream>>) -> serde_json::Value {
+            loop {
+                let line = tokio::time::timeout(std::time::Duration::from_secs(5), reader.next_line())
+                    .await
+                    .expect("no reply within the bound")
+                    .expect("read")
+                    .expect("stream closed");
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if v.get("result").is_some() {
+                        return v;
+                    }
+                }
+            }
+        }
+
+        client_tx
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2099-01-01\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"1\"}}}\n")
+            .await
+            .unwrap();
+        client_tx.flush().await.unwrap();
+        let init = next_json(&mut reader).await;
+        assert_eq!(
+            init["result"]["protocolVersion"], "2025-11-25",
+            "an unsupported request negotiates down"
+        );
+
+        client_tx
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n")
+            .await
+            .unwrap();
+        client_tx.flush().await.unwrap();
+        let tools = next_json(&mut reader).await;
+        assert!(
+            tools["result"].get("resultType").is_none(),
+            "a 2025-11-25 session must not be served a 2026-07-28 shape: {tools}"
+        );
+
+        drop(client_tx);
+        running.cancel().await.ok();
+    }
+
+    /// The regression. Claude Code's v2 runtime probes `server/discover`
+    /// on a DISPOSABLE second process, then opens the real transport
+    /// with `subscriptions/listen` as its first request — so for a
+    /// server implementing subscriptions this ordering is the normal
+    /// path, not an edge case.
+    ///
+    /// Under rmcp's pre-loop handshake it deadlocked: the opener is
+    /// handled inline, its acknowledgement awaits a oneshot only the
+    /// serve loop fires, and the loop is not spawned until the opener
+    /// returns. Zero bytes out, forever — which a client reports as
+    /// "connected, tools fetch failed".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_subscription_opener_is_acknowledged_and_does_not_wedge_the_server() {
+        let lines = opener_run(&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":\"listen:0\",\"method\":\"subscriptions/listen\",\"params\":{{{META},\"notifications\":{{\"resourcesListChanged\":true}}}}}}\n"
+        ), true)
+        .await;
+
+        assert!(
+            acknowledged(&lines),
+            "the subscription must be acknowledged, got: {lines:?}"
+        );
+        assert!(
+            answered(&lines, "1"),
+            "a request after the opener must still be answered, got: {lines:?}"
+        );
+    }
+
+    /// The other two openers, so the fix for the one above cannot
+    /// silently break the flows that already worked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_opener_leaves_the_server_answering() {
+        for opener in [
+            "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2026-07-28\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"1\"}}}\n".to_string(),
+            format!("{{\"jsonrpc\":\"2.0\",\"id\":\"d\",\"method\":\"server/discover\",\"params\":{{{META}}}}}\n"),
+        ] {
+            let lines = opener_run(&opener, false).await;
+            assert!(
+                answered(&lines, "1"),
+                "tools/list unanswered after opener {opener}: {lines:?}"
+            );
+        }
     }
 }

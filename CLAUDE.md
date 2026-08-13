@@ -433,6 +433,37 @@ view is refused rather than read as the status — the subscription filter
 is built on the same parser, so accepting one would acknowledge a URI
 that can never be served.
 
+**All three serve from the connection's FIRST byte**
+(`rpc::serve_from_first_byte`, wrapping rmcp's `serve_directly`), never
+`ServiceExt::serve`. `serve` runs a pre-loop handshake that handles a
+non-`initialize` opener INLINE — `handle_request().await` completes
+before the serve loop is spawned — so a LONG-LIVED opener deadlocks the
+process: `subscriptions/listen` acknowledges through
+`Peer::send_notification`, which awaits a oneshot only the loop can
+fire, and the loop does not exist yet. Nothing is read or written
+again, ever. That is not hypothetical: Claude Code's v2 MCP runtime
+probes `server/discover` on a DISPOSABLE second process, then opens the
+real transport with `subscriptions/listen` as its first request — so
+for a server implementing subscriptions this ordering is the NORMAL
+path. It reported `connected` (the throwaway probe succeeded) and then
+`tools fetch failed`, on one account only, because the runtime is
+gated per-account. `mcp serve` was immune twice over: it advertises no
+`listChanged`, so no listen is opened, and it does not override
+`accepted_subscription_filter`, so rmcp answers `-32601` before
+`establish`. Negotiation still runs against
+`supported_protocol_versions`, but rmcp's in-loop `initialize` records
+the version the client ASKED for rather than the negotiated one — so
+every server overrides `initialize` to use
+`rpc::initialize_negotiated`. Without it a client told `2025-11-25` is
+still served `2026-07-28` result shapes, which is the `ttlMs` failure
+again from the other side. Requests now also run CONCURRENTLY, so a
+client that pipelines past `initialize` can be answered before that
+version is recorded; the spec forbids it, and nothing is owed to a
+client that does. Tests drive every opener
+(`initialize`-first, `discover`-first, `listen`-first) because rmcp
+gives the first request its own code path; a smoke that only opens
+with `initialize` covers one of three.
+
 `server/rpc.rs` owns the plumbing all three import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
 `optional_*`, `wait_for_shutdown`, `supported_protocol_versions`). It

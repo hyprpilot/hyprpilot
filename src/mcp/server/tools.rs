@@ -19,7 +19,6 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
-use rmcp::ServiceExt;
 
 use crate::config::mcp::DEFAULT_TOOLS_SERVER_NAME;
 
@@ -41,6 +40,16 @@ pub struct ToolsServer;
 impl ServerHandler for ToolsServer {
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
         super::rpc::supported_protocol_versions()
+    }
+
+    /// Record the negotiated protocol version as the peer's, per
+    /// `rpc::initialize_negotiated`.
+    async fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
+        Ok(super::rpc::initialize_negotiated(self, request, &context))
     }
 
     fn get_info(&self) -> ServerInfo {
@@ -135,10 +144,7 @@ pub async fn run_tools(_args: ToolsArgs, _config: super::ConfigSource) -> anyhow
     tracing::info!("mcp: starting the general-tools server");
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
-    let running = ToolsServer
-        .serve((stdin, stdout))
-        .await
-        .map_err(|e| anyhow::anyhow!("mcp::server::tools: serve failed at init: {e}"))?;
+    let running = super::rpc::serve_from_first_byte(ToolsServer, (stdin, stdout));
 
     wait_for_shutdown(running).await;
 
