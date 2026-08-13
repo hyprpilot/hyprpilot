@@ -427,29 +427,43 @@ the work rather than avoiding it. A new result type that forgets the
 stamp is invisible until a client upgrades — tests pin the constants
 and the set.
 
-**`subscriptions/listen` is the delivery channel, and it is OPT-IN on
-our side too.** rmcp's `accepted_subscription_filter` returns `None` by
-default — subscriptions unimplemented — so a `2026-07-28` client had no
-channel for notifications both servers already emit. Skills and harness
-both override it, echoing back `resourcesListChanged` +
-`resourceSubscriptions`; the SDK intersects that with the request and
-the advertised capabilities, so a client asking for `toolsListChanged`
-is correctly refused (the tool set is compiled in).
+**Notifications go through `rpc::Subscriptions`, never `Peer::notify_*`
+directly.** `Peer::notify_*` is an unconditional pipe send: it reaches
+every client whatever it subscribed to, and carries no
+`io.modelcontextprotocol/subscriptionId` — so a conforming `2026-07-28`
+client, which correlates stream notifications by that id, never sees it
+on the stream it opened. Only `SubscriptionSink` filters and stamps.
+`Subscriptions` holds the sink from an overridden `listen` and picks:
+stream when one is open, broadcast when not. A stdio sidecar serves ONE
+client, so there is at most one stream and no fan-out.
+
+Both servers also override `accepted_subscription_filter` (rmcp
+defaults it to `None` = unimplemented) and filter
+`resourceSubscriptions` to URIs they can actually fire for — the
+acknowledgment is the client's contract, so accepting a scheme we never
+notify leaves it waiting forever. The SDK then intersects with the
+advertised capabilities, which is what refuses `toolsListChanged`.
+Legacy `resources/subscribe` is answered `Ok` rather than rmcp's
+`-32601`, because `resources.subscribe: true` would otherwise be a lie
+to a `2025-11-25` client that does receive the broadcasts.
 
 **Every mutable surface pairs the ttl with a signal.** `reload` DIFFS
-the catalogue (`CatalogueDelta`) rather than firing blind: membership
-changes emit `resources/list_changed`, a body or metadata edit under an
-unchanged slug emits `resources/updated` for that URI alone, and a
-reload that changed nothing emits **nothing**. Firing spuriously would
-make every reload cost a full re-fetch and teach clients to ignore us.
-A harness turn ending emits `resources/updated` for its session.
+the catalogue (`CatalogueDelta`) rather than firing blind: any change
+emits `resources/list_changed` plus `resources/updated` per changed
+slug and for the catalogue index, and a reload that changed nothing
+emits **nothing**. Firing spuriously would make every reload cost a
+full re-fetch and teach clients to ignore us. On the harness, a turn
+starting or ending emits `resources/updated` for its session, and
+`spawn` / `session_kill` emit `list_changed` — the session listing
+mutates, so under this ttl it has to say so.
 
-**The residual gap is deliberate:** `resources/updated` is routed by the
-SDK to subscribers only, so a `2026-07-28` client that subscribes to
-nothing caches for the full ttl and never learns of a change. Older
-clients are unaffected — they get the unsolicited notification down the
-pipe as always. Any NEW mutable surface without a notification must
-lower the ttl for itself rather than assume clients re-fetch.
+**`list_changed` fires on ANY skills change, not only membership.** A
+client that cannot subscribe — anything pre-`2026-07-28` — has no way to
+act on `resources/updated`, so narrowing `list_changed` to membership
+would make a body edit reach it as silence. The per-URI updates are the
+precision for subscribers; `list_changed` is the signal everyone can
+use. Any NEW mutable surface must fire a notification or lower its own
+ttl; doing neither is invisible until a client caches it for a day.
 
 `tool_error` / `structured_with_text` return rmcp 3's `CallToolResponse`
 envelope, converting at that single point so no `call_tool` body deals

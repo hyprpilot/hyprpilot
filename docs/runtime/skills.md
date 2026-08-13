@@ -75,15 +75,17 @@ And as tools:
 
 Results carry a `ttlMs` of 24 hours — longer than a sidecar lives — so a client caches until told otherwise. `reload` earns that by **diffing** the catalogue and firing only what actually changed:
 
-| What you changed              | What fires                                                   |
-| ----------------------------- | ------------------------------------------------------------ |
-| A skill's body or frontmatter | `notifications/resources/updated` for that skill's URI alone |
-| Added or removed a skill      | `notifications/resources/list_changed`                       |
-| Nothing                       | nothing — a no-op reload never invalidates a client's cache  |
+| What you changed              | What fires                                                                                          |
+| ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| A skill's body or frontmatter | `resources/updated` for that skill's URI and for the catalogue index, plus `resources/list_changed` |
+| Added or removed a skill      | `resources/list_changed`, plus `resources/updated` for the index                                    |
+| Nothing                       | nothing — a no-op reload never invalidates a client's cache                                         |
 
 The tool result reports the same thing (`{ reloaded, membershipChanged, updated }`), so you can see what a reload actually moved.
 
-A client on `2026-07-28` opts in with `subscriptions/listen` (`resourcesListChanged` and/or `resourceSubscriptions`); older clients receive these notifications unsolicited, as before. **A new-revision client that subscribes to nothing will not be told**, and caches for the full TTL.
+A client on `2026-07-28` opts in with `subscriptions/listen` (`resourcesListChanged` and/or `resourceSubscriptions`), and its notifications then ride that stream, tagged with the subscription id. A client with no stream — anything on an older revision — receives them as plain unsolicited notifications, exactly as before.
+
+`resources/list_changed` fires on **any** change, not only on membership, precisely so a client that cannot subscribe still has a signal it can act on: a body edit would otherwise reach it only as a `resources/updated` it has no way to have asked for.
 
 Reload refreshes the **sidecar**, not anything already in an agent's context — a skill body read earlier this session stays as it was until re-read.
 

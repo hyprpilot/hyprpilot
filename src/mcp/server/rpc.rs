@@ -69,14 +69,15 @@ pub(super) fn supported_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
 /// signal because the tool set is compiled in and cannot change while
 /// the process lives.
 ///
-/// **The residual gap, accepted deliberately:** `resources/updated`
-/// reaches only clients that opted in through `subscriptions/listen`, so
-/// a `2026-07-28` client that subscribes to nothing caches a skill body
-/// for the full ttl and never learns it changed. Older clients are fine
-/// — they get the unsolicited notification down the pipe as they always
-/// have. Anything that widens this gap (a new mutable surface with no
-/// notification) must lower the ttl for that surface rather than rely on
-/// clients re-fetching.
+/// Delivery is two channels, picked per notification by
+/// [`Subscriptions`]: the `subscriptions/listen` stream when the client
+/// opened one, a raw broadcast when it did not. Both reach every client
+/// that can act on them, so the ttl does not depend on the client having
+/// subscribed.
+///
+/// **The rule this creates:** a new mutable surface must either fire a
+/// notification or lower the ttl for itself. Adding one that does
+/// neither is invisible until a client caches it for a day.
 ///
 /// Stamp both fields on EVERY list and read result, on every server. A
 /// result that forgets is invisible until a client upgrades.
@@ -87,6 +88,99 @@ pub(super) const RESULT_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 /// scoped to one captain's config and one process's catalogue, so no
 /// shared intermediary should serve them to anyone else.
 pub(super) const RESULT_CACHE_SCOPE: CacheScope = CacheScope::Private;
+
+/// The live `subscriptions/listen` stream, when the client opened one.
+///
+/// A stdio sidecar serves exactly ONE client, so at most one stream is
+/// open at a time — which is what lets a notification choose its channel
+/// instead of fanning out to a set.
+///
+/// This exists because `Peer::notify_*` is an unconditional pipe send.
+/// It reaches every client regardless of what they subscribed to, and it
+/// carries no `io.modelcontextprotocol/subscriptionId` — so a conforming
+/// `2026-07-28` client, which correlates stream notifications by that
+/// id, never sees it on the stream it opened. Only
+/// [`rmcp::service::SubscriptionSink`] filters against the accepted
+/// filter and stamps the id.
+#[derive(Clone, Default)]
+pub(super) struct Subscriptions(Arc<tokio::sync::RwLock<Option<rmcp::service::SubscriptionSink>>>);
+
+impl Subscriptions {
+    /// Hold the stream's sink for as long as the stream lives.
+    ///
+    /// rmcp has already acknowledged the subscription by the time this
+    /// runs, so the only job here is to keep the sink reachable and to
+    /// let go when the client cancels — returning `Ok(())` is what marks
+    /// a graceful teardown.
+    pub(super) async fn run(&self, context: rmcp::service::SubscriptionContext) {
+        self.0.write().await.replace(context.sink().clone());
+        context.cancelled().await;
+        self.0.write().await.take();
+    }
+
+    /// Deliver `notifications/resources/updated`, preferring the stream.
+    pub(super) async fn resource_updated(&self, peer: &rmcp::service::Peer<RoleServer>, uri: String) {
+        if let Some(sink) = self.0.read().await.as_ref() {
+            match sink.notify_resource_updated(uri.clone()).await {
+                Ok(()) => return,
+                // Not an error: the client subscribed to other URIs, so
+                // this one is genuinely none of its business. Falling
+                // through to a broadcast would defeat the filter.
+                Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => return,
+                Err(err) => {
+                    tracing::debug!(%err, %uri, "mcp::server: subscription send failed — falling back to broadcast");
+                }
+            }
+        }
+        // No stream, or the stream broke. This is the only channel a
+        // client on an older revision has, and the one they have always
+        // had.
+        let param = rmcp::model::ResourceUpdatedNotificationParam::new(uri.clone());
+        if let Err(err) = peer.notify_resource_updated(param).await {
+            tracing::debug!(%err, %uri, "mcp::server: resource-updated notification failed");
+        }
+    }
+
+    /// Deliver `notifications/resources/list_changed`, preferring the
+    /// stream. Same channel choice as [`Self::resource_updated`].
+    pub(super) async fn resource_list_changed(&self, peer: &rmcp::service::Peer<RoleServer>) {
+        if let Some(sink) = self.0.read().await.as_ref() {
+            match sink.notify_resource_list_changed().await {
+                Ok(()) => return,
+                Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => return,
+                Err(err) => {
+                    tracing::debug!(%err, "mcp::server: subscription send failed — falling back to broadcast");
+                }
+            }
+        }
+        if let Err(err) = peer.notify_resource_list_changed().await {
+            tracing::debug!(%err, "mcp::server: resource list-changed notification failed");
+        }
+    }
+}
+
+/// Accept a `subscriptions/listen` opt-in for the two categories the
+/// in-tree servers actually emit.
+///
+/// `resource_subscriptions` is filtered to URIs this server can notify:
+/// the acknowledgment is the client's contract for what it will receive,
+/// so accepting a scheme we never fire leaves it waiting forever. The
+/// SDK then intersects the result with the request and the advertised
+/// capabilities, which is what correctly refuses `toolsListChanged` —
+/// the tool set is compiled in and cannot change.
+pub(super) fn accept_resource_subscriptions(
+    requested: &rmcp::model::SubscriptionFilter,
+    known_uri: impl Fn(&str) -> bool,
+) -> Option<rmcp::model::SubscriptionFilter> {
+    let mut accepted = rmcp::model::SubscriptionFilter::new();
+    accepted.resources_list_changed = requested.resources_list_changed;
+    accepted.resource_subscriptions = requested
+        .resource_subscriptions
+        .as_ref()
+        .map(|uris| uris.iter().filter(|uri| known_uri(uri)).cloned().collect());
+
+    Some(accepted)
+}
 
 /// Return once the MCP transport closes or a termination signal
 /// arrives, whichever comes first.
@@ -319,6 +413,45 @@ mod tests {
             CacheScope::Private,
             "these results are scoped to one captain's config — no shared intermediary may serve them on"
         );
+    }
+
+    /// The acknowledgment is the client's CONTRACT for what it will
+    /// receive, so accepting a URI this server never fires for leaves
+    /// the client waiting on it forever.
+    #[test]
+    fn the_filter_accepts_only_uris_this_server_can_notify() {
+        let mut requested = rmcp::model::SubscriptionFilter::new();
+        requested.resources_list_changed = Some(true);
+        requested.resource_subscriptions = Some(vec![
+            "hyprpilot://sessions/abc".into(),
+            "file:///etc/passwd".into(),
+            "hyprpilot://skills/git-commit".into(),
+        ]);
+
+        let accepted = accept_resource_subscriptions(&requested, |uri| uri.starts_with("hyprpilot://sessions/"))
+            .expect("subscriptions are supported");
+
+        assert_eq!(
+            accepted.resource_subscriptions,
+            Some(vec!["hyprpilot://sessions/abc".to_string()]),
+            "a foreign scheme must be dropped, not acknowledged"
+        );
+        assert_eq!(accepted.resources_list_changed, Some(true));
+    }
+
+    /// `toolsListChanged` is never ours to give — the tool set is
+    /// compiled in. We simply never set it; the SDK's own intersection
+    /// against the advertised capabilities does the rest.
+    #[test]
+    fn the_filter_never_claims_a_category_we_cannot_emit() {
+        let mut requested = rmcp::model::SubscriptionFilter::new();
+        requested.tools_list_changed = Some(true);
+        requested.prompts_list_changed = Some(true);
+
+        let accepted = accept_resource_subscriptions(&requested, |_| true).expect("subscriptions are supported");
+
+        assert_eq!(accepted.tools_list_changed, None);
+        assert_eq!(accepted.prompts_list_changed, None);
     }
 
     fn supported_contains(set: &[ProtocolVersion], want: &ProtocolVersion) -> bool {

@@ -205,7 +205,7 @@ Every session is also a **resource** — `hyprpilot://sessions/<handle>` — so 
 ```jsonc
 // once, after `spawn` returns the handle
 {"method": "subscriptions/listen",
- "params": {"subscribe": {"resourceSubscriptions": ["hyprpilot://sessions/<handle>"]}}}
+ "params": {"notifications": {"resourceSubscriptions": ["hyprpilot://sessions/<handle>"]}}}
 
 // when the turn ends
 {"method": "notifications/resources/updated",
@@ -218,11 +218,9 @@ Every session is also a **resource** — `hyprpilot://sessions/<handle>` — so 
 
 **Every older mechanism still works, unchanged.** `notifications/claude/channel` still fires for Claude Code, `notifications/tasks` still pushes to clients that took a task handle, `session_status` is still the cheap poll, and `done.json` is still there for shell watchers. The subscription is an addition, not a replacement — a client that opts into nothing behaves exactly as before.
 
-::: warning Subscribe, or accept staleness
+Results carry `ttlMs` of 24 hours — longer than a sidecar lives — so a client that honours it re-fetches only when notified. Every change that invalidates a cached read is announced: a turn starting or ending, a `spawn` or a reap moving the list.
 
-Results carry `ttlMs` of 24 hours — longer than a sidecar lives — so a client that honours it re-fetches only when notified. `resources/updated` is routed to **subscribers only**. A `2026-07-28` client that subscribes to nothing may therefore serve a cached status indefinitely. Clients on older revisions are unaffected: they receive the notification unsolicited, as they always have.
-
-:::
+**Two delivery channels, chosen per notification.** With a `subscriptions/listen` stream open, notifications ride that stream — filtered to the URIs you subscribed to and tagged with `io.modelcontextprotocol/subscriptionId`, which is what a conforming client correlates on. With no stream, they are sent as plain unsolicited notifications, which is the only channel a client on an older revision has and exactly what it received before.
 
 ### Watching from a shell
 

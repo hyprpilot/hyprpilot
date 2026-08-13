@@ -229,6 +229,8 @@ impl LoadedSkill {
 struct SkillsServer {
     registry: Arc<SkillsRegistry>,
     skills_cache: Arc<RwLock<SkillsCache>>,
+    /// The client's `subscriptions/listen` stream, when it opened one.
+    subscriptions: super::rpc::Subscriptions,
 }
 
 impl SkillsServer {
@@ -275,6 +277,7 @@ impl SkillsServer {
         Ok(Self {
             registry: Arc::new(SkillsRegistry::new(entries)),
             skills_cache: Arc::new(RwLock::new(SkillsCache::default())),
+            subscriptions: super::rpc::Subscriptions::default(),
         })
     }
 
@@ -429,6 +432,16 @@ fn frontmatter_string(value: &yaml_serde::Value, key: &str) -> Option<String> {
         .and_then(yaml_serde::Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .map(str::to_string)
+}
+
+/// Root of every URI this server serves — the catalogue index itself
+/// and, with a `/<slug>` suffix, each skill body.
+const SKILLS_URI_ROOT: &str = "hyprpilot://skills";
+
+/// The catalogue index resource. It renders every skill's slug, title
+/// and description, so ANY skill change makes it stale.
+fn catalogue_uri() -> String {
+    SKILLS_URI_ROOT.to_string()
 }
 
 fn skill_uri(slug: &str) -> String {
@@ -723,10 +736,39 @@ impl ServerHandler for SkillsServer {
         &self,
         requested: &rmcp::model::SubscriptionFilter,
     ) -> Option<rmcp::model::SubscriptionFilter> {
-        let mut accepted = rmcp::model::SubscriptionFilter::new();
-        accepted.resources_list_changed = requested.resources_list_changed;
-        accepted.resource_subscriptions = requested.resource_subscriptions.clone();
-        Some(accepted)
+        // `hyprpilot://skills` (the catalogue index) and
+        // `hyprpilot://skills/<slug>` are the only URIs this server ever
+        // fires for.
+        super::rpc::accept_resource_subscriptions(requested, |uri| uri.starts_with(SKILLS_URI_ROOT))
+    }
+
+    /// Hold the subscription stream open so notifications can ride it.
+    async fn listen(&self, context: rmcp::service::SubscriptionContext) -> Result<(), rmcp::ErrorData> {
+        self.subscriptions.run(context).await;
+        Ok(())
+    }
+
+    /// Legacy `resources/subscribe`, honoured so `resources.subscribe:
+    /// true` is truthful at every revision we negotiate. Records
+    /// nothing: a peer with no `subscriptions/listen` stream already
+    /// receives these notifications as broadcasts. rmcp's default
+    /// answers `-32601`, which would make the capability a lie.
+    #[allow(deprecated)]
+    async fn subscribe(
+        &self,
+        _request: rmcp::model::SubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        Ok(())
+    }
+
+    #[allow(deprecated)]
+    async fn unsubscribe(
+        &self,
+        _request: rmcp::model::UnsubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        Ok(())
     }
 
     async fn list_tools(
@@ -916,20 +958,32 @@ impl ServerHandler for SkillsServer {
                 //
                 // Membership first: a skill appearing or disappearing is
                 // what `resources/list_changed` describes.
-                if delta.membership_changed {
-                    if let Err(err) = context.peer.notify_resource_list_changed().await {
-                        tracing::debug!(%err, "mcp::server: reload resource list-changed notification failed");
-                    }
+                // Fired whenever ANYTHING changed, not only on
+                // membership. A client on an older revision cannot
+                // subscribe, so `resources/updated` is not a signal it
+                // can act on — `list_changed` is the only one it has,
+                // and it fired on every reload before this. Narrowing it
+                // to membership would let a body edit reach such a
+                // client as silence.
+                if !delta.is_empty() {
+                    self.subscriptions.resource_list_changed(&context.peer).await;
                 }
                 // Then per-skill. A body edited under an unchanged slug
                 // does not move the list, so the list-changed signal
                 // cannot express it — and that is the common edit.
                 for slug in &delta.updated {
-                    let uri = format!("hyprpilot://skills/{slug}");
-                    let param = rmcp::model::ResourceUpdatedNotificationParam::new(uri.clone());
-                    if let Err(err) = context.peer.notify_resource_updated(param).await {
-                        tracing::debug!(%err, %uri, "mcp::server: reload resource-updated notification failed");
-                    }
+                    self.subscriptions
+                        .resource_updated(&context.peer, skill_uri(slug))
+                        .await;
+                }
+                // The catalogue index renders every skill's slug, title
+                // and description, so any change at all makes it stale —
+                // including a frontmatter-only edit that never moves the
+                // list.
+                if !delta.is_empty() {
+                    self.subscriptions
+                        .resource_updated(&context.peer, catalogue_uri())
+                        .await;
                 }
                 tracing::info!(
                     count,
