@@ -171,29 +171,69 @@ impl ServerHandler for HarnessServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListResourcesResult, rmcp::ErrorData> {
-        let resources = self
+        let mut resources: Vec<rmcp::model::Resource> = self
             .harness
             .session_resources()
             .into_iter()
-            .flat_map(|session| {
-                use crate::mcp::server::harness::SessionView;
-                SessionView::ALL.into_iter().map(move |view| {
-                    let (label, mime) = match view {
-                        SessionView::Status => ("status", "application/json"),
-                        SessionView::Result => ("latest answer", "text/plain"),
-                        SessionView::Transcript => ("raw event stream", "application/x-ndjson"),
-                    };
-                    rmcp::model::Resource::new(
-                        crate::mcp::server::harness::session_view_uri(&session.handle, view),
-                        format!("{}{}", session.handle, view.suffix()),
-                    )
-                    .with_description(format!("{} — {label} ({})", session.profile, session.status))
-                    .with_mime_type(mime)
-                })
+            // ONE entry per session, not one per view. Four views
+            // times 64 retained sessions is 256 entries in a listing
+            // every client pays for on connect — the same bloat the
+            // skills server measured and cut. The other views are
+            // advertised as a TEMPLATE below and read by URI.
+            .map(|session| {
+                rmcp::model::Resource::new(
+                    crate::mcp::server::harness::session_view_uri(
+                        &session.handle,
+                        crate::mcp::server::harness::SessionView::Status,
+                    ),
+                    session.handle.clone(),
+                )
+                .with_description(format!("{} session ({})", session.profile, session.status))
+                .with_mime_type("application/json")
             })
             .collect();
 
+        // The two indexes first: what can be launched, and what is
+        // running. Both are the catalogue a caller starts from.
+        resources.insert(
+            0,
+            rmcp::model::Resource::new(crate::mcp::server::harness::SESSIONS_URI, "sessions")
+                .with_description("Every session this server owns".to_string())
+                .with_mime_type("application/json"),
+        );
+        resources.insert(
+            0,
+            rmcp::model::Resource::new(crate::mcp::server::harness::PROFILES_URI, "profiles")
+                .with_description("Profiles this session may launch".to_string())
+                .with_mime_type("application/json"),
+        );
+
         Ok(rmcp::model::ListResourcesResult::with_all_items(resources)
+            .with_ttl_ms(RESULT_TTL_MS)
+            .with_cache_scope(RESULT_CACHE_SCOPE))
+    }
+
+    /// The views a session URI can carry, advertised rather than
+    /// enumerated.
+    ///
+    /// `resources/list` names one entry per session; four views times 64
+    /// retained sessions would be a listing every client pays for on
+    /// connect. A template says the same thing in one row.
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData> {
+        let templates =
+            vec![
+                rmcp::model::ResourceTemplate::new("hyprpilot://sessions/{handle}/{view}", "session view")
+                    .with_description(
+                        "One view of a session: `result` (the latest turn's answer, or why there is none), \
+             `transcript` (the raw event stream), or `stderr`. The bare handle is its status.",
+                    ),
+            ];
+
+        Ok(rmcp::model::ListResourceTemplatesResult::with_all_items(templates)
             .with_ttl_ms(RESULT_TTL_MS)
             .with_cache_scope(RESULT_CACHE_SCOPE))
     }
@@ -213,6 +253,43 @@ impl ServerHandler for HarnessServer {
         use crate::mcp::server::harness::SessionView;
 
         let uri = &request.uri;
+        if uri == crate::mcp::server::harness::SESSIONS_URI {
+            let (_, payload) = self.harness.session_list();
+            return Ok(rmcp::model::ReadResourceResult::new(vec![
+                rmcp::model::ResourceContents::TextResourceContents {
+                    uri: uri.clone(),
+                    mime_type: Some("application/json".into()),
+                    text: serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string()),
+                    meta: None,
+                },
+            ])
+            .with_ttl_ms(RESULT_TTL_MS)
+            .with_cache_scope(RESULT_CACHE_SCOPE)
+            .into());
+        }
+        if uri == crate::mcp::server::harness::PROFILES_URI {
+            let (_, payload) = self
+                .harness
+                .list_profiles()
+                .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
+            return Ok(rmcp::model::ReadResourceResult::new(vec![
+                rmcp::model::ResourceContents::TextResourceContents {
+                    uri: uri.clone(),
+                    mime_type: Some("application/json".into()),
+                    text: serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string()),
+                    meta: None,
+                },
+            ])
+            // `ttlMs: 0`, unlike every other listing. The profile set
+            // comes from config re-read per call, and NOTHING watches
+            // that file — so there is no notification to invalidate a
+            // cached copy with. Under this branch's own rule, a surface
+            // that cannot signal must not claim freshness.
+            .with_ttl_ms(0)
+            .with_cache_scope(RESULT_CACHE_SCOPE)
+            .into());
+        }
+
         let (handle, view) = crate::mcp::server::harness::parse_session_uri(uri)
             .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("unknown resource: {uri}"), None))?;
         let (text, finished) = self
@@ -229,6 +306,7 @@ impl ServerHandler for HarnessServer {
             SessionView::Status => "application/json",
             SessionView::Result => "text/plain",
             SessionView::Transcript => "application/x-ndjson",
+            SessionView::Stderr => "text/plain",
         };
 
         Ok(

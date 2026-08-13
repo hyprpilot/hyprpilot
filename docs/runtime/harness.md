@@ -212,15 +212,22 @@ Every session is also a **resource** — `hyprpilot://sessions/<handle>` — so 
  "params": {"uri": "hyprpilot://sessions/<handle>"}}
 ```
 
-### Three views of a session
+### The resource surface
 
-A session is addressable in three ways, so you fetch the part you want instead of the whole transcript:
+| URI                                        | What it returns                                               | Cacheable      |
+| ------------------------------------------ | ------------------------------------------------------------- | -------------- |
+| `hyprpilot://profiles`                     | What `list_profiles` returns, same delegate scope             | no — see below |
+| `hyprpilot://sessions`                     | What `session_list` returns                                   | yes            |
+| `hyprpilot://sessions/<handle>`            | What `session_status` returns — state, exit code, `hasResult` | when exited    |
+| `hyprpilot://sessions/<handle>/result`     | **The latest turn's answer**, or why there isn't one          | when exited    |
+| `hyprpilot://sessions/<handle>/transcript` | The raw event stream, capped                                  | when exited    |
+| `hyprpilot://sessions/<handle>/stderr`     | The vendor's stderr                                           | when exited    |
 
-| URI                                        | What it returns                                                                              | Type   |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------- | ------ |
-| `hyprpilot://sessions/<handle>`            | What `session_status` returns — state, exit code, `hasResult`                                | JSON   |
-| `hyprpilot://sessions/<handle>/result`     | **The latest turn's answer**, extracted per vendor — or the upstream error if the run failed | text   |
-| `hyprpilot://sessions/<handle>/transcript` | The raw event stream, capped                                                                 | NDJSON |
+`resources/list` names the two indexes and **one entry per session**, not one per view. The views are advertised as the template `hyprpilot://sessions/{handle}/{view}` instead — four views across 64 retained sessions would be 256 rows every client pays for on connect.
+
+`hyprpilot://profiles` carries `ttlMs: 0`, alone among the listings. The profile set comes from config re-read per call and **nothing watches that file**, so there is no notification to invalidate a cached copy with; a surface that cannot signal must not claim freshness.
+
+`done.json` and the crash breadcrumb are deliberately not resources. The status view answers what `done.json` answers, and `done.json` exists precisely as the one signal a shell watcher can reach without MCP. The breadcrumb is orphan-debugging plumbing.
 
 `/result` is the one that saves work. It does server-side what the `jq` recipes did by hand: finds the vendor's answer event, scopes it to the **latest** turn, and joins multi-block answers. It never comes back blank for a finished session — the three ways a run produces no answer each report themselves:
 

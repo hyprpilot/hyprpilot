@@ -373,8 +373,20 @@ missing. Do not re-merge them.
 | `mcp skills` | `hyprpilot_skills` | `server/skills_server.rs` | skills tools + resources | on |
 | `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) + session resources | **off** |
 
-**Sessions are resources in THREE views** — `hyprpilot://sessions/
-<handle>` (status), `/result` and `/transcript` — so a caller can
+**Sessions are resources in FOUR views** — `hyprpilot://sessions/
+<handle>` (status), `/result`, `/transcript` and `/stderr` — plus two
+indexes, `hyprpilot://sessions` (what `session_list` returns) and
+`hyprpilot://profiles` (what `list_profiles` returns, same delegate
+scope). `resources/list` names the indexes and ONE entry per session,
+never one per view — four views across 64 retained sessions is 256 rows
+every client pays for on connect, the bloat the skills listing already
+measured and cut. The views ride a resource TEMPLATE instead.
+`hyprpilot://profiles` is the one listing with `ttlMs: 0`: config is
+re-read per call and nothing watches that file, so there is no signal to
+invalidate it with. `done.json` and the breadcrumb are deliberately NOT
+resources — the status view answers the first, whose whole purpose is
+being reachable without MCP, and the second is orphan plumbing. A caller
+can
 `subscriptions/listen` on a handle and be WOKEN when its turn ends
 instead of polling `session_status` or watching `done.json`, and then
 read only the part it wants.

@@ -47,6 +47,20 @@ pub(crate) const DEPTH_ENV: &str = "HYPRPILOT_SPAWN_DEPTH";
 /// it rather than a second address.
 pub(crate) const SESSION_URI_PREFIX: &str = "hyprpilot://sessions/";
 
+/// The launchable-profile catalogue, as a resource.
+///
+/// Same payload and same DELEGATE SCOPE as `list_profiles` — the scope
+/// is what a captain uses to keep a work session away from personal
+/// profiles, so a resource that bypassed it would be a hole rather than
+/// a convenience.
+pub(crate) const PROFILES_URI: &str = "hyprpilot://profiles";
+
+/// The session catalogue — what `session_list` returns.
+///
+/// The bare form cannot collide with a handle: every session URI carries
+/// a `sessions/` prefix, so this is the index and those are its members.
+pub(crate) const SESSIONS_URI: &str = "hyprpilot://sessions";
+
 /// Render one view of a session as its resource URI. `SessionView::Status`
 /// is the bare handle, so the URI that existed before the other views
 /// were added still means what it meant.
@@ -70,6 +84,11 @@ pub(crate) enum SessionView {
     /// The raw event stream, capped. `session_read` remains the way to
     /// page a long one — a resource read has no cursor.
     Transcript,
+    /// The vendor's stderr. Where a LAUNCH failure lands, with the
+    /// transcript left empty — and the only place a run that answered
+    /// but also warned says so, which `/result` cannot show because it
+    /// consults stderr only when there is no answer.
+    Stderr,
 }
 
 impl SessionView {
@@ -77,6 +96,7 @@ impl SessionView {
         match view {
             "result" => Some(Self::Result),
             "transcript" => Some(Self::Transcript),
+            "stderr" => Some(Self::Stderr),
             _ => None,
         }
     }
@@ -86,11 +106,12 @@ impl SessionView {
             Self::Status => "",
             Self::Result => "/result",
             Self::Transcript => "/transcript",
+            Self::Stderr => "/stderr",
         }
     }
 
     /// Every view, so `resources/list` and the tests enumerate one list.
-    pub(crate) const ALL: [Self; 3] = [Self::Status, Self::Result, Self::Transcript];
+    pub(crate) const ALL: [Self; 4] = [Self::Status, Self::Result, Self::Transcript, Self::Stderr];
 }
 
 /// Recover the handle and view from a session URI. `None` for any other
@@ -733,6 +754,17 @@ impl Harness {
                         ),
                         dump => format!("error: the session failed to launch\n\n{dump}"),
                     }
+                }
+            }
+            SessionView::Stderr => {
+                // Append-mode across turns, like the transcript, so an
+                // earlier turn's wreckage stays visible. Capped the same
+                // way and cut from the front.
+                let (tail, truncated) = tail_of(&stderr, usize::MAX);
+                if truncated {
+                    format!("[earlier output omitted]\n{tail}")
+                } else {
+                    tail
                 }
             }
             SessionView::Transcript => {
