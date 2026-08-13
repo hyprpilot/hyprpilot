@@ -27,8 +27,8 @@ use std::sync::RwLock;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_yaml::Value as YamlValue;
 use tracing::{debug, warn};
+use yaml_serde::Value as YamlValue;
 
 /// Directory-name slug. Constructor enforces the
 /// `[a-z0-9][a-z0-9_-]*` shape so filesystem + RPC lookups share one
@@ -120,7 +120,7 @@ pub struct Skill {
     pub description: String,
     pub body: String,
     pub path: PathBuf,
-    /// Raw YAML frontmatter; `serde_yaml::Value` to stay agnostic of
+    /// Raw YAML frontmatter; `yaml_serde::Value` to stay agnostic of
     /// the author's schema.
     pub frontmatter: YamlValue,
 }

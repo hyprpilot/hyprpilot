@@ -36,9 +36,15 @@ pub struct HarnessServer {
 }
 
 impl HarnessServer {
-    fn new(config: super::ConfigSource, max_sessions: usize, delegates: DelegatePolicy) -> Self {
+    fn new(
+        config: super::ConfigSource,
+        max_sessions: usize,
+        max_depth: usize,
+        delegates: DelegatePolicy,
+        delegate_mcp: Option<crate::config::McpConfig>,
+    ) -> Self {
         Self {
-            harness: Arc::new(Harness::new(config, max_sessions, delegates)),
+            harness: Arc::new(Harness::new(config, max_sessions, max_depth, delegates, delegate_mcp)),
         }
     }
 }
@@ -290,7 +296,7 @@ pub struct HarnessArgs {
     /// lower it where temp space is tight.
     #[arg(
         long = "max-sessions",
-        default_value_t = super::harness::DEFAULT_MAX_SESSIONS,
+        default_value_t = crate::config::mcp::DEFAULT_MAX_SESSIONS,
         value_name = "N"
     )]
     pub max_sessions: usize,
@@ -325,6 +331,29 @@ pub struct HarnessArgs {
     /// unrestricted. An empty list must not decay into its opposite.
     #[arg(long = "no-delegates")]
     pub no_delegates: bool,
+
+    /// How many levels of delegation to allow — `[mcp.harness] maxDepth`
+    /// resolved by the launcher.
+    ///
+    /// The same number gated whether this sidecar was injected at all,
+    /// so the two answers cannot disagree. A hand-started sidecar falls
+    /// back to the seeded default.
+    #[arg(
+        long = "max-depth",
+        default_value_t = crate::config::mcp::DEFAULT_MAX_SPAWN_DEPTH,
+        value_name = "N"
+    )]
+    pub max_depth: usize,
+
+    /// `[mcp.harness.mcp]` as JSON — the `[mcp]` overlay every delegate
+    /// receives on top of its own resolved block.
+    ///
+    /// Rides argv for the reason the delegate globs do: the block is
+    /// per-profile and a sidecar cannot work out which profile spawned
+    /// it. Omitted entirely when the captain declared none, which leaves
+    /// every delegate on its own configuration.
+    #[arg(long = "delegate-mcp", value_name = "JSON")]
+    pub delegate_mcp: Option<String>,
 }
 
 /// Shared `spawn` / `session_send` parameters. Every one mirrors a CLI flag
@@ -760,6 +789,23 @@ pub(super) fn launch_summary(payload: &serde_json::Value) -> String {
     out
 }
 
+/// Parse `--delegate-mcp` and run it through garde.
+///
+/// Both halves fail the sidecar at startup rather than degrading to
+/// "no overlay": the overlay is what NARROWS a delegate's reach, so
+/// dropping it silently widens what a delegate can do — the same reason
+/// a malformed delegate glob is fatal rather than skipped. Validation
+/// matters most exactly where a hand-started sidecar bypasses the
+/// launcher's own config-load check.
+fn parse_delegate_mcp(raw: &str) -> anyhow::Result<crate::config::McpConfig> {
+    let overlay: crate::config::McpConfig = serde_json::from_str(raw)
+        .map_err(|err| anyhow::anyhow!("mcp harness: `--delegate-mcp` is not a valid [mcp] block: {err}"))?;
+    garde::Validate::validate(&overlay)
+        .map_err(|err| anyhow::anyhow!("mcp harness: `--delegate-mcp` failed validation: {err}"))?;
+
+    Ok(overlay)
+}
+
 /// Run the harness server over stdio.
 pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyhow::Result<()> {
     // `--no-delegates` is `includeProfiles = []`: an allow-filter that
@@ -767,18 +813,21 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     let include = (args.no_delegates || !args.include_profiles.is_empty()).then_some(&args.include_profiles[..]);
     let delegates = DelegatePolicy::new(include, &args.exclude_profiles)
         .map_err(|err| anyhow::anyhow!("mcp harness: delegate scope: {err}"))?;
+    let delegate_mcp = args.delegate_mcp.as_deref().map(parse_delegate_mcp).transpose()?;
     tracing::info!(
         max_sessions = args.max_sessions,
+        max_depth = args.max_depth,
         include_profiles = ?args.include_profiles,
         exclude_profiles = ?args.exclude_profiles,
         no_delegates = args.no_delegates,
+        delegate_mcp = args.delegate_mcp.is_some(),
         "mcp: starting the harness server"
     );
     // Reclaim anything a crashed predecessor left behind before starting
     // our own. A non-empty sweep logs at `warn`.
     super::sessions::sweep_stale_sessions();
 
-    let handler = HarnessServer::new(config, args.max_sessions, delegates);
+    let handler = HarnessServer::new(config, args.max_sessions, args.max_depth, delegates, delegate_mcp);
     // Clone the table BEFORE `serve()` — it consumes the handler, and
     // `waiting()` consumes the `RunningService`, so this is the only
     // chance to keep a handle for the shutdown reap.
@@ -882,6 +931,38 @@ fn instructions() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_delegate_overlay_parses_from_the_json_the_launcher_emits() {
+        let overlay = parse_delegate_mcp(r#"{"skills":{"enabled":false}}"#).expect("a well-formed block parses");
+
+        assert_eq!(overlay.skills.and_then(|s| s.enabled), Some(false));
+    }
+
+    /// Dropping a malformed overlay would WIDEN what delegates reach —
+    /// the same reason a malformed delegate glob kills the sidecar
+    /// instead of being skipped. Both failure modes are fatal.
+    #[test]
+    fn a_malformed_delegate_overlay_kills_the_sidecar() {
+        let err = parse_delegate_mcp("{not json").expect_err("garbage must not degrade to `no overlay`");
+        assert!(err.to_string().contains("not a valid [mcp] block"), "got: {err}");
+
+        let err = parse_delegate_mcp(r#"{"nonsense":true}"#).expect_err("deny_unknown_fields rejects a typo");
+        assert!(err.to_string().contains("not a valid [mcp] block"), "got: {err}");
+    }
+
+    /// garde runs on the overlay too. A hand-started sidecar never went
+    /// through the launcher's config-load check, so this is the only
+    /// place a malformed glob inside the overlay can be caught before it
+    /// reaches match time — where an uncompilable exclude silently stops
+    /// excluding.
+    #[test]
+    fn a_well_formed_overlay_carrying_a_bad_glob_still_fails() {
+        let err = parse_delegate_mcp(r#"{"autoAcceptTools":["[unterminated"]}"#)
+            .expect_err("valid JSON is not enough — it has to validate");
+
+        assert!(err.to_string().contains("failed validation"), "got: {err}");
+    }
 
     /// A harness tool's description is the ONLY guidance the calling
     /// agent gets — there is no README in its context. Pin that each one

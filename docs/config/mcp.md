@@ -145,7 +145,7 @@ mcp:
 
   harness:
     enabled: true
-    maxSessions: 64
+    max_sessions: 64
 ```
 
 | Field             | Type             | Default | What it does                                                                       |
@@ -182,14 +182,64 @@ Unlike the other two, this server is also gated on having something to serve: if
 
 ### `mcp.harness`
 
-| Field              | Type             | Default | What it does                                                                                                   |
-| ------------------ | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
-| `maxSessions`      | int              | `64`    | Sessions retained before the oldest **finished** ones are evicted.                                             |
-| `notifyOnComplete` | bool             | `true`  | Push a completion event into the lead's context when a turn finishes. See [Agent Harness](../runtime/harness). |
-| `includeProfiles`  | string[] (globs) | unset   | Profile ids **this launch** may delegate to. Unset applies no filter; `[]` means none. See below.              |
-| `excludeProfiles`  | string[] (globs) | `[]`    | Profile ids this launch may **not** delegate to. Beats `includeProfiles` on overlap.                           |
+| Field                | Type             | Default | What it does                                                                                                   |
+| -------------------- | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `max_depth`          | int              | `1`     | Levels of delegation allowed. See below.                                                                       |
+| `max_sessions`       | int              | `64`    | Sessions retained before the oldest **finished** ones are evicted.                                             |
+| `notify_on_complete` | bool             | `true`  | Push a completion event into the lead's context when a turn finishes. See [Agent Harness](../runtime/harness). |
+| `includeProfiles`    | string[] (globs) | unset   | Profile ids **this launch** may delegate to. Unset applies no filter; `[]` means none. See below.              |
+| `excludeProfiles`    | string[] (globs) | `[]`    | Profile ids this launch may **not** delegate to. Beats `includeProfiles` on overlap.                           |
+| `mcp`                | `mcp` block      | unset   | The `[mcp]` block every delegate this harness spawns receives. See below.                                      |
+
+`max_depth`, `max_sessions` and `notify_on_complete` are seeded by the compiled defaults, so your own config overrides them per field without restating the rest.
+
+::: warning Write a seeded key the way the seed writes it
+
+Config keys accept both `snake_case` and `camelCase`, but patches merge by **key string** before anything is typed. These three are seeded `snake_case`, so overriding one as `maxDepth` / `maxSessions` / `notifyOnComplete` arrives as a second key and fails config load with `duplicate field`. Every other key is unaffected — nothing seeds them, so there is nothing to collide with.
+
+:::
 
 `includeProfiles` / `excludeProfiles` are the **launcher's** scope, distinct from the target's own `profiles.harness` opt-in. The two AND — a glob here narrows what is already nominated and can never promote a profile that never opted in. `*` crosses `/` (same `globset` semantics as `$match.profile`), so `personal/*` reaches `personal/kilic/glm-5.2`. Full treatment in [Agent Harness → Scoping delegation per launch](../runtime/harness#scoping-delegation-per-launch).
+
+### `mcp.harness.max_depth`
+
+How many levels deep delegation may go. It is read in exactly one place — the `mcp.harness` block a gate is deciding on — and answers two questions with the same comparison, `depth < max_depth`:
+
+- whether a session running at that depth gets a harness server **injected** at all, and
+- whether a running sidecar at that depth may **`spawn`**.
+
+| Value | Effect                                                                           |
+| ----- | -------------------------------------------------------------------------------- |
+| `1`   | Default. You delegate; your delegates do not. They get no harness server at all. |
+| `2`   | Your delegates get a harness and may delegate once more. Theirs may not.         |
+| `0`   | Nothing anywhere gets a harness injected, and nothing may spawn.                 |
+
+The injection half is **absolute** — no `enabled: true` re-opens it, because a harness at the cap could only ever refuse `spawn`, so injecting one buys a long-lived process and seven tools that exist to error.
+
+**Raising it is a resource decision, not a security one.** Each sidecar's concurrency ceiling covers only its own table, so an extra level lets N delegates each run N sessions — a fan-out no single ceiling catches and the lead that started the tree cannot see. There is deliberately no upper bound; the trade is yours to make.
+
+### `mcp.harness.mcp`
+
+An `mcp` block, same shape as the top-level one, applied to every delegate this harness spawns. It is folded **per key** onto whatever the delegate profile itself resolved: a key you set here wins, a key you leave unset inherits.
+
+```yaml
+mcp:
+  harness:
+    enabled: true
+    # what the agents I delegate to get
+    mcp:
+      serve:
+        enabled: false
+      skills:
+        dirs:
+          - dir: ~/.config/hyprpilot/skills/delegate
+```
+
+Distinct from `includeProfiles`, which answers _which_ profiles you may reach. This answers _what those agents can reach_ once running.
+
+Setting `harness.enabled: true` here does **not** give a delegate a harness — the depth gate is checked first and does not consult `enabled`. Setting `harness.max_depth` here **does**, because the gate reads `max_depth` from the block it is deciding on, and the overlay is folded into that block. That is the supported way to hand one specific delegation an extra level without raising the cap for everything.
+
+Because the fold is per key and not wholesale, a block naming only `skills.enabled` keeps the delegate's `skills.dirs`. Arrays replace rather than merge, so `autoAcceptTools` set here is the delegate's whole accept list.
 
 **Off by default, and that is a security property rather than a preference.** A profile's `command` is an arbitrary binary, so anything that can call `spawn` executes commands as you. Turn it on deliberately — see [Runtime → Agent Harness](../runtime/harness).
 

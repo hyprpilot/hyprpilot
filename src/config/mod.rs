@@ -122,6 +122,7 @@ pub struct Logging {
 #[merge(strategy = overwrite_some)]
 pub struct MultiplexerConfig {
     #[garde(skip)]
+    #[serde(alias = "setTitle")]
     pub set_title: Option<bool>,
 }
 
@@ -228,7 +229,7 @@ fn parse_layer_body(body: &str, format: ConfigFormat, src: Option<&Path>) -> Res
             serde_json::from_str(body).with_context(|| format!("failed to parse JSON config at {src_label}"))
         }
         ConfigFormat::Yaml => {
-            serde_yaml::from_str(body).with_context(|| format!("failed to parse YAML config at {src_label}"))
+            yaml_serde::from_str(body).with_context(|| format!("failed to parse YAML config at {src_label}"))
         }
     }
 }

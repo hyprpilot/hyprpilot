@@ -21,7 +21,7 @@
 //! Format support:
 //! - `.toml` → `toml::from_str`
 //! - `.json` → `serde_json::from_str`
-//! - `.yaml` / `.yml` → `serde_yaml::from_str`
+//! - `.yaml` / `.yml` → `yaml_serde::from_str`
 //!
 //! Default format for stdin / inline / extension-less inputs is
 //! JSON (matches CLI piping ergonomics).
@@ -43,8 +43,6 @@ pub enum WithConfigFormat {
     #[default]
     Json,
     Toml,
-    /// Note: `serde_yaml` is unmaintained upstream; flagged in the
-    /// migration runway if a CVE shows up.
     Yaml,
 }
 
@@ -147,7 +145,7 @@ fn parse_with(body: &str, format: WithConfigFormat) -> Result<Value> {
             let v: toml::Value = toml::from_str(body).map_err(|e| anyhow!("parse --with-config TOML: {e}"))?;
             serde_json::to_value(&v).map_err(|e| anyhow!("transcode --with-config TOML → JSON: {e}"))
         }
-        WithConfigFormat::Yaml => serde_yaml::from_str(body).map_err(|e| anyhow!("parse --with-config YAML: {e}")),
+        WithConfigFormat::Yaml => yaml_serde::from_str(body).map_err(|e| anyhow!("parse --with-config YAML: {e}")),
     }
 }
 

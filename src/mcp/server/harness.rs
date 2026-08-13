@@ -23,15 +23,20 @@ use crate::spawn::providers::HarnessProjection;
 use crate::spawn::{LaunchOrigin, SpawnRequest};
 
 /// Env stamp bounding recursive spawning. A spawned agent gets
-/// `depth + 1`; at [`MAX_SPAWN_DEPTH`] a spawn is refused.
+/// `depth + 1`; at the launch's `[mcp.harness] maxDepth` a spawn is
+/// refused.
 ///
-/// One means a spawned agent cannot spawn its own: the lead delegates,
-/// the delegate works. A tree costs whatever its widest level costs,
-/// and only the root can see it — [`MAX_LIVE_SESSIONS`] bounds each
-/// sidecar separately, so N delegates each spawning N is N² processes
-/// no single ceiling catches.
+/// The default of one means a spawned agent cannot spawn its own: the
+/// lead delegates, the delegate works. A tree costs whatever its widest
+/// level costs, and only the root can see it — [`MAX_LIVE_SESSIONS`]
+/// bounds each sidecar separately, so N delegates each spawning N is N²
+/// processes no single ceiling catches. That is why raising `maxDepth`
+/// is a resource decision the captain makes deliberately.
+///
+/// `spawn::prepare` writes it, so the depth that gated a session's
+/// harness injection and the depth that session reports are the same
+/// number.
 pub(crate) const DEPTH_ENV: &str = "HYPRPILOT_SPAWN_DEPTH";
-const MAX_SPAWN_DEPTH: usize = 1;
 
 /// Ceiling on concurrently *running* sessions. Depth bounds recursion;
 /// this bounds breadth. Both matter: a profile's `command` is an
@@ -39,16 +44,13 @@ const MAX_SPAWN_DEPTH: usize = 1;
 /// agent that can exhaust the host.
 const MAX_LIVE_SESSIONS: usize = 8;
 
-/// Default for `--max-sessions`: how many sessions the table retains
-/// before evicting the oldest FINISHED ones.
-///
-/// A conversation no longer grows this — `session_send` reuses its
-/// session — so the only thing that does is distinct `spawn`s, which the
-/// caller controls. This bounds a long-lived sidecar's memory and its
-/// transcript directories without an API the caller has to remember to
-/// call; `session_kill` on a finished session reaps it immediately for
-/// callers that would rather be explicit.
-pub const DEFAULT_MAX_SESSIONS: usize = 64;
+// Both ceilings a real launch uses are seeded in `defaults.toml` and
+// resolved by the launcher, which hands them to `Harness::new`. The
+// fallbacks in `config::mcp` cover only a hand-started sidecar (via the
+// clap defaults) and the fixtures below — nothing here reads them
+// outside tests.
+#[cfg(test)]
+use crate::config::mcp::{DEFAULT_MAX_SESSIONS, DEFAULT_MAX_SPAWN_DEPTH};
 
 /// Cap on bytes returned by a single `session_read` / inline `spawn`
 /// result. Well under Hermes' 150000-byte tool-output limit, so a
@@ -188,12 +190,22 @@ pub(crate) struct Harness {
     config: ConfigSource,
     pub(crate) sessions: Arc<SessionTable>,
     depth: usize,
+    max_depth: usize,
     max_sessions: usize,
     delegates: DelegatePolicy,
+    /// `[mcp.harness.mcp]` from the profile that launched this sidecar,
+    /// folded over every delegate's own resolved `[mcp]`.
+    delegate_mcp: Option<crate::config::McpConfig>,
 }
 
 impl Harness {
-    pub(crate) fn new(config: ConfigSource, max_sessions: usize, delegates: DelegatePolicy) -> Self {
+    pub(crate) fn new(
+        config: ConfigSource,
+        max_sessions: usize,
+        max_depth: usize,
+        delegates: DelegatePolicy,
+        delegate_mcp: Option<crate::config::McpConfig>,
+    ) -> Self {
         let depth = std::env::var(DEPTH_ENV)
             .ok()
             .and_then(|raw| raw.parse::<usize>().ok())
@@ -203,10 +215,12 @@ impl Harness {
             config,
             sessions: SessionTable::new(),
             depth,
+            max_depth,
             // A zero would evict every finished session the moment it
             // finished, making `session_read` useless on a completed run.
             max_sessions: max_sessions.max(1),
             delegates,
+            delegate_mcp,
         }
     }
 
@@ -240,11 +254,12 @@ impl Harness {
     }
 
     fn check_capacity(&self) -> Result<(), String> {
-        if self.depth >= MAX_SPAWN_DEPTH {
+        if self.depth >= self.max_depth {
             return Err(format!(
-                "spawn refused: this session was itself spawned by a hyprpilot harness \
-                 (depth {}, limit {MAX_SPAWN_DEPTH}). A delegated agent does not spawn its own.",
-                self.depth
+                "spawn refused: this session is at the delegation limit \
+                 (depth {}, `[mcp.harness] maxDepth` = {}). Raise it on the profile that \
+                 launched this session if the extra level is worth the fan-out.",
+                self.depth, self.max_depth
             ));
         }
         let live = self.sessions.live();
@@ -290,14 +305,14 @@ impl Harness {
             // The harness never has stdin to offer — `prepare` also
             // refuses to read the real fd0, which is the MCP transport.
             stdin_consumed: true,
+            // `prepare` stamps this onto the vendor's environment and
+            // gates the delegate's own harness injection on it.
+            spawn_depth: self.depth + 1,
+            mcp_overlay: self.delegate_mcp.clone(),
         };
 
-        let mut prepared = crate::spawn::prepare(&cfg, request, LaunchOrigin::Harness, Some(&projection))
+        let prepared = crate::spawn::prepare(&cfg, request, LaunchOrigin::Harness, Some(&projection))
             .map_err(|err| format!("could not resolve profile `{}`: {err:#}", args.profile))?;
-        prepared
-            .command
-            .env
-            .insert(DEPTH_ENV.to_string(), (self.depth + 1).to_string());
 
         let provenance = super::sessions::Provenance {
             program: prepared.command.program.clone(),
@@ -1447,7 +1462,9 @@ mod tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_SPAWN_DEPTH,
             policy(Some(&["personal/*"]), &[]),
+            None,
         );
 
         harness
@@ -1483,7 +1500,9 @@ mod tests {
         let mut harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
+            None,
         );
         // Not whatever `new` read: these tests can themselves run inside
         // a spawned session, where the stamp is already set.
@@ -1493,9 +1512,51 @@ mod tests {
         harness.depth = 1;
         let refusal = harness.check_capacity().expect_err("a delegate must be refused");
         assert!(
-            refusal.contains("spawned by a hyprpilot harness"),
-            "the refusal must say WHY, not just cite a number: {refusal}"
+            refusal.contains("maxDepth") && refusal.contains("Raise it"),
+            "the refusal must name the knob that changes it, not just cite a number: {refusal}"
         );
+    }
+
+    /// The cap is a config value now, so the refusal has to move with
+    /// it — a hardcoded comparison would keep refusing at depth 1 while
+    /// the captain's `maxDepth = 2` said otherwise.
+    #[test]
+    fn a_raised_max_depth_lets_a_delegate_spawn_one_more_level() {
+        let mut harness = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            2,
+            DelegatePolicy::default(),
+            None,
+        );
+
+        harness.depth = 1;
+        assert!(
+            harness.check_capacity().is_ok(),
+            "depth 1 is below a maxDepth of 2 and must be allowed"
+        );
+
+        harness.depth = 2;
+        assert!(
+            harness.check_capacity().is_err(),
+            "the raised cap still has to bind somewhere"
+        );
+    }
+
+    /// `maxDepth = 0` is the total off-switch: not even the session the
+    /// captain started may delegate.
+    #[test]
+    fn a_zero_max_depth_refuses_even_the_lead() {
+        let mut harness = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            0,
+            DelegatePolicy::default(),
+            None,
+        );
+        harness.depth = 0;
+
+        assert!(harness.check_capacity().is_err(), "maxDepth = 0 denies everyone");
     }
 
     /// opencode emits a `text` part for EVERY completed sentence, not
@@ -1585,7 +1646,9 @@ mod tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
+            None,
         );
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("burst.sh");
@@ -1658,7 +1721,9 @@ mod tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
+            None,
         );
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("emit.sh");
@@ -2256,7 +2321,9 @@ mod task_tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
+            None,
         );
         let handle = harness
             .sessions
@@ -2299,7 +2366,9 @@ mod task_tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
+            None,
         );
         let handle = harness
             .sessions
@@ -2365,7 +2434,9 @@ mod task_tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
+            None,
         );
         let command = crate::spawn::providers::SpawnCommand {
             program: "/bin/sh".into(),
@@ -2420,7 +2491,9 @@ mod task_tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
+            None,
         );
         let err = harness
             .task_view("3b5ce010-1f61-4a8a-8fa7-086d4b5d43c0:1")

@@ -31,7 +31,13 @@ globset = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+# `serde_yaml` was archived by its author and publishes as
+# `0.9.34+deprecated`. `yaml_serde` is the continuation under
+# github.com/yaml/yaml-serde and keeps the same `Value` / `Mapping` /
+# `from_str` surface. Same kind of backend, too: it parses via
+# `libyaml-rs`, libyaml transpiled by c2rust — the same lineage as the
+# `unsafe-libyaml` serde_yaml used, not a switch to C FFI.
+yaml_serde = "0.10"
 shellexpand = "3"
 thiserror = "2"
 tokio = { version = "1.53", features = ["full"] }

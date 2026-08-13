@@ -1,7 +1,7 @@
 //! Generic YAML-frontmatter → MCP `_meta` passthrough.
 //!
 //! the sibling `loader.rs` already keeps every `SKILL.md` frontmatter
-//! key losslessly on `Skill.frontmatter` (a `serde_yaml::Value`). This
+//! key losslessly on `Skill.frontmatter` (a `yaml_serde::Value`). This
 //! module is the ONE place that projects the frontmatter onto the wire.
 //!
 //! Per the MCP spec `_meta` is a single field keyed by reverse-DNS
@@ -44,7 +44,7 @@ pub const META_KEY_SKILL: &str = "io.hyprpilot/skill";
 /// loader's own bad-frontmatter policy: never fail the request over a
 /// malformed frontmatter block, just treat it as absent.
 #[must_use]
-pub fn frontmatter_json(frontmatter: &serde_yaml::Value) -> Map<String, Value> {
+pub fn frontmatter_json(frontmatter: &yaml_serde::Value) -> Map<String, Value> {
     match serde_json::to_value(frontmatter) {
         Ok(Value::Object(map)) => map,
         Ok(Value::Null) => Map::new(),
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn frontmatter_json_converts_nested_maps_arrays_bools_and_numbers() {
-        let value: serde_yaml::Value = serde_yaml::from_str(
+        let value: yaml_serde::Value = yaml_serde::from_str(
             r#"
 name: plan-hard
 disable-model-invocation: true
@@ -141,12 +141,12 @@ metadata:
 
     #[test]
     fn frontmatter_json_null_becomes_empty_object() {
-        assert_eq!(frontmatter_json(&serde_yaml::Value::Null), Map::new());
+        assert_eq!(frontmatter_json(&yaml_serde::Value::Null), Map::new());
     }
 
     #[test]
     fn frontmatter_json_arbitrary_unknown_key_survives_verbatim() {
-        let value: serde_yaml::Value = serde_yaml::from_str(
+        let value: yaml_serde::Value = yaml_serde::from_str(
             r#"
 name: my-skill
 x-vendor-extension:
@@ -173,7 +173,7 @@ x-vendor-extension:
 
     #[test]
     fn skill_block_drops_title_description_keeps_name_adds_path_and_bundle_dir() {
-        let value: serde_yaml::Value = serde_yaml::from_str(
+        let value: yaml_serde::Value = yaml_serde::from_str(
             r#"
 name: plan-hard
 title: Plan hard
@@ -209,7 +209,7 @@ x-vendor-extension:
     #[test]
     fn skill_meta_has_single_namespaced_key_without_frontmatter_key() {
         let block = skill_block(
-            &frontmatter_json(&serde_yaml::from_str("name: plan-hard\n").unwrap()),
+            &frontmatter_json(&yaml_serde::from_str("name: plan-hard\n").unwrap()),
             Path::new("/tmp/plan-hard/SKILL.md"),
         );
         let meta = skill_meta(&block);
@@ -233,7 +233,7 @@ x-vendor-extension:
     /// and cannot be passed to `read_skill_references`.
     #[test]
     fn skill_block_drops_the_raw_references_array() {
-        let value: serde_yaml::Value = serde_yaml::from_str(
+        let value: yaml_serde::Value = yaml_serde::from_str(
             r#"
 name: git-commit
 references:
@@ -273,10 +273,10 @@ references:
     fn frontmatter_json_conversion_failure_falls_back_to_empty() {
         // JSON object keys must be strings; a YAML mapping key that is
         // itself a sequence has no JSON representation.
-        let mut mapping = serde_yaml::Mapping::new();
-        let bad_key = serde_yaml::Value::Sequence(vec![serde_yaml::Value::from(1)]);
-        mapping.insert(bad_key, serde_yaml::Value::from("x"));
-        let value = serde_yaml::Value::Mapping(mapping);
+        let mut mapping = yaml_serde::Mapping::new();
+        let bad_key = yaml_serde::Value::Sequence(vec![yaml_serde::Value::from(1)]);
+        mapping.insert(bad_key, yaml_serde::Value::from("x"));
+        let value = yaml_serde::Value::Mapping(mapping);
 
         assert_eq!(frontmatter_json(&value), Map::new());
     }

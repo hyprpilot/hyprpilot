@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use serde_yaml::Value as YamlValue;
 use tracing::warn;
+use yaml_serde::Value as YamlValue;
 
 use super::{Skill, SkillSlug};
 
@@ -120,7 +120,7 @@ pub(crate) fn split_frontmatter(text: &str) -> (YamlValue, &str) {
         .strip_prefix("---\n")
         .or_else(|| body_with_fence.strip_prefix("---\r\n"))
         .unwrap_or(body_with_fence);
-    let parsed = serde_yaml::from_str::<YamlValue>(fm_text).unwrap_or_else(|err| {
+    let parsed = yaml_serde::from_str::<YamlValue>(fm_text).unwrap_or_else(|err| {
         warn!(%err, "skills loader: frontmatter yaml parse failed — treating as empty");
         YamlValue::Null
     });
