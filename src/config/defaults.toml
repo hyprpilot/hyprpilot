@@ -56,10 +56,16 @@ set_title = true
 # `maxSessions` — finished sessions retained per sidecar before the
 # oldest are evicted with their transcripts. A running session is never
 # evicted.
+#
+# Written snake_case to match the rest of this file. Both spellings
+# parse, but patches merge by KEY STRING before anything is typed, so a
+# key seeded here must be OVERRIDDEN in the same spelling — `maxDepth`
+# in your config against `max_depth` here arrives at serde as two keys
+# and fails config load with `duplicate field`.
 [patches.mcp.harness]
-maxDepth = 1
-maxSessions = 64
-notifyOnComplete = true
+max_depth = 1
+max_sessions = 64
+notify_on_complete = true
 
 [[patches.mcp.skills.dirs]]
 dir = "~/.config/hyprpilot/skills"

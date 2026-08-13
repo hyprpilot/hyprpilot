@@ -366,10 +366,10 @@ fn build_cache(skills: Vec<crate::mcp::skills::Skill>) -> SkillsCache {
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
-fn frontmatter_string(value: &serde_yaml::Value, key: &str) -> Option<String> {
+fn frontmatter_string(value: &yaml_serde::Value, key: &str) -> Option<String> {
     value
         .get(key)
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(yaml_serde::Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .map(str::to_string)
 }
@@ -1021,7 +1021,7 @@ mod tests {
     }
 
     fn loaded_skill(slug: &str, title: &str, description: &str, frontmatter_yaml: &str, path: &str) -> LoadedSkill {
-        let frontmatter: serde_yaml::Value = serde_yaml::from_str(frontmatter_yaml).unwrap();
+        let frontmatter: yaml_serde::Value = yaml_serde::from_str(frontmatter_yaml).unwrap();
         let path = PathBuf::from(path);
         LoadedSkill {
             slug: slug.to_string(),
@@ -1036,7 +1036,7 @@ mod tests {
 
     #[test]
     fn build_cache_falls_back_to_frontmatter_name_for_title() {
-        let frontmatter: serde_yaml::Value = serde_yaml::from_str("name: myskill\n").unwrap();
+        let frontmatter: yaml_serde::Value = yaml_serde::from_str("name: myskill\n").unwrap();
         let skill = crate::mcp::skills::Skill {
             slug: crate::mcp::skills::SkillSlug::parse("myskill").unwrap(),
             title: String::new(),
@@ -1064,8 +1064,8 @@ mod tests {
         std::fs::create_dir_all(skill_dir.join("references")).unwrap();
         std::fs::write(skill_dir.join("references/local.md"), "local body").unwrap();
 
-        let frontmatter: serde_yaml::Value =
-            serde_yaml::from_str("name: myskill\nreferences:\n  - ./references/local.md\n").unwrap();
+        let frontmatter: yaml_serde::Value =
+            yaml_serde::from_str("name: myskill\nreferences:\n  - ./references/local.md\n").unwrap();
         let skill = crate::mcp::skills::Skill {
             slug: crate::mcp::skills::SkillSlug::parse("myskill").unwrap(),
             title: String::new(),
@@ -1109,7 +1109,7 @@ mod tests {
     /// are injected.
     #[test]
     fn build_cache_builds_single_meta_block() {
-        let frontmatter: serde_yaml::Value = serde_yaml::from_str(
+        let frontmatter: yaml_serde::Value = yaml_serde::from_str(
             r#"
 name: myskill
 license: MIT

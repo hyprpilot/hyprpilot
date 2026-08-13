@@ -50,9 +50,9 @@ pub struct FrontmatterRefs {
 /// reference bundling should read that source instead of reparsing the
 /// markdown body.
 #[must_use]
-pub fn frontmatter_references(value: &serde_yaml::Value) -> FrontmatterRefs {
+pub fn frontmatter_references(value: &yaml_serde::Value) -> FrontmatterRefs {
     let mut refs = Vec::new();
-    if let Some(seq) = value.get("references").and_then(serde_yaml::Value::as_sequence) {
+    if let Some(seq) = value.get("references").and_then(yaml_serde::Value::as_sequence) {
         for item in seq {
             if let Some(s) = item.as_str() {
                 refs.push(s.to_string());
@@ -99,7 +99,7 @@ fn entry_for(path: &Path) -> ReferenceEntry {
             let (fm, body) = super::loader::split_frontmatter(&text);
             (fm, body.to_string(), false)
         }
-        Err(_) => (serde_yaml::Value::Null, String::new(), true),
+        Err(_) => (yaml_serde::Value::Null, String::new(), true),
     };
     ReferenceEntry {
         path: std::fs::canonicalize(path).ok().map(|p| p.display().to_string()),
@@ -142,10 +142,10 @@ pub fn declared_paths(bundle_dir: &Path, refs: &FrontmatterRefs) -> Vec<String> 
 
 /// A reference's display name: its frontmatter `name` when it declares
 /// a usable one, else the file stem.
-fn resolve_name(frontmatter: &serde_yaml::Value, path: &Path) -> String {
+fn resolve_name(frontmatter: &yaml_serde::Value, path: &Path) -> String {
     let declared = frontmatter
         .get("name")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(yaml_serde::Value::as_str)
         .map(str::trim)
         .filter(|n| !n.is_empty());
     match declared {
@@ -343,15 +343,15 @@ mod tests {
 
     #[test]
     fn parses_references_from_yaml_value() {
-        let value: serde_yaml::Value =
-            serde_yaml::from_str("references:\n  - ../references/a.md\n  - ./b.md\n").unwrap();
+        let value: yaml_serde::Value =
+            yaml_serde::from_str("references:\n  - ../references/a.md\n  - ./b.md\n").unwrap();
         let refs = frontmatter_references(&value);
         assert_eq!(refs.references, vec!["../references/a.md", "./b.md"]);
     }
 
     #[test]
     fn missing_references_is_empty() {
-        let value: serde_yaml::Value = serde_yaml::from_str("name: no-refs\n").unwrap();
+        let value: yaml_serde::Value = yaml_serde::from_str("name: no-refs\n").unwrap();
         assert!(frontmatter_references(&value).references.is_empty());
     }
 
