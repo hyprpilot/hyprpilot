@@ -42,6 +42,16 @@ impl ServerHandler for ToolsServer {
         super::rpc::supported_protocol_versions()
     }
 
+    /// Record the negotiated protocol version as the peer's, per
+    /// `rpc::initialize_negotiated`.
+    async fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
+        Ok(super::rpc::initialize_negotiated(self, request, &context))
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut caps = ServerCapabilities::default();
         // Fixed for the life of the process.

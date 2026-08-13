@@ -123,6 +123,16 @@ impl ServerHandler for HarnessServer {
     /// Accept a `subscriptions/listen` opt-in. Without this rmcp leaves
     /// subscriptions unimplemented, and the per-session wake-up below
     /// would have no channel to arrive on.
+    /// Record the negotiated protocol version as the peer's, per
+    /// `rpc::initialize_negotiated`.
+    async fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
+        Ok(super::rpc::initialize_negotiated(self, request, &context))
+    }
+
     fn accepted_subscription_filter(
         &self,
         requested: &rmcp::model::SubscriptionFilter,
@@ -1084,19 +1094,19 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     super::sessions::sweep_stale_sessions();
 
     let handler = HarnessServer::new(config, args.max_sessions, args.max_depth, delegates, delegate_mcp);
-    // Clone the table BEFORE `serve()` — it consumes the handler, and
+    // Clone the table BEFORE serving — it consumes the handler, and
     // `waiting()` consumes the `RunningService`, so this is the only
     // chance to keep a handle for the shutdown reap.
     let sessions = Arc::clone(&handler.harness.sessions);
     let harness_for_hook = Arc::clone(&handler.harness);
-    // Cloned before `serve()` consumes the handler, same as the two
+    // Cloned before serving consumes the handler, same as the two
     // above — this is the only chance to keep a handle on the stream.
     let subscriptions_for_hook = handler.subscriptions.clone();
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
 
-    // The peer exists only once `serve()` has returned, which is also
+    // The peer exists only once the service is running, which is also
     // the earliest a session can exist — so installing the hook here is
     // ordered correctly, not merely convenient.
     // ALWAYS installed. `notifyOnComplete` names the Claude channel push

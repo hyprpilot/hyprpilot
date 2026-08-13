@@ -291,6 +291,41 @@ pub(super) fn accept_resource_subscriptions(
     Some(accepted)
 }
 
+/// Answer `initialize`, recording the NEGOTIATED protocol version as the
+/// peer's — not the one it asked for.
+///
+/// rmcp's in-loop default records the REQUESTED version and never
+/// revisits it, while the pre-loop handshake we no longer use overwrote
+/// it with the negotiated one. Left alone, a client asking for a
+/// revision outside [`supported_protocol_versions`] is told we
+/// negotiated down and then served that revision's result shapes
+/// anyway — `resultType` on a session that agreed `2025-11-25`. That is
+/// the same failure the `ttlMs` stamp exists for: a client validating
+/// the revision it was handed rejects the payload, and the whole
+/// listing goes with it.
+///
+/// The negotiation rule mirrors rmcp's `negotiate_protocol_version`
+/// (`pub(crate)`, so it cannot be called): echo the requested version
+/// when we support it, else fall back to our own.
+pub(super) fn initialize_negotiated<H: ServerHandler>(
+    handler: &H,
+    request: rmcp::model::InitializeRequestParams,
+    context: &rmcp::service::RequestContext<RoleServer>,
+) -> rmcp::model::InitializeResult {
+    let mut info = handler.get_info();
+    if handler
+        .supported_protocol_versions()
+        .contains(&request.protocol_version)
+    {
+        info.protocol_version = request.protocol_version.clone();
+    }
+
+    let mut peer_info = request;
+    peer_info.protocol_version = info.protocol_version.clone();
+    context.peer.set_peer_info(peer_info);
+    info
+}
+
 /// Start serving from the connection's FIRST byte, with no handshake
 /// phase of our own.
 ///
@@ -310,9 +345,11 @@ pub(super) fn accept_resource_subscriptions(
 /// probe succeeded) and then times out fetching tools.
 ///
 /// `serve_directly` spawns the loop from byte zero, so every request —
-/// opener included — runs in its own task. The legacy flow is unchanged:
-/// rmcp's default `initialize` still records `peer_info` and negotiates
-/// against `supported_protocol_versions`.
+/// opener included — runs in its own task. `initialize` still negotiates
+/// against `supported_protocol_versions` and still records `peer_info`,
+/// but the in-loop default records the version the client ASKED for
+/// rather than the negotiated one — see `initialize_negotiated`, which
+/// every server overrides `initialize` to use.
 pub(super) fn serve_from_first_byte<H, T, E, A>(
     handler: H,
     transport: T,
@@ -340,7 +377,13 @@ pub(super) async fn wait_for_shutdown<H: ServerHandler>(running: rmcp::service::
         // Every arm is terminal — the first of transport-close, SIGTERM,
         // or SIGHUP wins and the caller reaps.
         tokio::select! {
-            _ = &mut transport => {}
+            reason = &mut transport => {
+            // A transport ERROR and a clean EOF are the same silence to a
+            // supervisor otherwise, and the sidecar's exit code cannot
+            // tell them apart — `serve_directly` is infallible, so this
+            // is the only place either is observable.
+            tracing::debug!(?reason, "mcp: transport closed");
+        }
             Some(()) = async { match term.as_mut() { Some(s) => s.recv().await, None => None } } => {
                 tracing::info!("mcp::server: SIGTERM received; shutting down");
             }

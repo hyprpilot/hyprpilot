@@ -715,6 +715,16 @@ impl ServerHandler for SkillsServer {
             .with_instructions(self.instructions())
     }
 
+    /// Record the negotiated protocol version as the peer's, per
+    /// `rpc::initialize_negotiated`.
+    async fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
+        Ok(super::rpc::initialize_negotiated(self, request, &context))
+    }
+
     /// Accept the `subscriptions/listen` opt-in at `2026-07-28`.
     ///
     /// rmcp leaves this `None` — subscriptions unimplemented — so
@@ -1636,12 +1646,80 @@ mod opener_tests {
         lines.iter().any(|l| l.contains("subscriptions/acknowledged"))
     }
 
+    /// A RESULT for `id`, not merely a message carrying it. Matching an
+    /// error too would let a `tools/list` that started failing satisfy a
+    /// test whose whole question is whether the server still answers.
     fn answered(lines: &[String], id: &str) -> bool {
         lines.iter().any(|l| {
             serde_json::from_str::<serde_json::Value>(l).ok().is_some_and(|v| {
-                v.get("id").map(|i| i.to_string().trim_matches('"').to_string()) == Some(id.to_string())
+                v.get("result").is_some()
+                    && v.get("id").map(|i| i.to_string().trim_matches('"').to_string()) == Some(id.to_string())
             })
         })
+    }
+
+    /// The negotiated version must be what the peer is RECORDED as, not
+    /// what it asked for. rmcp's in-loop `initialize` records the
+    /// request verbatim, so without `initialize_negotiated` a client
+    /// told `2025-11-25` still receives `2026-07-28` result shapes —
+    /// and one validating the revision it agreed rejects the listing,
+    /// which is the same failure the `ttlMs` stamp exists for.
+    ///
+    /// Sequenced deliberately: requests now run concurrently, so a
+    /// client that pipelines past `initialize` can be answered before
+    /// the negotiated version is recorded. The spec forbids that, and
+    /// this test asserts the behaviour a conforming client sees.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_down_negotiated_session_is_not_served_a_newer_result_shape() {
+        let handler = SkillsServer::new(
+            SkillsArgs { skill_dirs: Vec::new() },
+            crate::mcp::server::ConfigSource::default(),
+        )
+        .expect("build skills server");
+        let (mut client_tx, server_rx) = tokio::io::duplex(1 << 16);
+        let (server_tx, client_rx) = tokio::io::duplex(1 << 16);
+        let running = crate::mcp::server::rpc::serve_from_first_byte(handler, (server_rx, server_tx));
+        let mut reader = BufReader::new(client_rx).lines();
+
+        async fn next_json(reader: &mut tokio::io::Lines<BufReader<tokio::io::DuplexStream>>) -> serde_json::Value {
+            loop {
+                let line = tokio::time::timeout(std::time::Duration::from_secs(5), reader.next_line())
+                    .await
+                    .expect("no reply within the bound")
+                    .expect("read")
+                    .expect("stream closed");
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if v.get("result").is_some() {
+                        return v;
+                    }
+                }
+            }
+        }
+
+        client_tx
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2099-01-01\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"1\"}}}\n")
+            .await
+            .unwrap();
+        client_tx.flush().await.unwrap();
+        let init = next_json(&mut reader).await;
+        assert_eq!(
+            init["result"]["protocolVersion"], "2025-11-25",
+            "an unsupported request negotiates down"
+        );
+
+        client_tx
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n")
+            .await
+            .unwrap();
+        client_tx.flush().await.unwrap();
+        let tools = next_json(&mut reader).await;
+        assert!(
+            tools["result"].get("resultType").is_none(),
+            "a 2025-11-25 session must not be served a 2026-07-28 shape: {tools}"
+        );
+
+        drop(client_tx);
+        running.cancel().await.ok();
     }
 
     /// The regression. Claude Code's v2 runtime probes `server/discover`

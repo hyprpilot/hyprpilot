@@ -450,9 +450,16 @@ path. It reported `connected` (the throwaway probe succeeded) and then
 gated per-account. `mcp serve` was immune twice over: it advertises no
 `listChanged`, so no listen is opened, and it does not override
 `accepted_subscription_filter`, so rmcp answers `-32601` before
-`establish`. The legacy flow is unchanged — rmcp's default
-`initialize` still records `peer_info` and negotiates against
-`supported_protocol_versions`. Tests drive every opener
+`establish`. Negotiation still runs against
+`supported_protocol_versions`, but rmcp's in-loop `initialize` records
+the version the client ASKED for rather than the negotiated one — so
+every server overrides `initialize` to use
+`rpc::initialize_negotiated`. Without it a client told `2025-11-25` is
+still served `2026-07-28` result shapes, which is the `ttlMs` failure
+again from the other side. Requests now also run CONCURRENTLY, so a
+client that pipelines past `initialize` can be answered before that
+version is recorded; the spec forbids it, and nothing is owed to a
+client that does. Tests drive every opener
 (`initialize`-first, `discover`-first, `listen`-first) because rmcp
 gives the first request its own code path; a smoke that only opens
 with `initialize` covers one of three.
