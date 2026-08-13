@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.11.0](https://github.com/hyprpilot/hyprpilot/compare/v3.10.0...v3.11.0) (2026-08-13)
+
+
+### Features
+
+* **mcp:** scope delegate MCP and make the delegation cap configurable ([#237](https://github.com/hyprpilot/hyprpilot/issues/237)) ([96c951e](https://github.com/hyprpilot/hyprpilot/commit/96c951ed72cece4877c5cc936139eb8662a2baf4))
+
 ## [3.10.0](https://github.com/hyprpilot/hyprpilot/compare/v3.9.0...v3.10.0) (2026-08-11)
 
 
