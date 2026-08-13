@@ -153,6 +153,30 @@ impl<T: Keyed + Clone> Registry<T> {
 /// `2026-07-28` client, which correlates stream notifications by that
 /// id, never sees it on the stream it opened. Only
 /// [`rmcp::service::SubscriptionSink`] filters and stamps.
+/// What one stream did with a notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StreamOutcome {
+    /// Sent on that stream, filtered and tagged.
+    Delivered,
+    /// Refused by the accepted filter. The client declared what it
+    /// wants; not receiving the rest is the declaration working.
+    Declined,
+    /// Cancelled or transport-dead. Says nothing about what the client
+    /// wants, so it must not stand in for an answer.
+    Broken,
+}
+
+/// Whether the raw broadcast should still run.
+///
+/// The rule the wire-visible bug lived in: a broadcast is the fallback
+/// for a client with NO usable stream, never a second delivery on top of
+/// one. So it runs when there are no streams at all, or when every
+/// stream is broken — and it must NOT run merely because a stream
+/// declined, or the filter would be pointless.
+pub(super) fn needs_broadcast(outcomes: &[StreamOutcome]) -> bool {
+    outcomes.iter().all(|outcome| *outcome == StreamOutcome::Broken)
+}
+
 #[derive(Clone, Default)]
 pub(super) struct Subscriptions(Registry<rmcp::service::SubscriptionSink>);
 
@@ -189,18 +213,19 @@ impl Subscriptions {
     /// fallback only when no stream exists, which is the case for every
     /// client on an older revision.
     pub(super) async fn resource_updated(&self, peer: &rmcp::service::Peer<RoleServer>, uri: String) {
-        let streams = self.streams().await;
-        if !streams.is_empty() {
-            let mut handled = false;
-            for sink in &streams {
-                match sink.notify_resource_updated(uri.clone()).await {
-                    Ok(()) | Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => handled = true,
-                    Err(err) => tracing::debug!(%err, %uri, "mcp::server: subscription send failed"),
+        let mut outcomes = Vec::new();
+        for sink in &self.streams().await {
+            outcomes.push(match sink.notify_resource_updated(uri.clone()).await {
+                Ok(()) => StreamOutcome::Delivered,
+                Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => StreamOutcome::Declined,
+                Err(err) => {
+                    tracing::debug!(%err, %uri, "mcp::server: subscription send failed");
+                    StreamOutcome::Broken
                 }
-            }
-            if handled {
-                return;
-            }
+            });
+        }
+        if !needs_broadcast(&outcomes) {
+            return;
         }
         let param = rmcp::model::ResourceUpdatedNotificationParam::new(uri.clone());
         if let Err(err) = peer.notify_resource_updated(param).await {
@@ -211,18 +236,19 @@ impl Subscriptions {
     /// Deliver `notifications/resources/list_changed`. Same channel
     /// choice as [`Self::resource_updated`].
     pub(super) async fn resource_list_changed(&self, peer: &rmcp::service::Peer<RoleServer>) {
-        let streams = self.streams().await;
-        if !streams.is_empty() {
-            let mut handled = false;
-            for sink in &streams {
-                match sink.notify_resource_list_changed().await {
-                    Ok(()) | Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => handled = true,
-                    Err(err) => tracing::debug!(%err, "mcp::server: subscription send failed"),
+        let mut outcomes = Vec::new();
+        for sink in &self.streams().await {
+            outcomes.push(match sink.notify_resource_list_changed().await {
+                Ok(()) => StreamOutcome::Delivered,
+                Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => StreamOutcome::Declined,
+                Err(err) => {
+                    tracing::debug!(%err, "mcp::server: subscription send failed");
+                    StreamOutcome::Broken
                 }
-            }
-            if handled {
-                return;
-            }
+            });
+        }
+        if !needs_broadcast(&outcomes) {
+            return;
         }
         if let Err(err) = peer.notify_resource_list_changed().await {
             tracing::debug!(%err, "mcp::server: resource list-changed notification failed");
@@ -486,6 +512,38 @@ mod tests {
         );
     }
 
+    /// The rule the FIRST rejection was about, pinned.
+    ///
+    /// Reverting to an unconditional `Peer::notify_*` broadcast — the
+    /// original bug — makes this the wrong answer for a client with a
+    /// working stream, so a revert fails here instead of only failing a
+    /// manual transcript.
+    #[test]
+    fn broadcast_is_the_fallback_for_no_usable_stream_and_nothing_else() {
+        use StreamOutcome::{Broken, Declined, Delivered};
+
+        assert!(needs_broadcast(&[]), "no stream at all is the legacy client");
+        assert!(needs_broadcast(&[Broken]), "a dead stream must not swallow the event");
+        assert!(
+            needs_broadcast(&[Broken, Broken]),
+            "every stream dead is still no usable stream"
+        );
+
+        assert!(
+            !needs_broadcast(&[Delivered]),
+            "broadcasting on top of a delivery double-sends it"
+        );
+        assert!(
+            !needs_broadcast(&[Declined]),
+            "a decline is the filter working — broadcasting past it makes the filter pointless"
+        );
+        assert!(
+            !needs_broadcast(&[Broken, Delivered]),
+            "one live stream is enough; the broken sibling does not re-open the broadcast"
+        );
+        assert!(!needs_broadcast(&[Declined, Broken]));
+    }
+
     /// A fake entry so the registry's bookkeeping — the part that had
     /// the bug — is testable without a live service to mint a sink from.
     #[derive(Clone, Debug, PartialEq)]
@@ -524,9 +582,13 @@ mod tests {
         );
     }
 
-    /// Teardown must be idempotent and must not touch strangers: rmcp
-    /// can drop a `run` future without cancellation, so a second removal
-    /// of an already-gone id is ordinary.
+    /// Teardown must be idempotent and must not touch strangers.
+    ///
+    /// A `run` future dropped without cancellation produces ZERO
+    /// removals — the entry leaks, harmlessly, because the sink's
+    /// `DropGuard` closes it and a closed sink falls through to the
+    /// broadcast. What idempotency actually guards is a double
+    /// cancellation racing the same id.
     #[tokio::test]
     async fn removing_an_unknown_stream_is_a_no_op() {
         let registry = Registry::default();

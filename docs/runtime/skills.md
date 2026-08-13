@@ -87,6 +87,12 @@ A client on `2026-07-28` opts in with `subscriptions/listen` (`resourcesListChan
 
 `resources/list_changed` fires on **any** change, not only on membership, precisely so a client that cannot subscribe still has a signal it can act on: a body edit would otherwise reach it only as a `resources/updated` it has no way to have asked for.
 
+::: warning Known gap: reference-only edits
+
+The diff compares each skill's body and frontmatter. A skill's resource read also carries a footer listing its references' sizes and modification times, and editing only a reference file changes that footer without changing the skill — so no `resources/updated` fires for it. Resolving every declared reference on every reload would mean reading every cited file of every skill, which is the cost the manifest design exists to avoid. Fetch reference bodies with `read_skill_references`, which always resolves from disk.
+
+:::
+
 Reload refreshes the **sidecar**, not anything already in an agent's context — a skill body read earlier this session stays as it was until re-read.
 
 ## References

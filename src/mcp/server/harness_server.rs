@@ -987,11 +987,19 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     // The peer exists only once `serve()` has returned, which is also
     // the earliest a session can exist — so installing the hook here is
     // ordered correctly, not merely convenient.
-    if !args.no_notify_on_complete {
+    // ALWAYS installed. `notifyOnComplete` names the Claude channel push
+    // and nothing else — the knob exists for NOISE, since a session is
+    // `exited` every turn. Gating the whole hook on it also skipped
+    // `seal_turn` (so a task never reached a terminal state) and the
+    // session `resources/updated` (so a subscriber acknowledged for that
+    // URI waited forever while its cached read claimed `running` for the
+    // full ttl). Both are correctness, not noise.
+    {
         let peer = running.peer().clone();
         let name = DEFAULT_HARNESS_SERVER_NAME.to_string();
         let harness = Arc::clone(&harness_for_hook);
         let subscriptions = subscriptions_for_hook.clone();
+        let notify_channel = !args.no_notify_on_complete;
         let table = Arc::clone(&sessions);
         sessions.set_exit_hook(Arc::new(move |handle: String, turn: u32, code: i32| {
             let peer = peer.clone();
@@ -1004,7 +1012,9 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
             // is still queued.
             table.seal_turn(&handle, turn, code);
             tokio::spawn(async move {
-                super::harness::notify_session_finished(&peer, &name, &handle, code).await;
+                if notify_channel {
+                    super::harness::notify_session_finished(&peer, &name, &handle, code).await;
+                }
 
                 // The standard wake-up, alongside the two above it.
                 //
@@ -1020,6 +1030,12 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
                 subscriptions
                     .resource_updated(&peer, super::harness::session_uri(&handle))
                     .await;
+                // The listing embeds each session's live status in its
+                // description, so a turn ending makes a cached
+                // `resources/list` claim `(running)` for a session that
+                // exited — for the full ttl, since membership did not
+                // move. Announce it.
+                subscriptions.resource_list_changed(&peer).await;
 
                 // SEP-2663 status push — GATED, and it has to be. The
                 // hook fires for every turn of every session, so an
