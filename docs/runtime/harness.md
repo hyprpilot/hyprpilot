@@ -318,7 +318,7 @@ The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcru
 | Limit                       | Value                 | Enforced by                                                                                                                      |
 | --------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | Concurrent running sessions | 8                     | `spawn` refused past the ceiling; `session_kill` a finished or runaway one to free a slot.                                       |
-| Spawn nesting depth         | 1                     | `HYPRPILOT_SPAWN_DEPTH` env, stamped `depth + 1` on every spawned session; a spawned agent's own `spawn` is refused.             |
+| Spawn nesting depth         | 1 (`maxDepth`)        | `HYPRPILOT_SPAWN_DEPTH` env, stamped on every launch. At the cap no harness is injected, and `spawn` is refused.                 |
 | Transcript read per call    | 60,000 bytes          | Caps `session_read` and an inline `spawn`/`session_send` result.                                                                 |
 | Default tail                | 200 lines             | `session_read`'s default when `cursor` is omitted.                                                                               |
 | Default turn timeout        | 300 seconds           | How long `spawn`/`session_send` block when asked to `wait: true`, before reporting status `running`. Inert by default.           |
@@ -328,9 +328,34 @@ Only distinct `spawn`s grow the table — a conversation reuses its session howe
 
 To free a session earlier than the limit would, call `session_kill` on it: on a finished session that reaps it and its transcript immediately.
 
-The depth ceiling of 1 means **the lead delegates and the delegate works** — a spawned agent's own `spawn` is refused, with a message saying why. A session started through the harness gets the full MCP projection, including its own `hyprpilot mcp harness` sidecar, so without the stamp it would spawn as freely as the lead did.
+The default depth ceiling of 1 means **the lead delegates and the delegate works**. It is enforced twice from one number, `mcp.harness.maxDepth`:
 
-That is a resource decision, not a security one. Each sidecar enforces the concurrency ceiling over _its own_ table and cannot see any other's, so allowing one more level lets N delegates each run N sessions — N² processes no single ceiling catches, none of them visible to the lead that started the tree. Bounding depth at 1 keeps every session a direct child of the caller who can list and kill it, and leaves the concurrency ceiling as the one number that describes the whole fan-out. Since a profile's `command` can be any binary, an agent that could spawn without limit could exhaust the host.
+- **At launch**, a session at or past the cap gets **no harness server injected at all**. This is absolute — no `enabled: true` re-opens it, because such a server could only ever refuse `spawn`. Without it a delegate paid for a long-lived sidecar and seven tools that existed to error.
+- **At the tool**, a sidecar at or past the cap refuses `spawn`, with a message naming the knob that changes it.
+
+Raise `maxDepth` and both move together: at `2` your delegates get a harness and may delegate once more, and theirs may not. Nothing else needs changing — the cap is read from the same block the gate is deciding on, so the two answers cannot disagree.
+
+That is a resource decision, not a security one. Each sidecar enforces the concurrency ceiling over _its own_ table and cannot see any other's, so allowing one more level lets N delegates each run N sessions — N² processes no single ceiling catches, none of them visible to the lead that started the tree. Keeping the default at 1 makes every session a direct child of the caller who can list and kill it, and leaves the concurrency ceiling as the one number that describes the whole fan-out. Since a profile's `command` can be any binary, an agent that could spawn without limit could exhaust the host. There is no upper bound on `maxDepth`; the trade is yours.
+
+## What your delegates can reach
+
+`mcp.harness.mcp` is an `mcp` block applied to every delegate this harness spawns, folded **per key** over whatever the delegate profile itself resolved — a key you set wins, a key you omit inherits.
+
+```yaml
+patches:
+  - $match:
+      profile: gateway
+    mcp:
+      harness:
+        enabled: true
+        mcp:
+          serve:
+            enabled: false
+```
+
+It answers a different question from `includeProfiles`: that one is _which_ profiles you may launch, this is _what those agents can reach_ once running. It cannot hand a delegate a harness of its own — `maxDepth` is checked first, and wins.
+
+Like `maxSessions` and `notifyOnComplete`, the launcher resolves it from the picked profile and passes it to the sidecar as `--delegate-mcp=<json>`; a sidecar cannot work out which profile spawned it. A malformed block **fails the sidecar at startup** rather than degrading to "no overlay" — this block is what narrows a delegate's reach, so silently dropping it would widen it.
 
 ## Example config
 
@@ -379,6 +404,8 @@ The launcher resolves the picked profile's scope and passes it down as repeated 
 ```sh
 hyprpilot mcp harness --include-profile 'personal/*' --exclude-profile 'personal/codex/*'
 hyprpilot mcp harness --no-delegates   # includeProfiles: []
+hyprpilot mcp harness --max-depth 2    # mcp.harness.maxDepth
+hyprpilot mcp harness --delegate-mcp '{"serve":{"enabled":false}}'
 ```
 
 `--no-delegates` exists because zero `--include-profile` occurrences is exactly what an unset list looks like on the wire, and unset means unrestricted — the opposite of an empty list.

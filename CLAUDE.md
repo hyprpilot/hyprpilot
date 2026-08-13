@@ -407,12 +407,64 @@ Skills reach the agent **only** through the skills server.
   `autoAcceptTools`, `autoRejectTools`, plus their own fields:
   `[mcp.skills].dirs` (`Vec<SkillEntry { dir, ignore }>`, default
   seed `~/.config/hyprpilot/skills`) and `[mcp.harness]`'s
-  `maxSessions` / `notifyOnComplete` / `includeProfiles` /
-  `excludeProfiles`.
+  `maxDepth` / `maxSessions` / `notifyOnComplete` / `includeProfiles` /
+  `excludeProfiles` / `mcp`.
   A per-server tool-policy glob list OVERRIDES the `[mcp]`-level one
   rather than merging. `[mcp.harness].enabled` defaults to **false**
   and that is a security property, not a preference — a profile's
   `command` is an arbitrary binary, so `spawn` executes as the user.
+- **The nested server blocks merge PER LEAF** (`merge_nested`), not
+  wholesale. `overwrite_some` is right for a leaf and wrong for a
+  sub-block: a delegate overlay naming only `skills.enabled` would
+  otherwise replace the whole `skills` block and take `dirs` with it.
+  Only `effective_mcp_with` calls `McpConfig::merge`, and its left
+  operand is `McpConfig::default()` with all three `None`, so the change
+  is inert on the existing path.
+- **Both casings parse**, at the serde layer only: `[mcp.*]` serializes
+  camelCase while the rest of the tree is snake_case, so every
+  multi-word field carries a `#[serde(alias)]` for the other spelling.
+  There is deliberately NO key rewriting in the patch engine — `mcps`
+  and `env` are keyed by vendor server name and env var, which must
+  survive verbatim. Consequence: patches merge by KEY STRING before
+  anything is typed, so writing a `defaults.toml`-seeded key
+  (`maxDepth` / `maxSessions` / `notifyOnComplete`) in the OTHER
+  spelling reaches serde as a duplicate field and fails config load.
+  Loud, pinned by a test, and the reason to write a seeded key the way
+  the seed writes it.
+- **`McpConfig`'s serde default is `sparse()`, not `Default`.** Its
+  `Default` seeds the resolver floor (`enabled = true`,
+  `autoAcceptTools = ["*"]`), and container `#[serde(default)]` would
+  fill missing fields from it — so a partial block on disk came back
+  carrying values its author never wrote. Invisible where
+  `effective_mcp_with` backfills the same numbers, and wrong for
+  `[mcp.harness.mcp]`, where an unwritten leaf must INHERIT the
+  delegate's own rather than override it.
+- **`[mcp.harness].maxDepth`** (default `1`, seeded in `defaults.toml`)
+  is read in ONE place — the `[mcp.harness]` block a gate is deciding
+  on — and answers two questions with `depth < maxDepth`: whether a
+  session at that depth gets a harness INJECTED, and whether a sidecar
+  at that depth may `spawn`. The injection half is absolute: `enabled =
+  true` does not re-open it, because a harness at the cap could only
+  refuse `spawn`. Self-adjusting — raising it reopens the next level
+  with nothing else to change. No upper bound; see "The agent harness"
+  for why that is a resource trade, not a security one.
+- **`[mcp.harness].mcp`** (`Option<Box<McpConfig>>` — boxed because the
+  type is mutually recursive) is the `[mcp]` block every delegate this
+  harness spawns receives, folded per-leaf over the delegate profile's
+  own resolved block: a key set wins, a key unset inherits. It rides
+  argv as `--delegate-mcp=<json>` for the reason `notifyOnComplete`
+  does, and the sidecar re-parses AND re-validates it, failing at
+  startup on either error — this block is what NARROWS a delegate's
+  reach, so dropping it silently widens. `maxDepth` is checked first, so
+  nothing here can give a delegate a harness.
+- **`defaults.toml` seeds the harness ceilings**, not
+  `McpConfig::default()`. `[mcp]`'s own leaves cannot move there —
+  their accessors `.expect()` a value, so they need the per-leaf
+  backfill a programmatic `Config` also gets — but `[mcp.harness]` is
+  nested and never backfilled, so its numbers live in the file the
+  captain edits. The Rust constants remain only for a `Config` carrying
+  no patches, and `defaults_seed_the_harness_ceilings` pins the pair
+  equal so they cannot drift.
 - Each skill root is a flat directory of `<slug>/SKILL.md` bundles
   plus an optional per-root `ignore` glob list. `SkillsRegistry`
   scans + first-slug-wins on collision; missing roots warn + skip.
@@ -553,9 +605,12 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   serve `spawn` because it does not implement it. (It used to be a name
   check inside a shared server, which had to cover `call_tool` as well
   as `list_tools` because dispatch is by name; that is exactly the
-  failure mode the split removes.) `HYPRPILOT_SPAWN_DEPTH` bounds
-  nesting at **1** — a spawned agent's own `spawn` is refused, so the
-  lead delegates and the delegate works. Resource shape, not security:
+  failure mode the split removes.) `HYPRPILOT_SPAWN_DEPTH` carries the
+  depth and `[mcp.harness].maxDepth` bounds it, **default 1** — a
+  spawned agent gets no harness injected AND its `spawn` is refused, so
+  the lead delegates and the delegate works. `spawn::prepare` writes the
+  stamp, so the depth that gated a session's catalogue and the depth
+  that session reports are one number. Resource shape, not security:
   each sidecar's concurrency ceiling covers only its own table, so a
   second level would make N delegates × N sessions a fan-out no single
   ceiling catches and the lead cannot see. A session-count ceiling
