@@ -390,7 +390,11 @@ deliberately not enumerated. `session_read`'s cursor carries its turn
 (`turn.offset`, hex) — a bare offset would address the wrong file once
 the next turn started.
 
-Every view is also addressable PER TURN
+Reading `hyprpilot://sessions/<handle>` also lists every turn with its
+outcome and the URI that fetches it, so one read answers "which turns
+exist and which is worth fetching" instead of walking
+`…/turns/<n>/status` until one errors. The UN-TURNED forms stay the
+shortcut to the current turn. Every view is also addressable PER TURN
 (`…/turns/<n>/<view>`). Guessing the boundary from the events was
 a live bug twice — a heuristic mis-attributed one turn's error to the
 next, then an unbounded slice swallowed every later turn — which is what

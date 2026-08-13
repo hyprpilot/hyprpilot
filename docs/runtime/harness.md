@@ -223,6 +223,24 @@ Every session is also a **resource** — `hyprpilot://sessions/<handle>` — so 
 | `hyprpilot://sessions/<handle>/transcript` | The raw event stream, capped                                  | when exited    |
 | `hyprpilot://sessions/<handle>/stderr`     | The vendor's stderr                                           | when exited    |
 
+Reading `hyprpilot://sessions/<handle>` also lists every turn and how it ended, each with the URI that fetches it:
+
+```jsonc
+{
+  "turn": 2,
+  "hasResult": true,
+  "status": "exited",
+  "turns": [
+    { "turn": 1, "status": "exited", "exitCode": 0, "uri": "hyprpilot://sessions/…/turns/1/result" },
+    { "turn": 2, "status": "exited", "exitCode": 0, "uri": "hyprpilot://sessions/…/turns/2/result" }
+  ]
+}
+```
+
+So one read answers "which turns exist and which is worth fetching", rather than walking `…/turns/<n>/status` until one errors. A killed turn reports `"status": "killed"` and no exit code — the `-1` a kill produces says nothing.
+
+The **un-turned** forms are the shortcut to the current turn: `…/<handle>/result` is the latest answer with no turn number to look up. Reach for a turn-scoped URI only when you want an earlier one.
+
 Every view is also addressable **per turn** — `hyprpilot://sessions/<handle>/turns/<n>/result` and the same for `status`, `transcript`, `stderr`. A conversation appends to one transcript, so this is how an earlier turn's answer stays reachable after later turns have run. Turn numbers are 1-based; one the session never reached is an error, not an empty read.
 
 `resources/list` names the two indexes and **one entry per session**, not one per view. The views are advertised as the template `hyprpilot://sessions/{handle}/{view}` instead — four views across 64 retained sessions would be 256 rows every client pays for on connect.

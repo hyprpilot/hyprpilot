@@ -874,6 +874,33 @@ impl Harness {
                 if let Some(code) = session.exit_code() {
                     out["exitCode"] = json!(code);
                 }
+                // Every turn and how it ended, so one read answers
+                // "which turns exist and which is worth fetching"
+                // instead of walking `…/turns/<n>/status` until one
+                // 404s. Bounded by the turn count, and each row is three
+                // fields — the transcripts stay behind their own URIs.
+                out["turns"] = json!((1..=session.turn)
+                    .filter_map(|n| session.turn_record(n))
+                    .map(|record| {
+                        let (state, code) = match record.outcome {
+                            super::sessions::TurnOutcome::Running => ("running", None),
+                            super::sessions::TurnOutcome::Exited(code) => ("exited", Some(code)),
+                            // The exit code a kill produces is `-1`,
+                            // which says nothing — the stamp is the
+                            // fact worth reporting.
+                            super::sessions::TurnOutcome::Killed => ("killed", None),
+                        };
+                        let mut row = json!({
+                            "turn": record.turn,
+                            "status": state,
+                            "uri": session_turn_uri(&session.handle, record.turn, SessionView::Result),
+                        });
+                        if let Some(code) = code {
+                            row["exitCode"] = json!(code);
+                        }
+                        row
+                    })
+                    .collect::<Vec<_>>());
                 out
             })
             .map(|row| (status_summary(&row), row))
