@@ -900,6 +900,14 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   replaces the `done` watch wholesale, so a previous turn's exit code is
   otherwise unreachable. The session handle rides `CreateTaskResult._meta`
   (`io.hyprpilot/session`) so a caller never has to PARSE the task id.
+- **A terminal task's payload must not MOVE**, so every field of
+  `sessionInfo` is read off the turn's own `TurnRecord` — its
+  `provenance` (model / effort / mode / argv), `pid`, `turnStartedAt`
+  and its file paths. The session's copies of all of those are
+  overwritten by the next turn, which is what made a re-polled finished
+  task hand back a later turn's answer. Any NEW `sessionInfo` field has
+  to come off the record too; sourcing one from the live session is
+  invisible until a caller re-polls.
 - **`TurnOutcome::Killed` is stamped in `SessionTable::kill`, not
   derived.** The waiter stores `status.code().unwrap_or(-1)` and `code()`
   is `None` for signal death, so a kill, an external signal and a wait

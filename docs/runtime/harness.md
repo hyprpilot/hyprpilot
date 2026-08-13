@@ -167,7 +167,7 @@ The session handle rides `_meta` rather than being parsed out of the task id: ev
 `hasResult` is `false` for any running session, and only then scanned per vendor. Both halves matter:
 
 - opencode emits a `text` part for **every** completed sentence, not just the final answer, so content alone cannot say "done".
-- `session_send` **appends** to one transcript, so a scan from the start keeps finding the first turn's marker and every later turn would read as finished the moment it began. The scan reads the tail, scoping it to the latest turn.
+- The scan reads only the current turn's own file, so an earlier turn's marker cannot make a running turn read as finished.
 
 The three vendors mark completion differently — all verified against the installed CLIs:
 
@@ -179,13 +179,13 @@ The three vendors mark completion differently — all verified against the insta
 
 Each session owns a 0700 temp directory. Every file in it is named on `spawn` / `session_send` / `session_read` results under `sessionInfo.files`, so nothing has to be derived from a sibling path:
 
-| Key          | File           | What it is                                                                               |
-| ------------ | -------------- | ---------------------------------------------------------------------------------------- |
-| `dir`        | —              | The directory itself. Gone once the session is reaped, evicted, or the sidecar exits.    |
-| `transcript` | `turns.jsonl`  | The vendor's raw JSON event stream, appended across every turn of the conversation.      |
-| `stderr`     | `stderr.log`   | The vendor's stderr. Surfaced in results only when non-empty.                            |
-| `done`       | `done.json`    | The completion marker — see below.                                                       |
-| `breadcrumb` | `session.json` | Crash-recovery state (pid, pgid, owning sidecar, start ticks) read by the startup sweep. |
+| Key          | File                    | What it is                                                                               |
+| ------------ | ----------------------- | ---------------------------------------------------------------------------------------- |
+| `dir`        | —                       | The directory itself. Gone once the session is reaped, evicted, or the sidecar exits.    |
+| `transcript` | `turns/<n>/turns.jsonl` | The vendor's raw JSON event stream for THIS turn.                                        |
+| `stderr`     | `stderr.log`            | The vendor's stderr. Surfaced in results only when non-empty.                            |
+| `done`       | `done.json`             | The completion marker — see below.                                                       |
+| `breadcrumb` | `session.json`          | Crash-recovery state (pid, pgid, owning sidecar, start ticks) read by the startup sweep. |
 
 **`transcript` is there so you can read it directly.** `session_read` pages it for you, but an agent with shell access is often better off with `jq` — the answer sits in a different event per vendor, and the `tool_use` events in between can be enormous:
 
@@ -217,7 +217,7 @@ Every session is also a **resource** — `hyprpilot://sessions/<handle>` — so 
 | URI                                        | What it returns                                               | Cacheable      |
 | ------------------------------------------ | ------------------------------------------------------------- | -------------- |
 | `hyprpilot://profiles`                     | What `list_profiles` returns, same delegate scope             | no — see below |
-| `hyprpilot://sessions`                     | What `session_list` returns                                   | yes            |
+| `hyprpilot://sessions`                     | What `session_list` returns                                   | no — see below |
 | `hyprpilot://sessions/<handle>`            | What `session_status` returns — state, exit code, `hasResult` | when exited    |
 | `hyprpilot://sessions/<handle>/result`     | **The latest turn's answer**, or why there isn't one          | when exited    |
 | `hyprpilot://sessions/<handle>/transcript` | The raw event stream, capped                                  | when exited    |
@@ -241,15 +241,15 @@ So one read answers "which turns exist and which is worth fetching", rather than
 
 The **un-turned** forms are the shortcut to the current turn: `…/<handle>/result` is the latest answer with no turn number to look up. Reach for a turn-scoped URI only when you want an earlier one.
 
-Every view is also addressable **per turn** — `hyprpilot://sessions/<handle>/turns/<n>/result` and the same for `status`, `transcript`, `stderr`. A conversation appends to one transcript, so this is how an earlier turn's answer stays reachable after later turns have run. Turn numbers are 1-based; one the session never reached is an error, not an empty read.
+Every view is also addressable **per turn** — `hyprpilot://sessions/<handle>/turns/<n>/result` and the same for `status`, `transcript`, `stderr`. This is how an earlier turn's answer stays reachable once later turns have run. Turn numbers are 1-based; one the session never reached is an error, not an empty read.
 
 `resources/list` names the two indexes and **one entry per session**, not one per view. The views are advertised as the template `hyprpilot://sessions/{handle}/{view}` instead — four views across 64 retained sessions would be 256 rows every client pays for on connect.
 
-`hyprpilot://profiles` carries `ttlMs: 0`, alone among the listings. The profile set comes from config re-read per call and **nothing watches that file**, so there is no notification to invalidate a cached copy with; a surface that cannot signal must not claim freshness.
+Both indexes carry `ttlMs: 0`. `hyprpilot://sessions` embeds each session's live status and nothing fires `resources/updated` for the index URI — `list_changed` invalidates `resources/list`, not this read. `hyprpilot://profiles` comes from config re-read per call and **nothing watches that file**. A surface that cannot signal must not claim freshness.
 
 `done.json` and the crash breadcrumb are deliberately not resources. The status view answers what `done.json` answers, and `done.json` exists precisely as the one signal a shell watcher can reach without MCP. The breadcrumb is orphan-debugging plumbing.
 
-Each turn's slice comes from the byte offset recorded when that turn started, bounded by where the next turn began — not from guessing a boundary out of the events. Nothing in the file marks where a turn begins, and a turn that _dies_ emits no terminal event at all, so two turns' output is otherwise indistinguishable.
+Each turn reads its own file, so no boundary has to be found. Nothing in a transcript marks where a turn begins, and a turn that _dies_ emits no terminal event at all — when turns shared a file, two turns' output was indistinguishable, which is what the per-turn layout retires.
 
 `/result` is the one that saves work. It does server-side what the `jq` recipes did by hand: finds the vendor's answer event, scopes it to the **latest** turn, and joins multi-block answers. It never comes back blank for a finished session — the three ways a run produces no answer each report themselves:
 
@@ -299,6 +299,8 @@ Results carry `ttlMs` of 24 hours — longer than a sidecar lives — so a clien
 `sessionInfo.files` names the session's paths plus **this turn's** — `dir`, `turnsDir`, `turn`, `turnDir`, `transcript`, `stderr`, `done`, `breadcrumb`. Earlier turns are not listed: they are `<turnsDir>/<n>/` for every `n` up to `turn`, which is inferable, and enumerating them would grow the payload with every turn while saying nothing new.
 
 A turn's output being its own file is why reading turn 1 cannot reach into turn 2, why "stderr is non-empty" means _this_ turn wrote it, and why a fresh turn needs no marker cleared before it starts.
+
+The rest of `sessionInfo` is turn-scoped for the same reason: `model` / `effort` / `mode` / `argv`, `pid` and `turnStartedAt` all come off the turn's own record, not off the session. SEP-2663 makes a completed task's result immutable and a task names a **turn**, so a caller that re-polls a finished task after a later turn started must get back the bytes it got the first time.
 
 Each turn gets its `done.json` when its process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. This is the vendor-neutral completion signal, and the one a **shell** watcher can use, since a bash loop cannot call an MCP tool:
 
@@ -385,7 +387,7 @@ A follow streams each new chunk as an MCP `notifications/progress` message when 
 
 - **Refused** if the session is still `running` — no vendor supports two concurrent turns on one conversation. Wait for it (poll `session_status`) or `session_kill` it first.
 - **Refused** if it cannot be resumed, because the vendor never reported a session id for it — its first turn likely failed before the agent even started; check `session_read`.
-- Otherwise it **resumes**: the vendor's own session store continues the conversation in a new process, and the result's `delivery` field reports `"resumed"`. **The handle does not change.** It stays valid for the whole conversation however many turns you send, and each turn appends to the same transcript — so `session_read` offsets stay meaningful across turns, and an N-turn conversation costs one session, not N.
+- Otherwise it **resumes**: the vendor's own session store continues the conversation in a new process, and the result's `delivery` field reports `"resumed"`. **The handle does not change.** It stays valid for the whole conversation however many turns you send, and each turn writes its own files — so an N-turn conversation costs one session, not N, and every turn's output stays separately addressable. A `session_read` cursor names its turn, so a resume reads the file it was taken from.
 
 ## Session lifetime
 

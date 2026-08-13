@@ -140,9 +140,8 @@ pub(crate) fn parse_session_uri(uri: &str) -> Option<(&str, SessionView, Option<
     if handle.is_empty() {
         return None;
     }
-    // `turns/<n>/<view>` addresses ONE turn. A conversation appends to
-    // one transcript, so without this every earlier turn's output is
-    // reachable only by byte-slicing the file by hand.
+    // `turns/<n>/<view>` addresses ONE turn, which is how an earlier
+    // turn's output stays reachable once later turns have run.
     if let Some(spec) = tail.strip_prefix("turns/") {
         let (turn, view) = spec.split_once('/')?;
         let turn: u32 = turn.parse().ok().filter(|t| *t > 0)?;
@@ -473,16 +472,12 @@ impl Harness {
                             format!("could not start the next turn: {err:#}")
                         }
                     })?;
-                // Resume the transcript where the last turn stopped, so a
-                // follow returns only the NEW output.
-                let from = self
-                    .sessions
-                    .with(&handle, |session| {
-                        std::fs::metadata(session.turns_path()).map(|m| m.len()).unwrap_or(0)
-                    })
-                    .unwrap_or(0);
-
-                (handle, from)
+                // Zero: a new turn writes a new file, so its start IS
+                // byte 0. Stat'ing the file here instead would skip
+                // whatever the child had already written between spawn
+                // and the stat — permanently, since offsets only move
+                // forward.
+                (handle, 0)
             }
             None => {
                 let handle = self
@@ -518,8 +513,13 @@ impl Harness {
             "mcp harness: turn started"
         );
 
+        // The turn this launch started — captured now, because a
+        // concurrent `session_send` cannot begin one but a later read of
+        // `session.turn` would still be a different question.
+        let turn_now = self.sessions.with(&handle, |session| session.turn).unwrap_or(1);
+
         if !args.wait {
-            return Ok(self.describe(&handle, None, Some(resume_from)));
+            return Ok(self.describe(&handle, None, Some(resume_from), turn_now));
         }
 
         // Waiting IS following: stream the transcript to the caller
@@ -531,7 +531,7 @@ impl Harness {
             sink: args.sink,
             cancel: args.cancel.unwrap_or_default(),
         };
-        let followed = self.follow(&handle, resume_from, &watch).await;
+        let followed = self.follow(&handle, turn_now, resume_from, &watch).await;
         let finished = followed.finished;
 
         // Whether it finished or timed out, the transcript is on disk —
@@ -543,7 +543,7 @@ impl Harness {
             tracing::info!(%handle, secs = args.timeout_seconds, "mcp harness: turn outlived its timeout");
         }
 
-        Ok(self.describe(&handle, Some(finished), Some(resume_from)))
+        Ok(self.describe(&handle, Some(finished), Some(resume_from), turn_now))
     }
 
     /// Follow a session's transcript from `from`, pushing each new chunk
@@ -552,10 +552,13 @@ impl Harness {
     /// Ends when the agent exits, when the caller cancels the request,
     /// or when `watch.seconds` elapses — whichever comes first. Returns
     /// what it saw, where it stopped, and whether the agent finished.
-    async fn follow(&self, handle: &str, from: u64, watch: &WatchOptions) -> FollowResult {
+    async fn follow(&self, handle: &str, turn: u32, from: u64, watch: &WatchOptions) -> FollowResult {
+        // The turn the CALLER is reading, not whatever is current. A
+        // cursor names its turn, so streaming `turns_path()` would pair
+        // one turn's byte offset with another turn's file.
         let Some((turns, mut completion)) = self
             .sessions
-            .with(handle, |session| (session.turns_path(), session.completion()))
+            .with(handle, |session| (session.turn_transcript(turn), session.completion()))
         else {
             return FollowResult { finished: true };
         };
@@ -634,20 +637,23 @@ impl Harness {
     /// unreachable, offsets only moving forward. Reading from the file
     /// makes `nextOffset` the first byte NOT returned, so a caller that
     /// keeps paging reconstructs the whole transcript.
-    fn describe(&self, handle: &str, finished: Option<bool>, turn_start: Option<u64>) -> Value {
+    /// `turn` names WHICH turn's transcript to read. A completed task is
+    /// immutable per SEP-2663, so reading `turns_path()` — the current
+    /// turn — made a finished task's result change into a later turn's
+    /// output the moment `session_send` ran.
+    fn describe(&self, handle: &str, finished: Option<bool>, turn_start: Option<u64>, turn: u32) -> Value {
         let Some(snapshot) = self.sessions.with(handle, |session| {
             (
                 session.profile_id.clone(),
                 session.provider.wire_id(),
                 session.status(),
                 session.exit_code(),
-                session.turns_path(),
-                session.turn,
+                session.turn_transcript(turn),
             )
         }) else {
             return json!({ "session": handle, "status": "exited" });
         };
-        let (profile, provider, status, exit_code, turns, turn) = snapshot;
+        let (profile, provider, status, exit_code, turns) = snapshot;
 
         let mut out = json!({
             "session": handle,
@@ -661,7 +667,7 @@ impl Harness {
         if finished == Some(false) {
             out["timedOut"] = json!(true);
         }
-        out["sessionInfo"] = self.provenance(handle);
+        out["sessionInfo"] = self.provenance(handle, turn);
         // Read forward from where this turn began, so the documented
         // "poll `session_read { session, cursor }`" loop reconstructs the
         // transcript with no gap — however far the turn overran the cap.
@@ -772,7 +778,7 @@ impl Harness {
                 session.status() == SessionStatus::Exited,
             )
         });
-        let Some((path, stderr, turn_dir, exit_code, current, wanted, provider, running_now)) = found else {
+        let Some((path, stderr, turn_dir, exit_code, current, wanted, provider, exited_now)) = found else {
             return Err(format!(
                 "unknown session `{handle}`. Call `session_list` for live handles."
             ));
@@ -786,7 +792,7 @@ impl Harness {
         // Only the CURRENT turn can still be running; an earlier one is
         // finished by definition, so its views are cacheable even while
         // the session works on something else.
-        let finished = running_now || wanted < current;
+        let finished = exited_now || wanted < current;
         let turn = wanted;
 
         let text = match view {
@@ -865,10 +871,9 @@ impl Harness {
                     //   a `text` part for every completed sentence, so
                     //   asking mid-run reports the first one as the
                     //   answer.
-                    // - `session_send` APPENDS to this same file, so a
-                    //   scan from byte 0 keeps finding turn 1's marker
-                    //   forever and every later turn reads as finished
-                    //   the instant it starts.
+                    //   Scoped to the CURRENT turn's own file, so an
+                    //   earlier turn's marker cannot make a running turn
+                    //   read as finished.
                     "hasResult": session.status() == SessionStatus::Exited && tail_has_terminal_result(&turns),
                 });
                 if let Some(code) = session.exit_code() {
@@ -986,19 +991,38 @@ impl Harness {
     /// redacted at capture (flag names survive, value payloads become
     /// size placeholders) because it carries the system prompt and, for
     /// some vendors, MCP bearer tokens.
-    fn provenance(&self, handle: &str) -> Value {
+    /// `turn` names WHICH turn's launch to describe. A turn's argv, pid
+    /// and file paths are recorded on its own `TurnRecord`, because the
+    /// session's are overwritten by every later turn — so a terminal
+    /// SEP-2663 task keeps reporting the bytes it reported.
+    fn provenance(&self, handle: &str, turn: u32) -> Value {
         self.sessions
             .with(handle, |session| {
+                // The turn's own record, falling back to the session's
+                // live provenance for a turn that has none (only
+                // possible for a turn number that never ran, which the
+                // callers already reject).
+                let record = session.turn_record(turn);
+                let prov = record
+                    .as_ref()
+                    .map_or_else(|| session.provenance.clone(), |record| record.provenance.clone());
                 json!({
                     "profile": session.profile_id,
                     "provider": session.provider.wire_id(),
-                    "model": session.provenance.model,
-                    "effort": session.provenance.effort,
-                    "mode": session.provenance.mode,
+                    "model": prov.model,
+                    "effort": prov.effort,
+                    "mode": prov.mode,
                     "cwd": session.launch.cwd.as_ref().map(|c| c.display().to_string()),
                     "startedAt": unix_secs(session.created_at),
-                    "lastTurnAt": unix_secs(session.last_turn_at),
-                    "pid": session.pid(),
+                    // THIS turn's start and pid, not the session's
+                    // running ones — both are overwritten by every later
+                    // turn, which is what made a terminal task's payload
+                    // change under a caller who re-polled it.
+                    "turnStartedAt": record.as_ref().map_or_else(
+                        || unix_secs(session.last_turn_at),
+                        |record| unix_secs(record.started_at_wall),
+                    ),
+                    "pid": record.as_ref().map_or_else(|| session.pid(), |record| record.pid),
                     // The session's own files, plus THIS turn's. A
                     // caller with shell access can `jq` the transcript
                     // directly rather than paging it through
@@ -1014,17 +1038,17 @@ impl Harness {
                     "files": {
                         "dir": session.dir_path().display().to_string(),
                         "turnsDir": session.dir_path().join("turns").display().to_string(),
-                        "turn": session.turn,
-                        "turnDir": session.turn_dir(session.turn).display().to_string(),
-                        "transcript": session.turns_path().display().to_string(),
-                        "stderr": session.stderr_path().display().to_string(),
-                        "done": session.done_path().display().to_string(),
+                        "turn": turn,
+                        "turnDir": session.turn_dir(turn).display().to_string(),
+                        "transcript": session.turn_transcript(turn).display().to_string(),
+                        "stderr": session.turn_stderr(turn).display().to_string(),
+                        "done": session.turn_done(turn).display().to_string(),
                         "breadcrumb": session.breadcrumb_path().display().to_string(),
                     },
-                    "command": session.provenance.program,
-                    "argv": session.provenance.argv,
-                    "envKeys": session.provenance.env_keys,
-                    "promptBytes": session.provenance.prompt_bytes,
+                    "command": prov.program,
+                    "argv": prov.argv,
+                    "envKeys": prov.env_keys,
+                    "promptBytes": prov.prompt_bytes,
                 })
             })
             .unwrap_or(Value::Null)
@@ -1125,7 +1149,7 @@ impl Harness {
         // deliberately NOT reused for the result — see the match below.
         let followed = watch.is_some();
         if let Some(watch) = watch {
-            self.follow(handle, offset.unwrap_or(0), &watch).await;
+            self.follow(handle, turn, offset.unwrap_or(0), &watch).await;
             status = self.sessions.with(handle, |s| s.status()).unwrap_or(status);
         }
 
@@ -1154,7 +1178,7 @@ impl Harness {
             "session": handle,
             "status": status.as_str(),
             "lines": text,
-            "sessionInfo": self.provenance(handle),
+            "sessionInfo": self.provenance(handle, turn),
         });
         // MCP pagination: `nextCursor` present means there is more to
         // read, absent means the session is finished AND fully read. A
@@ -1447,8 +1471,8 @@ pub(crate) async fn notify_task_finished(
 fn tail_has_terminal_result(path: &std::path::Path) -> bool {
     // The tail, not the whole file: terminal events are at the end by
     // definition, and this is advertised as the cheap poll. Also keeps
-    // the answer scoped to the LATEST turn — earlier turns' markers sit
-    // further back in the same appended transcript.
+    // the answer scoped to this turn — it reads this turn's own file, so
+    // no earlier turn's marker is in range.
     let (tail, _truncated) = tail_of(path, TERMINAL_SCAN_LINES);
 
     has_terminal_result(&tail)
@@ -1921,6 +1945,25 @@ mod tests {
         }
     }
 
+    /// A cursor names the turn it was taken from. Each turn writes its
+    /// own file, so a bare offset would address the wrong bytes the
+    /// moment the next turn started — paging turn 1, sending turn 2,
+    /// then resuming would read turn 2's file from turn 1's position.
+    #[test]
+    fn a_cursor_round_trips_its_turn_and_offset() {
+        for (turn, offset) in [(1u32, 0u64), (2, 4096), (17, u64::MAX)] {
+            assert_eq!(decode_cursor(&encode_cursor(turn, offset)), Ok((turn, offset)));
+        }
+    }
+
+    /// Opaque, so a caller cannot synthesise a position it never read.
+    #[test]
+    fn a_malformed_cursor_is_refused() {
+        for raw in ["", "1", "beef", "1.", ".0", "z.0", "1.z", "1.2.3"] {
+            assert!(decode_cursor(raw).is_err(), "{raw:?} must not decode");
+        }
+    }
+
     /// A turn-scoped URI addresses ONE turn of a conversation, which is
     /// the only way an earlier turn's answer stays reachable once the
     /// transcript has been appended to.
@@ -2094,7 +2137,7 @@ mod tests {
             sink: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         };
-        let result = harness.follow(&handle, 0, &watch).await;
+        let result = harness.follow(&handle, 1, 0, &watch).await;
 
         assert!(result.finished, "follow must report the session finished");
         // The follow no longer carries the text — it drains the file and
@@ -2169,7 +2212,7 @@ mod tests {
             sink: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         };
-        harness.follow(&handle, 0, &watch).await;
+        harness.follow(&handle, 1, 0, &watch).await;
         harness.harvest(&handle);
 
         assert_eq!(
@@ -2180,9 +2223,9 @@ mod tests {
 
         let (_, status) = harness.session_status(&handle).expect("status");
         let (_, list) = harness.session_list();
-        let described = harness.describe(&handle, Some(true), Some(0));
+        let described = harness.describe(&handle, Some(true), Some(0), 1);
 
-        for payload in [&described, &harness.provenance(&handle), &status, &list] {
+        for payload in [&described, &harness.provenance(&handle, 1), &status, &list] {
             let rendered = serde_json::to_string(payload).unwrap();
             assert!(
                 !rendered.contains("vendorSessionId"),
@@ -2193,7 +2236,7 @@ mod tests {
         // event stream verbatim — the id is IN there because the vendor
         // printed it, and scrubbing a transcript would be lying about
         // what the agent emitted.
-        for payload in [harness.provenance(&handle), status, list] {
+        for payload in [harness.provenance(&handle, 1), status, list] {
             let rendered = serde_json::to_string(&payload).unwrap();
             assert!(
                 !rendered.contains("VENDOR-ID-9"),
@@ -2557,9 +2600,11 @@ impl Harness {
                 // block included, so a task-mode caller and a normal one
                 // read the same bytes. A structured-only payload renders
                 // as "Unknown" in opencode.
-                // From byte 0: a turn writes its own file, so the
-                // start of this turn IS the start of the file.
-                let payload = self.describe(handle, Some(true), Some(0));
+                // THIS task's turn, from byte 0 — a turn writes its
+                // own file, so its start IS the start of the file. A
+                // terminal task must keep reporting what it reported;
+                // reading the current turn made it mutate.
+                let payload = self.describe(handle, Some(true), Some(0), turn);
                 let summary = super::harness_server::launch_summary(&payload);
                 let mut result = rmcp::model::CallToolResult::structured(payload);
                 result.content = vec![rmcp::model::ContentBlock::text(summary)];

@@ -1,10 +1,9 @@
 //! Per-vendor answer extraction from a session transcript.
 //!
-//! `turns.jsonl` is the vendor's own event stream, appended to across
-//! every turn of a conversation. Getting the answer out of it means
-//! knowing three things that differ per vendor: which event carries the
-//! text, where the latest turn starts, and whether the run failed
-//! upstream instead of answering.
+//! Each turn writes its own `turns/<n>/turns.jsonl`, so everything
+//! here sees exactly one turn and never has to find where it began.
+//! What still differs per vendor is which event carries the text and
+//! whether the run failed upstream instead of answering.
 //!
 //! Callers used to do this by hand with `jq`, and the two ways it goes
 //! wrong are both silent:
@@ -49,13 +48,11 @@ impl Answer {
 
 /// Extract ONE turn's outcome from its slice of the transcript.
 ///
-/// The caller slices by the byte offset recorded when the turn started
-/// (`TurnRecord::transcript_from`), so everything here belongs to that
-/// turn and no boundary has to be guessed. That matters because nothing
-/// in the file marks where a turn began: the transcript is append-only
-/// across turns, and a turn that DIES emits no terminal event at all, so
-/// two turns' output is otherwise indistinguishable. Guessing is how a
-/// turn-2 billing error became the answer to turn 3.
+/// The caller passes one turn's whole file, so no boundary has to be
+/// found. That matters because nothing in a transcript marks where a
+/// turn began, and a turn that DIES emits no terminal event at all —
+/// when turns shared a file, guessing the boundary is how a turn-2
+/// billing error became the answer to turn 3.
 pub(crate) fn extract(turn: &str, provider: crate::config::AgentProvider) -> Answer {
     let events: Vec<Value> = turn
         .lines()

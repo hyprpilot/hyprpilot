@@ -198,6 +198,11 @@ pub(crate) enum TurnOutcome {
 pub(crate) struct TurnRecord {
     pub turn: u32,
     pub outcome: TurnOutcome,
+    /// How THIS turn was launched. The session's own `provenance` is
+    /// overwritten by every later turn, so a finished turn's argv, pid
+    /// and file paths are only recoverable from here — which is what a
+    /// terminal SEP-2663 task needs to keep reporting the same bytes.
+    pub provenance: Provenance,
     /// Whether a SEP-2663 task handle was actually handed to the caller
     /// for this turn.
     ///
@@ -216,6 +221,11 @@ pub(crate) struct TurnRecord {
     /// `createdAt` honest: derived at poll time it would report the
     /// moment of the poll, moving on every request.
     pub started_at: String,
+    /// Wall clock and OS pid for THIS turn. Both are overwritten on the
+    /// session by every later turn, so a finished turn can only report
+    /// its own from here — which a terminal SEP-2663 task must.
+    pub started_at_wall: SystemTime,
+    pub pid: u32,
     pub finished_at: Option<String>,
 }
 
@@ -256,14 +266,6 @@ impl Session {
         self.turn_transcript(self.turn)
     }
 
-    /// Where the current turn's completion marker lands. Advisory — the
-    /// directory is removed on reap, eviction and shutdown, so a watcher
-    /// must treat a MISSING directory as finished too, not just a
-    /// present marker.
-    pub(crate) fn done_path(&self) -> PathBuf {
-        self.turn_done(self.turn)
-    }
-
     /// The session's own directory. 0700, removed when the session is
     /// reaped, evicted, or the sidecar exits.
     pub(crate) fn dir_path(&self) -> PathBuf {
@@ -275,11 +277,6 @@ impl Session {
     /// debugging an orphan wants it and it costs nothing to name.
     pub(crate) fn breadcrumb_path(&self) -> PathBuf {
         self.dir.path().join(BREADCRUMB_FILE)
-    }
-
-    /// The CURRENT turn's stderr.
-    pub(crate) fn stderr_path(&self) -> PathBuf {
-        self.turn_stderr(self.turn)
     }
 
     pub(crate) fn exit_code(&self) -> Option<i32> {
@@ -476,21 +473,25 @@ impl SessionTable {
         .map_err(RespawnError::Spawn)?;
 
         // Only now — a launch that failed must not consume a turn number.
+        let now = SystemTime::now();
         session.turn += 1;
         session.turns.push(TurnRecord {
             turn: session.turn,
             outcome: TurnOutcome::Running,
+            provenance: session.provenance.clone(),
             task_minted: false,
             started_at: rmcp::task_manager::current_timestamp(),
+            started_at_wall: now,
+            pid: launched.pid,
             finished_at: None,
         });
 
         session.launch.cwd = command.cwd.clone();
-        session.provenance = provenance;
+        session.provenance = provenance.clone();
         session.pid = launched.pid;
         session.pgid = launched.pgid;
         session.done = launched.done;
-        session.last_turn_at = SystemTime::now();
+        session.last_turn_at = now;
 
         Ok(())
     }
@@ -649,7 +650,7 @@ impl SessionTable {
             profile_id,
             provider,
             launch,
-            provenance,
+            provenance: provenance.clone(),
             resume_token: None,
             created_at: now,
             last_turn_at: now,
@@ -657,8 +658,11 @@ impl SessionTable {
             turns: vec![TurnRecord {
                 turn: 1,
                 outcome: TurnOutcome::Running,
+                provenance: provenance.clone(),
                 task_minted: false,
                 started_at: rmcp::task_manager::current_timestamp(),
+                started_at_wall: now,
+                pid,
                 finished_at: None,
             }],
             dir,
@@ -694,9 +698,9 @@ struct Launched {
 
 /// Start one vendor process against a session directory.
 ///
-/// Shared by the first turn and every later one. `append` keeps a resumed
-/// turn writing into its OWN `turns/<n>/` directory, so a turn's output
-/// is a whole file rather than a byte range of one — which is what makes
+/// Shared by the first turn and every later one, each writing into its
+/// OWN `turns/<n>/` directory — so a turn's output is a whole file
+/// rather than a byte range of one, which is what makes
 /// reading turn N unable to swallow turn N+1, its stderr unambiguously
 /// its own, and its completion marker safe without a clear step.
 fn launch_child(
@@ -1416,9 +1420,9 @@ mod tests {
         assert!(unknown.exists(), "unprovable ownership must not be treated as stale");
     }
 
-    /// A resume keeps the caller's handle and appends to the SAME
-    /// transcript, so a conversation is one entry and one file however
-    /// many turns it runs.
+    /// A resume keeps the caller's handle and gives the new turn its own
+    /// files, so a conversation is ONE table entry however many turns it
+    /// runs, and each turn's output stays separable.
     #[tokio::test]
     async fn respawn_keeps_the_handle_and_gives_each_turn_its_own_files() {
         let table = table();
@@ -1473,13 +1477,13 @@ mod tests {
     /// no vendor supports two at once. The check and the spawn happen
     /// under one lock, so the loser is told rather than quietly starting
     /// a second conversation.
-    /// The marker must be cleared when a turn STARTS, not only written
-    /// when one ends. `session_send` reuses the handle and directory, so
-    /// a watcher armed for turn N+1 would otherwise fire instantly on
-    /// turn N's leftover and read a finished session as already done.
+    /// Each turn's marker lands in its OWN directory, which is what
+    /// retired the clearing step: turn 2 cannot see turn 1's marker, so
+    /// nothing has to be deleted before a turn may start. A watcher
+    /// armed on `turns/2/` can no longer fire on stale state.
     #[tokio::test]
-    async fn a_new_turn_clears_the_previous_turn_s_done_marker() {
-        let table = table();
+    async fn each_turn_gets_its_own_done_marker() {
+        let table = SessionTable::new();
         let handle = table
             .spawn(
                 sleeper("0"),
@@ -1490,26 +1494,66 @@ mod tests {
             )
             .unwrap();
 
-        let done = table.with(&handle, |s| s.done_path()).expect("session");
-        for _ in 0..100 {
-            if done.exists() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut done = table.with(&handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
         }
-        assert!(done.exists(), "the first turn must leave a marker");
+        let first = table.with(&handle, |s| s.turn_done(1)).expect("session");
+        assert!(first.exists(), "turn 1 leaves its marker");
 
-        table.respawn(&handle, sleeper("2"), provenance()).expect("respawn");
-        // The delete happens before the child can finish, so the marker
-        // is gone the instant the next turn starts.
-        let cleared_or_rewritten = !done.exists() || {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            done.exists()
-        };
+        table.respawn(&handle, sleeper("0"), provenance()).expect("respawn");
+        let second = table.with(&handle, |s| s.turn_done(2)).expect("session");
+        assert_ne!(first, second, "each turn has its own marker path");
         assert!(
-            cleared_or_rewritten,
-            "the marker must not survive untouched into turn 2"
+            first.exists(),
+            "turn 1's marker survives — nothing clears it, and nothing needs to"
         );
+
+        let mut done = table.with(&handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+        assert!(second.exists(), "turn 2 writes into its own directory");
+    }
+
+    /// SEP-2663 makes a completed task's result immutable, and a task
+    /// names a TURN. So every field a finished turn reports has to come
+    /// off its own record — the session's `pid` and `last_turn_at` are
+    /// overwritten by the next turn, and reading them there is what made
+    /// a re-polled terminal task hand back a different payload.
+    #[tokio::test]
+    async fn a_finished_turn_keeps_its_own_pid_and_start_time() {
+        let table = SessionTable::new();
+        let handle = table
+            .spawn(
+                sleeper("0"),
+                "p".into(),
+                AgentProvider::ClaudeCode,
+                provenance(),
+                LaunchShape::default(),
+            )
+            .unwrap();
+
+        let mut done = table.with(&handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+        let first = table.with(&handle, |s| s.turn_record(1)).flatten().expect("turn 1");
+
+        table.respawn(&handle, sleeper("0"), provenance()).expect("respawn");
+        let (live_pid, again, second) = table
+            .with(&handle, |s| (s.pid(), s.turn_record(1), s.turn_record(2)))
+            .expect("session");
+        let again = again.expect("turn 1 after respawn");
+        let second = second.expect("turn 2");
+
+        assert_eq!(again.pid, first.pid, "turn 1 keeps the pid that ran it");
+        assert_eq!(
+            again.started_at_wall, first.started_at_wall,
+            "turn 1 keeps the moment it started"
+        );
+        assert_eq!(second.pid, live_pid, "turn 2 reports the process now running");
+        assert_ne!(first.pid, second.pid, "the two turns ran as different processes");
     }
 
     #[tokio::test]
