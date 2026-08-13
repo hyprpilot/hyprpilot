@@ -47,27 +47,29 @@ impl Answer {
     }
 }
 
-/// Extract the latest turn's answer from a whole transcript body.
+/// Extract ONE turn's outcome from its slice of the transcript.
 ///
-/// An `error` event wins over any text: a run that failed upstream may
-/// still have emitted prose before dying, and reporting that prose as
-/// the answer is how a billing failure reads as a short successful reply.
-pub(crate) fn extract(body: &str, provider: crate::config::AgentProvider) -> Answer {
-    let events: Vec<Value> = body
+/// The caller slices by the byte offset recorded when the turn started
+/// (`TurnRecord::transcript_from`), so everything here belongs to that
+/// turn and no boundary has to be guessed. That matters because nothing
+/// in the file marks where a turn began: the transcript is append-only
+/// across turns, and a turn that DIES emits no terminal event at all, so
+/// two turns' output is otherwise indistinguishable. Guessing is how a
+/// turn-2 billing error became the answer to turn 3.
+pub(crate) fn extract(turn: &str, provider: crate::config::AgentProvider) -> Answer {
+    let events: Vec<Value> = turn
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .collect();
 
-    if let Some(err) = last_error(&events) {
+    // An error outranks text from the same turn: a run that died
+    // mid-sentence would otherwise read as a short successful answer.
+    if let Some(err) = turn_error(&events) {
         return Answer::Failed(err);
     }
 
     let text = match provider {
-        crate::config::AgentProvider::ClaudeCode => last_field(&events, |event| {
-            (event.get("type").and_then(Value::as_str) == Some("result"))
-                .then(|| event.get("result").and_then(Value::as_str))
-                .flatten()
-        }),
+        crate::config::AgentProvider::ClaudeCode => claude_answer(&events),
         crate::config::AgentProvider::Codex => last_field(&events, |event| {
             let is_message = event.get("type").and_then(Value::as_str) == Some("item.completed")
                 && event.get("item").and_then(|i| i.get("type")).and_then(Value::as_str) == Some("agent_message");
@@ -75,87 +77,67 @@ pub(crate) fn extract(body: &str, provider: crate::config::AgentProvider) -> Ans
                 .then(|| event.get("item").and_then(|i| i.get("text")).and_then(Value::as_str))
                 .flatten()
         }),
-        crate::config::AgentProvider::OpenCode => opencode_latest_turn(&events),
+        // opencode emits a `text` part per block of prose, including one
+        // BEFORE its tool calls, so the answer is every block of the
+        // turn rather than the last one.
+        crate::config::AgentProvider::OpenCode => {
+            let blocks: Vec<&str> = events
+                .iter()
+                .filter(|e| e.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|e| e.get("part").and_then(|p| p.get("text")).and_then(Value::as_str))
+                .collect();
+            (!blocks.is_empty()).then(|| blocks.join("\n"))
+        }
     };
 
     text.map_or(Answer::Pending, Answer::Text)
 }
 
-/// The last `error` event's message, if the run failed.
+/// claude carries the answer on the event that closes the turn, and
+/// flags a failed one with `is_error`. Returning that text as an answer
+/// hides a credit-balance or overload failure as a short reply.
+fn claude_answer(events: &[Value]) -> Option<String> {
+    let event = events
+        .iter()
+        .rev()
+        .find(|e| e.get("type").and_then(Value::as_str) == Some("result"))?;
+    let text = event.get("result").and_then(Value::as_str);
+    if event.get("is_error").and_then(Value::as_bool) == Some(true) {
+        return Some(format!(
+            "error: {}",
+            text.unwrap_or("the vendor reported a failed result")
+        ));
+    }
+    text.map(str::to_owned)
+}
+
+/// An `error` event in this turn.
 ///
-/// Upstream failures land HERE and leave `stderr.log` empty — a real
-/// 402 produced exactly that — so a caller checking only stderr reports
-/// "no output" for a billing error.
-fn last_error(events: &[Value]) -> Option<String> {
+/// Two shapes, because the vendors disagree: opencode nests the message
+/// under `error.data.message`, codex puts it at the top level. Matching
+/// only one silently drops the other's failures.
+fn turn_error(events: &[Value]) -> Option<String> {
     events
         .iter()
         .filter(|event| event.get("type").and_then(Value::as_str) == Some("error"))
         .filter_map(|event| {
-            let err = event.get("error")?;
-            err.get("data")
-                .and_then(|d| d.get("message"))
-                .and_then(Value::as_str)
-                .or_else(|| err.get("name").and_then(Value::as_str))
-                .map(str::to_owned)
+            if let Some(err) = event.get("error") {
+                return err
+                    .get("data")
+                    .and_then(|d| d.get("message"))
+                    .and_then(Value::as_str)
+                    .or_else(|| err.get("name").and_then(Value::as_str))
+                    .or_else(|| err.as_str())
+                    .map(str::to_owned);
+            }
+            event.get("message").and_then(Value::as_str).map(str::to_owned)
         })
         .next_back()
 }
 
-/// Last matching value — `last`, not `first`, because `session_send`
-/// appends to the same transcript. Taking the first match reports turn
-/// 1's answer as the reply to turn 5, confidently and forever.
+/// Last matching value in the turn.
 fn last_field(events: &[Value], pick: impl Fn(&Value) -> Option<&str>) -> Option<String> {
     events.iter().filter_map(pick).next_back().map(str::to_owned)
-}
-
-/// opencode emits no terminal event and no per-turn event.
-///
-/// It emits a `text` part per block of prose — one mid-turn before its
-/// tool calls, another at the end — so "the last text part" is one block
-/// of the answer, not the answer. The only turn boundary in the file is
-/// `step_finish` with `reason: "stop"`; intermediate steps carry
-/// `reason: "tool-calls"`. So the latest turn is every `text` between
-/// the previous `stop` and the last one.
-fn opencode_latest_turn(events: &[Value]) -> Option<String> {
-    #[derive(PartialEq)]
-    enum Marker {
-        Text(String),
-        TurnEnd,
-    }
-
-    let markers: Vec<Marker> = events
-        .iter()
-        .filter_map(|event| match event.get("type").and_then(Value::as_str) {
-            Some("text") => event
-                .get("part")
-                .and_then(|p| p.get("text"))
-                .and_then(Value::as_str)
-                .map(|t| Marker::Text(t.to_owned())),
-            Some("step_finish") => (event.get("part").and_then(|p| p.get("reason")).and_then(Value::as_str)
-                == Some("stop"))
-            .then_some(Marker::TurnEnd),
-            _ => None,
-        })
-        .collect();
-
-    // No `stop` at all means the turn never finished cleanly — treat it
-    // as pending rather than guessing, and let the caller consult
-    // `session_status`.
-    let end = markers.iter().rposition(|m| *m == Marker::TurnEnd)?;
-    let start = markers[..end]
-        .iter()
-        .rposition(|m| *m == Marker::TurnEnd)
-        .map_or(0, |i| i + 1);
-
-    let text: Vec<&str> = markers[start..end]
-        .iter()
-        .filter_map(|m| match m {
-            Marker::Text(t) => Some(t.as_str()),
-            Marker::TurnEnd => None,
-        })
-        .collect();
-
-    (!text.is_empty()).then(|| text.join("\n"))
 }
 
 #[cfg(test)]
@@ -180,65 +162,15 @@ mod tests {
         );
     }
 
-    /// `session_send` appends to the same transcript, so an unscoped
-    /// query matches every turn oldest-first. Taking the first match
-    /// answers turn 5 with turn 1's reply.
-    #[test]
-    fn the_latest_turn_wins_across_a_conversation() {
-        let body = lines(&[
-            serde_json::json!({ "type": "result", "result": "turn one" }),
-            serde_json::json!({ "type": "result", "result": "turn two" }),
-        ]);
-
-        assert_eq!(
-            extract(&body, AgentProvider::ClaudeCode),
-            Answer::Text("turn two".into())
-        );
-    }
-
     #[test]
     fn codex_reads_the_agent_message_item() {
         let body = lines(&[
             serde_json::json!({ "type": "item.completed", "item": { "type": "reasoning", "text": "ignored" } }),
             serde_json::json!({ "type": "item.completed", "item": { "type": "agent_message", "text": "the answer" } }),
+            serde_json::json!({ "type": "turn.completed" }),
         ]);
 
         assert_eq!(extract(&body, AgentProvider::Codex), Answer::Text("the answer".into()));
-    }
-
-    /// opencode emits a `text` part per block of prose, including one
-    /// BEFORE its tool calls, so "the last text part" is one block of
-    /// the answer rather than the answer.
-    #[test]
-    fn opencode_joins_every_block_of_the_latest_turn() {
-        let body = lines(&[
-            serde_json::json!({ "type": "text", "part": { "text": "turn one answer" } }),
-            serde_json::json!({ "type": "step_finish", "part": { "reason": "stop" } }),
-            serde_json::json!({ "type": "text", "part": { "text": "I'll check first." } }),
-            serde_json::json!({ "type": "tool_use", "part": { "tool": "read" } }),
-            serde_json::json!({ "type": "step_finish", "part": { "reason": "tool-calls" } }),
-            serde_json::json!({ "type": "text", "part": { "text": "Here is the result." } }),
-            serde_json::json!({ "type": "step_finish", "part": { "reason": "stop" } }),
-        ]);
-
-        assert_eq!(
-            extract(&body, AgentProvider::OpenCode),
-            Answer::Text("I'll check first.\nHere is the result.".into()),
-            "both blocks of the LATEST turn, and nothing from the previous one"
-        );
-    }
-
-    /// An unfinished opencode turn has no `stop`, so there is no
-    /// boundary to slice on. Guessing would report a mid-turn block as
-    /// the answer.
-    #[test]
-    fn opencode_without_a_stop_is_pending() {
-        let body = lines(&[
-            serde_json::json!({ "type": "text", "part": { "text": "thinking out loud" } }),
-            serde_json::json!({ "type": "step_finish", "part": { "reason": "tool-calls" } }),
-        ]);
-
-        assert_eq!(extract(&body, AgentProvider::OpenCode), Answer::Pending);
     }
 
     /// The failure the answer query goes blind on. A real 402 left
@@ -279,6 +211,68 @@ mod tests {
         assert_eq!(extract(&body, AgentProvider::ClaudeCode), Answer::Pending);
         assert_eq!(extract(&body, AgentProvider::OpenCode), Answer::Pending);
         assert_eq!(extract(&body, AgentProvider::Codex), Answer::Pending);
+    }
+
+    /// claude flags a failed result with `is_error` and still fills
+    /// `result`. Returning that as an answer hides a credit-balance
+    /// failure as a short reply.
+    #[test]
+    fn a_claude_error_result_is_not_an_answer() {
+        let body = lines(&[serde_json::json!({
+            "type": "result", "is_error": true, "result": "Credit balance is too low"
+        })]);
+
+        assert_eq!(
+            extract(&body, AgentProvider::ClaudeCode),
+            Answer::Text("error: Credit balance is too low".into())
+        );
+    }
+
+    /// codex puts its error message at the top level rather than under
+    /// `error.data`. Matching only opencode's shape drops it silently.
+    #[test]
+    fn a_codex_top_level_error_is_matched() {
+        let body = lines(&[serde_json::json!({ "type": "error", "message": "stream disconnected" })]);
+
+        assert_eq!(
+            extract(&body, AgentProvider::Codex),
+            Answer::Failed("stream disconnected".into())
+        );
+    }
+
+    /// opencode emits a `text` part per block of prose, including one
+    /// BEFORE its tool calls, so the answer is every block of the turn
+    /// rather than the last one.
+    #[test]
+    fn opencode_joins_every_block_of_the_turn() {
+        let body = lines(&[
+            serde_json::json!({ "type": "text", "part": { "text": "I'll check first." } }),
+            serde_json::json!({ "type": "tool_use", "part": { "tool": "read" } }),
+            serde_json::json!({ "type": "step_finish", "part": { "reason": "tool-calls" } }),
+            serde_json::json!({ "type": "text", "part": { "text": "Here is the result." } }),
+            serde_json::json!({ "type": "step_finish", "part": { "reason": "stop" } }),
+        ]);
+
+        assert_eq!(
+            extract(&body, AgentProvider::OpenCode),
+            Answer::Text("I'll check first.\nHere is the result.".into())
+        );
+    }
+
+    /// A turn that DIED emits no terminal event, so an error is all it
+    /// leaves. It must still be found — that message is the only thing
+    /// explaining the failure.
+    #[test]
+    fn a_turn_that_died_still_reports_its_error() {
+        let body = lines(&[
+            serde_json::json!({ "type": "text", "part": { "text": "starting" } }),
+            serde_json::json!({ "type": "error", "error": { "data": { "message": "Payment Required" } } }),
+        ]);
+
+        assert_eq!(
+            extract(&body, AgentProvider::OpenCode),
+            Answer::Failed("Payment Required".into())
+        );
     }
 
     /// A transcript is appended to while the agent writes, so a torn

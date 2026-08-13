@@ -223,11 +223,15 @@ Every session is also a **resource** — `hyprpilot://sessions/<handle>` — so 
 | `hyprpilot://sessions/<handle>/transcript` | The raw event stream, capped                                  | when exited    |
 | `hyprpilot://sessions/<handle>/stderr`     | The vendor's stderr                                           | when exited    |
 
+Every view is also addressable **per turn** — `hyprpilot://sessions/<handle>/turns/<n>/result` and the same for `status`, `transcript`, `stderr`. A conversation appends to one transcript, so this is how an earlier turn's answer stays reachable after later turns have run. Turn numbers are 1-based; one the session never reached is an error, not an empty read.
+
 `resources/list` names the two indexes and **one entry per session**, not one per view. The views are advertised as the template `hyprpilot://sessions/{handle}/{view}` instead — four views across 64 retained sessions would be 256 rows every client pays for on connect.
 
 `hyprpilot://profiles` carries `ttlMs: 0`, alone among the listings. The profile set comes from config re-read per call and **nothing watches that file**, so there is no notification to invalidate a cached copy with; a surface that cannot signal must not claim freshness.
 
 `done.json` and the crash breadcrumb are deliberately not resources. The status view answers what `done.json` answers, and `done.json` exists precisely as the one signal a shell watcher can reach without MCP. The breadcrumb is orphan-debugging plumbing.
+
+Each turn's slice comes from the byte offset recorded when that turn started, bounded by where the next turn began — not from guessing a boundary out of the events. Nothing in the file marks where a turn begins, and a turn that _dies_ emits no terminal event at all, so two turns' output is otherwise indistinguishable.
 
 `/result` is the one that saves work. It does server-side what the `jq` recipes did by hand: finds the vendor's answer event, scopes it to the **latest** turn, and joins multi-block answers. It never comes back blank for a finished session — the three ways a run produces no answer each report themselves:
 

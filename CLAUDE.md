@@ -377,11 +377,17 @@ missing. Do not re-merge them.
 <handle>` (status), `/result`, `/transcript` and `/stderr` — plus two
 indexes, `hyprpilot://sessions` (what `session_list` returns) and
 `hyprpilot://profiles` (what `list_profiles` returns, same delegate
-scope). `resources/list` names the indexes and ONE entry per session,
+scope). Every view is also addressable PER TURN
+(`…/turns/<n>/<view>`), sliced by the byte offset recorded when that
+turn started and bounded by the next turn's — NOT by guessing a boundary
+from the events. Nothing in the transcript marks where a turn begins and
+a turn that dies emits no terminal event, so a heuristic mis-attributes
+one turn's error to the next; an unbounded slice swallows every later
+turn. Both were live bugs. `resources/list` names the indexes and ONE entry per session,
 never one per view — four views across 64 retained sessions is 256 rows
 every client pays for on connect, the bloat the skills listing already
 measured and cut. The views ride a resource TEMPLATE instead.
-`hyprpilot://profiles` is the one listing with `ttlMs: 0`: config is
+Both INDEXES carry `ttlMs: 0`: `hyprpilot://sessions` embeds live per-session status and nothing fires `resources/updated` for the index URI, and for profiles, config is
 re-read per call and nothing watches that file, so there is no signal to
 invalidate it with. `done.json` and the breadcrumb are deliberately NOT
 resources — the status view answers the first, whose whole purpose is

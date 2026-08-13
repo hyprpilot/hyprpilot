@@ -263,7 +263,12 @@ impl ServerHandler for HarnessServer {
                     meta: None,
                 },
             ])
-            .with_ttl_ms(RESULT_TTL_MS)
+            // `0`, like profiles. This payload embeds each session's
+            // LIVE status, and nothing fires `resources/updated` for the
+            // index URI — `list_changed` invalidates `resources/list`,
+            // not this read. A surface that cannot signal must not claim
+            // freshness.
+            .with_ttl_ms(0)
             .with_cache_scope(RESULT_CACHE_SCOPE)
             .into());
         }
@@ -290,11 +295,11 @@ impl ServerHandler for HarnessServer {
             .into());
         }
 
-        let (handle, view) = crate::mcp::server::harness::parse_session_uri(uri)
+        let (handle, view, turn) = crate::mcp::server::harness::parse_session_uri(uri)
             .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("unknown resource: {uri}"), None))?;
         let (text, finished) = self
             .harness
-            .session_view(handle, view)
+            .session_view(handle, view, turn)
             .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
 
         // A RUNNING session's views change under the caller, so the long
@@ -1147,6 +1152,15 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
                         super::harness::SessionView::ALL
                             .into_iter()
                             .map(|view| super::harness::session_view_uri(&handle, view))
+                            // Also the turn that just ended, by number.
+                            // Subscribing to one turn is the whole point
+                            // of addressing turns, and its views become
+                            // final exactly here.
+                            .chain(
+                                super::harness::SessionView::ALL
+                                    .into_iter()
+                                    .map(|view| super::harness::session_turn_uri(&handle, turn, view)),
+                            )
                             .collect(),
                     )
                     .await;

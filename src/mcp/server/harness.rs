@@ -68,6 +68,19 @@ pub(crate) fn session_view_uri(handle: &str, view: SessionView) -> String {
     format!("{SESSION_URI_PREFIX}{handle}{}", view.suffix())
 }
 
+/// Render one TURN's view of a session.
+///
+/// `Status`'s suffix is empty on the bare form — the handle alone IS the
+/// status — so a turn-scoped URI names it explicitly; `…/turns/3` with
+/// nothing after it would address a turn rather than a view of one.
+pub(crate) fn session_turn_uri(handle: &str, turn: u32, view: SessionView) -> String {
+    let view = match view {
+        SessionView::Status => "/status",
+        other => other.suffix(),
+    };
+    format!("{SESSION_URI_PREFIX}{handle}/turns/{turn}{view}")
+}
+
 /// Which projection of a session a URI addresses.
 ///
 /// One session, three reads, so a caller fetches the part it wants
@@ -95,6 +108,7 @@ impl SessionView {
     fn parse(view: &str) -> Option<Self> {
         match view {
             "result" => Some(Self::Result),
+            "status" => Some(Self::Status),
             "transcript" => Some(Self::Transcript),
             "stderr" => Some(Self::Stderr),
             _ => None,
@@ -118,18 +132,28 @@ impl SessionView {
 /// scheme or an unknown view, so `read_resource` rejects rather than
 /// guesses — and so the subscription filter cannot acknowledge a URI
 /// that could never be served.
-pub(crate) fn parse_session_uri(uri: &str) -> Option<(&str, SessionView)> {
+pub(crate) fn parse_session_uri(uri: &str) -> Option<(&str, SessionView, Option<u32>)> {
     let rest = uri.strip_prefix(SESSION_URI_PREFIX).filter(|r| !r.is_empty())?;
-    match rest.split_once('/') {
-        None => Some((rest, SessionView::Status)),
-        Some((handle, view)) if !handle.is_empty() => SessionView::parse(view).map(|v| (handle, v)),
-        Some(_) => None,
+    let Some((handle, tail)) = rest.split_once('/') else {
+        return Some((rest, SessionView::Status, None));
+    };
+    if handle.is_empty() {
+        return None;
     }
+    // `turns/<n>/<view>` addresses ONE turn. A conversation appends to
+    // one transcript, so without this every earlier turn's output is
+    // reachable only by byte-slicing the file by hand.
+    if let Some(spec) = tail.strip_prefix("turns/") {
+        let (turn, view) = spec.split_once('/')?;
+        let turn: u32 = turn.parse().ok().filter(|t| *t > 0)?;
+        return SessionView::parse(view).map(|v| (handle, v, Some(turn)));
+    }
+    SessionView::parse(tail).map(|v| (handle, v, None))
 }
 
 /// Recover just the handle. `None` for any other scheme.
 pub(crate) fn session_handle_from_uri(uri: &str) -> Option<&str> {
-    parse_session_uri(uri).map(|(handle, _)| handle)
+    parse_session_uri(uri).map(|(handle, _, _)| handle)
 }
 
 /// A session projected for `resources/list`. Three fields, on purpose —
@@ -689,14 +713,40 @@ impl Harness {
     /// `session_read` returns the transcript itself, which runs to tens
     /// of kilobytes. This is the cheap poll: a handle lookup plus one
     /// `stat`.
-    /// One view of a session, for `resources/read`.
+    /// What to say when a finished turn produced no answer.
+    ///
+    /// Three shapes, each landing somewhere different, and checking only one
+    /// is how a billing failure reports as "the agent returned nothing".
+    /// The launch-failure label is claimed ONLY when the transcript is empty
+    /// on the first turn — otherwise the session plainly did start, and
+    /// stderr is just whatever it warned about.
+    fn no_answer(stderr: &std::path::Path, exit_code: Option<i32>, turn: u32, body: &str) -> String {
+        let dump = std::fs::read_to_string(stderr).unwrap_or_default();
+        let dump = dump.trim();
+        let code = exit_code.map_or_else(|| "?".to_string(), |c| c.to_string());
+        if dump.is_empty() {
+            return format!("error: the session exited with code {code} and produced no answer");
+        }
+        if turn == 1 && body.trim().is_empty() {
+            return format!("error: the session failed to launch\n\n{dump}");
+        }
+        format!("error: the turn produced no answer (exit {code}). Its stderr:\n\n{dump}")
+    }
+
+    /// One view of a session, for `resources/read`. Reads whole files,
+    /// unlike the status poll below.
     ///
     /// Returns the text plus whether the session has FINISHED, which
     /// decides the cache ttl at the call site: a running session's
     /// result and transcript change under the caller, so promising a day
     /// of freshness for them would be a lie the notification cannot
     /// correct in time.
-    pub(crate) fn session_view(&self, handle: &str, view: SessionView) -> Result<(String, bool), String> {
+    pub(crate) fn session_view(
+        &self,
+        handle: &str,
+        view: SessionView,
+        turn: Option<u32>,
+    ) -> Result<(String, bool), String> {
         if view == SessionView::Status {
             let (_, payload) = self.session_status(handle)?;
             let finished = payload.get("status").and_then(Value::as_str) == Some("exited");
@@ -709,15 +759,37 @@ impl Harness {
                 session.turns_path(),
                 session.stderr_path(),
                 session.exit_code(),
+                session.turn,
+                turn.unwrap_or(session.turn),
+                session
+                    .turn_record(turn.unwrap_or(session.turn))
+                    .map(|r| r.transcript_from),
+                // Where the NEXT turn began, which is where this one
+                // ended. Without it a turn's slice runs to EOF and
+                // swallows every later turn's output.
+                session
+                    .turn_record(turn.unwrap_or(session.turn) + 1)
+                    .map(|r| r.transcript_from),
                 session.provider,
                 session.status() == SessionStatus::Exited,
             )
         });
-        let Some((path, stderr, exit_code, provider, finished)) = found else {
+        let Some((path, stderr, exit_code, current, wanted, turn_from, turn_to, provider, running_now)) = found else {
             return Err(format!(
                 "unknown session `{handle}`. Call `session_list` for live handles."
             ));
         };
+        // A turn the session never reached has no slice to read.
+        let Some(turn_from) = turn_from else {
+            return Err(format!(
+                "session `{handle}` has no turn {wanted} — it is on turn {current}."
+            ));
+        };
+        // Only the CURRENT turn can still be running; an earlier one is
+        // finished by definition, so its views are cacheable even while
+        // the session works on something else.
+        let finished = running_now || wanted < current;
+        let turn = wanted;
 
         let text = match view {
             SessionView::Status => unreachable!("handled above"),
@@ -726,33 +798,31 @@ impl Harness {
                 // is found by slicing events, and a tail can cut the
                 // marker that defines where that turn began.
                 let body = std::fs::read_to_string(&path).unwrap_or_default();
-                let answer = super::transcript::extract(&body, provider).render();
-                // A LAUNCH failure — a flag the vendor rejected — writes
-                // its usage dump to stderr and leaves the transcript
-                // EMPTY, so the extraction above has nothing to find.
-                // Without this, the one read that is meant to say what
-                // happened comes back blank for the one case where the
-                // session never started. Gated on `finished`: an empty
-                // result on a running turn just means "not yet".
-                if !answer.is_empty() || !finished {
-                    // Either there IS an answer, or the turn is still
-                    // running and an empty read just means "not yet".
-                    answer
+                // Sliced by the offset recorded when THIS turn started,
+                // not by guessing a boundary from the events. The
+                // transcript is append-only across turns and a turn that
+                // DIES emits no terminal event, so nothing in the file
+                // itself marks where the newest turn began — two turns'
+                // output is otherwise indistinguishable.
+                let this_turn = match turn_to {
+                    Some(to) => body.get(turn_from as usize..to as usize),
+                    None => body.get(turn_from as usize..),
+                }
+                .unwrap_or(&body);
+                let extracted = super::transcript::extract(this_turn, provider);
+                // A RUNNING turn has not produced its answer yet, and
+                // the latest COMPLETED turn's answer is a different
+                // question. Showing it here reads as a fresh reply.
+                if !finished {
+                    // The turn has not produced its answer yet, and the
+                    // PREVIOUS turn's answer is a different question.
+                    String::new()
                 } else {
-                    // Finished with nothing to show. Three ways that
-                    // happens, and a blank read describes none of them.
-                    // A LAUNCH failure — a flag the vendor rejected —
-                    // writes its usage dump to stderr and leaves the
-                    // transcript EMPTY, so the extraction above had
-                    // nothing to find. Failing that, the exit code is
-                    // still more than silence.
-                    let dump = std::fs::read_to_string(&stderr).unwrap_or_default();
-                    match dump.trim() {
-                        "" => format!(
-                            "error: the session exited with code {} and produced no answer",
-                            exit_code.map_or_else(|| "?".to_string(), |c| c.to_string())
-                        ),
-                        dump => format!("error: the session failed to launch\n\n{dump}"),
+                    match extracted {
+                        // Finished with nothing in its own slice: killed
+                        // mid-run, or it died. Say which.
+                        super::transcript::Answer::Pending => Self::no_answer(&stderr, exit_code, turn, this_turn),
+                        answer => answer.render(),
                     }
                 }
             }
@@ -783,6 +853,8 @@ impl Harness {
         Ok((text, finished))
     }
 
+    /// One session's state without its transcript — the cheap poll: a
+    /// handle lookup plus one `stat`.
     pub(crate) fn session_status(&self, handle: &str) -> Result<(String, Value), String> {
         self.sessions
             .with(handle, |session| {
@@ -1794,15 +1866,34 @@ mod tests {
 
         assert_eq!(
             parse_session_uri(&session_view_uri(handle, SessionView::Status)),
-            Some((handle, SessionView::Status))
+            Some((handle, SessionView::Status, None))
         );
         for view in SessionView::ALL {
             assert_eq!(
                 parse_session_uri(&session_view_uri(handle, view)),
-                Some((handle, view)),
+                Some((handle, view, None)),
                 "{view:?} must survive the round trip"
             );
         }
+    }
+
+    /// A turn-scoped URI addresses ONE turn of a conversation, which is
+    /// the only way an earlier turn's answer stays reachable once the
+    /// transcript has been appended to.
+    #[test]
+    fn a_turn_scoped_uri_round_trips() {
+        let handle = "abc";
+
+        for view in SessionView::ALL {
+            assert_eq!(
+                parse_session_uri(&session_turn_uri(handle, 3, view)),
+                Some((handle, view, Some(3))),
+                "{view:?} must survive the round trip"
+            );
+        }
+        assert_eq!(parse_session_uri("hyprpilot://sessions/abc/turns/0/result"), None);
+        assert_eq!(parse_session_uri("hyprpilot://sessions/abc/turns/x/result"), None);
+        assert_eq!(parse_session_uri("hyprpilot://sessions/abc/turns/1/bogus"), None);
     }
 
     /// An unknown view must be REFUSED, not silently read as the status.
