@@ -371,7 +371,17 @@ missing. Do not re-merge them.
 | ---------- | ------------ | ------ | ------ | ------- |
 | `mcp serve` | `hyprpilot` | `server/tools.rs` | `open` | on |
 | `mcp skills` | `hyprpilot_skills` | `server/skills_server.rs` | skills tools + resources | on |
-| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) | **off** |
+| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) + session resources | **off** |
+
+**Sessions are resources** — `hyprpilot://sessions/<handle>`, so a
+caller can `subscriptions/listen` on one handle and be WOKEN when its
+turn ends instead of polling `session_status` or watching `done.json`
+from a shell. The listing carries handle / profile / status and nothing
+else, and `resources/read` returns the same payload `session_status`
+does. **Deliberately not the transcript**: a read is capped at 60 kB and
+routinely far larger on disk, so `session_read` (or `jq` on
+`files.transcript`) stays the way to get output — the value here is
+subscribing to a handle you already hold, not browsing.
 
 `server/rpc.rs` owns the plumbing all three import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
@@ -404,16 +414,66 @@ reports `connected` and has NO TOOLS AT ALL. Claude Code 2.2.x
 negotiates `2026-07-28` and hit exactly this against the harness, which
 was the one server that had opted in.
 
-`0` / `private` because nothing here is safely cacheable for a duration
-or across users: the skills catalogue changes on `reload` and the
-profile list changes when the captain edits config. Emitting them at
-older revisions is harmless — the spec's `Result` is an open map. The
-earlier per-server split (harness opts in, the other two capped) was
-wrong in the direction that matters: the revision's requirements land
-on `tools/list`, which every server serves, so excluding two of them
-hid the work rather than avoiding it. A new result type that forgets
-the stamp is invisible until a client upgrades — tests pin the
-constants and the set.
+`ttlMs` is **24h — longer than any sidecar lives**, so a client that
+honours it never re-fetches on a timer; every real change arrives as a
+notification instead. That is only honest because the invalidation is
+real, which is the next bullet. `private` because these results are
+scoped to one captain's config. Emitting both at older revisions is
+harmless — the spec's `Result` is an open map. The earlier per-server
+split (harness opts in, the other two capped) was wrong in the
+direction that matters: the revision's requirements land on
+`tools/list`, which every server serves, so excluding two of them hid
+the work rather than avoiding it. A new result type that forgets the
+stamp is invisible until a client upgrades — tests pin the constants
+and the set.
+
+**Notifications go through `rpc::Subscriptions`, never `Peer::notify_*`
+directly.** `Peer::notify_*` is an unconditional pipe send: it reaches
+every client whatever it subscribed to, and carries no
+`io.modelcontextprotocol/subscriptionId` — so a conforming `2026-07-28`
+client, which correlates stream notifications by that id, never sees it
+on the stream it opened. Only `SubscriptionSink` filters and stamps.
+`Subscriptions` holds every open stream's sink in an id-keyed
+`Registry` and picks: the streams when any are open, broadcast when none
+are. **Concurrent streams are legal** — rmcp runs each request in its own
+task, and `listen(B)` then `cancel(A)` is how a client changes its
+filter — so a notification is offered to EVERY open stream and teardown
+removes only the entry matching that stream's request id. An earlier
+single-slot version cleared unconditionally, which left the surviving
+stream acknowledged but sinkless and silently degraded every later
+notification to an untagged broadcast.
+
+Both servers also override `accepted_subscription_filter` (rmcp
+defaults it to `None` = unimplemented) and filter
+`resourceSubscriptions` to URIs they can actually fire for — the
+acknowledgment is the client's contract, so accepting a scheme we never
+notify leaves it waiting forever. The SDK then intersects with the
+advertised capabilities, which is what refuses `toolsListChanged`.
+Legacy `resources/subscribe` is answered `Ok` rather than rmcp's
+`-32601`, because `resources.subscribe: true` would otherwise be a lie
+to a `2025-11-25` client that does receive the broadcasts.
+
+**Every mutable surface pairs the ttl with a signal.** `reload` DIFFS
+the catalogue (`CatalogueDelta`) rather than firing blind: any change
+emits `resources/list_changed` plus `resources/updated` per changed
+slug and for the catalogue index, and a reload that changed nothing
+emits **nothing**. Firing spuriously would make every reload cost a
+full re-fetch and teach clients to ignore us. On the harness, a turn
+starting emits `resources/updated` for its session; a turn ending emits
+`updated` AND `list_changed`, because the listing embeds live status;
+`spawn` emits `list_changed`, and `session_kill` emits both. The session
+listing mutates, so under this ttl it has to say so. The exit hook is installed
+UNCONDITIONALLY: `notifyOnComplete` names the Claude channel push alone,
+and gating the whole hook on it also skipped `seal_turn` and the session
+`resources/updated`, which are correctness rather than noise.
+
+**`list_changed` fires on ANY skills change, not only membership.** A
+client that cannot subscribe — anything pre-`2026-07-28` — has no way to
+act on `resources/updated`, so narrowing `list_changed` to membership
+would make a body edit reach it as silence. The per-URI updates are the
+precision for subscribers; `list_changed` is the signal everyone can
+use. Any NEW mutable surface must fire a notification or lower its own
+ttl; doing neither is invisible until a client caches it for a day.
 
 `tool_error` / `structured_with_text` return rmcp 3's `CallToolResponse`
 envelope, converting at that single point so no `call_tool` body deals

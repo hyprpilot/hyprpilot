@@ -71,6 +71,30 @@ And as tools:
 | `read_skill_references` | Fetch reference bodies by path.                                      |
 | `reload`                | Rescan the skill roots (picks up edits / new bundles).               |
 
+### What `reload` tells connected clients
+
+Results carry a `ttlMs` of 24 hours — longer than a sidecar lives — so a client caches until told otherwise. `reload` earns that by **diffing** the catalogue and firing only what actually changed:
+
+| What you changed              | What fires                                                                                          |
+| ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| A skill's body or frontmatter | `resources/updated` for that skill's URI and for the catalogue index, plus `resources/list_changed` |
+| Added or removed a skill      | `resources/list_changed`, plus `resources/updated` for the index                                    |
+| Nothing                       | nothing — a no-op reload never invalidates a client's cache                                         |
+
+The tool result reports the same thing (`{ reloaded, membershipChanged, updated }`), so you can see what a reload actually moved.
+
+A client on `2026-07-28` opts in with `subscriptions/listen` (`resourcesListChanged` and/or `resourceSubscriptions`), and its notifications then ride that stream, tagged with the subscription id. A client with no stream — anything on an older revision — receives them as plain unsolicited notifications, exactly as before.
+
+`resources/list_changed` fires on **any** change, not only on membership, precisely so a client that cannot subscribe still has a signal it can act on: a body edit would otherwise reach it only as a `resources/updated` it has no way to have asked for.
+
+::: warning Known gap: reference-only edits
+
+The diff compares each skill's body and frontmatter. A skill's resource read also carries a footer listing its references' sizes and modification times, and editing only a reference file changes that footer without changing the skill — so no `resources/updated` fires for it. Resolving every declared reference on every reload would mean reading every cited file of every skill, which is the cost the manifest design exists to avoid. Fetch reference bodies with `read_skill_references`, which always resolves from disk.
+
+:::
+
+Reload refreshes the **sidecar**, not anything already in an agent's context — a skill body read earlier this session stays as it was until re-read.
+
 ## References
 
 A skill declares its references in frontmatter, as paths relative to the skill's own directory:

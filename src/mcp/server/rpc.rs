@@ -55,21 +55,230 @@ pub(super) fn supported_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
 /// then has NO TOOLS AT ALL, because the listing is the door. Claude Code
 /// 2.2.x negotiates `2026-07-28` and hit exactly this.
 ///
-/// `0` because nothing we serve is safely cacheable for a duration: the
-/// skills catalogue changes on `reload`, and the profile list changes
-/// whenever the captain edits config. Emitting them at older revisions
-/// is harmless — the spec's `Result` is an open map, so an extra key is
-/// permitted everywhere.
+/// **Effectively "cache until I say otherwise."** 24 hours is longer
+/// than any sidecar lives — the vendor spawns one per session and it
+/// dies with that session — so a client that honours this never has to
+/// re-fetch on a timer, and every real invalidation arrives as a
+/// notification instead.
 ///
-/// Stamp them on EVERY list and read result, on every server. A result
-/// that forgets is invisible until a client upgrades.
-pub(super) const RESULT_TTL_MS: u64 = 0;
+/// That only works because the invalidation is real. Every mutable
+/// surface pairs the ttl with a signal: `reload` diffs the catalogue and
+/// fires `resources/list_changed` for ANY change — not only membership,
+/// because a client that cannot subscribe has no other signal — plus
+/// `resources/updated` per changed URI as the precision for
+/// subscribers. A harness turn starting or ending fires the same pair
+/// for its session. `tools/list` needs no signal because the tool set is
+/// compiled in and cannot change while the process lives.
+///
+/// Delivery is two channels, picked per notification by
+/// [`Subscriptions`]: the `subscriptions/listen` stream when the client
+/// opened one, a raw broadcast when it did not. Both reach every client
+/// that can act on them, so the ttl does not depend on the client having
+/// subscribed.
+///
+/// **The rule this creates:** a new mutable surface must either fire a
+/// notification or lower the ttl for itself. Adding one that does
+/// neither is invisible until a client caches it for a day.
+///
+/// Stamp both fields on EVERY list and read result, on every server. A
+/// result that forgets is invisible until a client upgrades.
+pub(super) const RESULT_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// Companion to [`RESULT_TTL_MS`]. `Private` is the conservative choice
 /// and matches what the reference SDKs default to: these results are
 /// scoped to one captain's config and one process's catalogue, so no
 /// shared intermediary should serve them to anyone else.
 pub(super) const RESULT_CACHE_SCOPE: CacheScope = CacheScope::Private;
+
+/// Anything held by id in a [`Registry`]. Exists so the add/remove
+/// bookkeeping — the part that had the bug — is testable without a live
+/// MCP service to mint a real sink from.
+pub(super) trait Keyed {
+    fn key(&self) -> &rmcp::model::RequestId;
+}
+
+impl Keyed for rmcp::service::SubscriptionSink {
+    fn key(&self) -> &rmcp::model::RequestId {
+        self.id()
+    }
+}
+
+/// An id-keyed set of live entries.
+///
+/// `remove` matches on the key rather than clearing, which is the whole
+/// point: `listen(A)`, `listen(B)`, `cancel(A)` is legal and is how a
+/// client changes its filter, so A's teardown must not take B with it.
+#[derive(Debug)]
+pub(super) struct Registry<T>(Arc<tokio::sync::RwLock<Vec<T>>>);
+
+impl<T> Clone for Registry<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T> Default for Registry<T> {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::RwLock::new(Vec::new())))
+    }
+}
+
+impl<T: Keyed + Clone> Registry<T> {
+    async fn add(&self, entry: T) {
+        self.0.write().await.push(entry);
+    }
+
+    async fn remove(&self, key: &rmcp::model::RequestId) {
+        self.0.write().await.retain(|open| open.key() != key);
+    }
+
+    /// Snapshot, so sends happen without the lock held — a send awaits
+    /// the transport, and holding a read guard across that would stall
+    /// every teardown behind it.
+    async fn snapshot(&self) -> Vec<T> {
+        self.0.read().await.clone()
+    }
+}
+
+/// What one stream did with a notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StreamOutcome {
+    /// Sent on that stream, filtered and tagged.
+    Delivered,
+    /// Refused by the accepted filter. The client declared what it
+    /// wants; not receiving the rest is the declaration working.
+    Declined,
+    /// Cancelled or transport-dead. Says nothing about what the client
+    /// wants, so it must not stand in for an answer.
+    Broken,
+}
+
+/// Whether the raw broadcast should still run.
+///
+/// The rule the wire-visible bug lived in: a broadcast is the fallback
+/// for a client with NO usable stream, never a second delivery on top of
+/// one. So it runs when there are no streams at all, or when every
+/// stream is broken — and it must NOT run merely because a stream
+/// declined, or the filter would be pointless.
+pub(super) fn needs_broadcast(outcomes: &[StreamOutcome]) -> bool {
+    outcomes.iter().all(|outcome| *outcome == StreamOutcome::Broken)
+}
+
+/// Every open `subscriptions/listen` stream.
+///
+/// A LIST, not a slot. rmcp runs each request in its own task, so two
+/// `listen` calls are legal and the natural filter-change sequence is
+/// listen(new) then cancel(old) — with a single slot, the cancelling
+/// stream tears down the surviving stream's sink and every later
+/// notification silently degrades to an untagged broadcast.
+///
+/// This exists because `Peer::notify_*` is an unconditional pipe send.
+/// It ignores the accepted filter and carries no
+/// `io.modelcontextprotocol/subscriptionId` — so a conforming
+/// `2026-07-28` client, which correlates stream notifications by that
+/// id, never sees it on the stream it opened. Only
+/// [`rmcp::service::SubscriptionSink`] filters and stamps.
+#[derive(Clone, Default)]
+pub(super) struct Subscriptions(Registry<rmcp::service::SubscriptionSink>);
+
+impl Subscriptions {
+    /// Hold this stream's sink for as long as the stream lives.
+    ///
+    /// rmcp has already acknowledged the subscription by the time this
+    /// runs, so the job is to keep the sink reachable and to remove
+    /// exactly THIS one on teardown — keyed by request id, because a
+    /// sibling stream may have registered in between.
+    pub(super) async fn run(&self, context: rmcp::service::SubscriptionContext) {
+        let sink = context.sink().clone();
+        let id = sink.id().clone();
+        self.0.add(sink).await;
+        context.cancelled().await;
+        self.0.remove(&id).await;
+    }
+
+    /// Snapshot of the open sinks.
+    ///
+    /// Cloned so the sends happen without the lock held — a sink send
+    /// awaits the transport, and holding a read guard across that would
+    /// stall every `run()` teardown behind it.
+    async fn streams(&self) -> Vec<rmcp::service::SubscriptionSink> {
+        self.0.snapshot().await
+    }
+
+    /// Deliver `notifications/resources/updated`.
+    ///
+    /// Offered to EVERY open stream: a refusal by one must not silence
+    /// another. A refusal is not a failure — the client declared what it
+    /// wants, and broadcasting past its filter would defeat the
+    /// declaration — so it still counts as handled. The broadcast is the
+    /// fallback only when no stream exists, which is the case for every
+    /// client on an older revision.
+    pub(super) async fn resource_updated(&self, peer: &rmcp::service::Peer<RoleServer>, uri: String) {
+        let mut outcomes = Vec::new();
+        for sink in &self.streams().await {
+            outcomes.push(match sink.notify_resource_updated(uri.clone()).await {
+                Ok(()) => StreamOutcome::Delivered,
+                Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => StreamOutcome::Declined,
+                Err(err) => {
+                    tracing::debug!(%err, %uri, "mcp::server: subscription send failed");
+                    StreamOutcome::Broken
+                }
+            });
+        }
+        if !needs_broadcast(&outcomes) {
+            return;
+        }
+        let param = rmcp::model::ResourceUpdatedNotificationParam::new(uri.clone());
+        if let Err(err) = peer.notify_resource_updated(param).await {
+            tracing::debug!(%err, %uri, "mcp::server: resource-updated notification failed");
+        }
+    }
+
+    /// Deliver `notifications/resources/list_changed`. Same channel
+    /// choice as [`Self::resource_updated`].
+    pub(super) async fn resource_list_changed(&self, peer: &rmcp::service::Peer<RoleServer>) {
+        let mut outcomes = Vec::new();
+        for sink in &self.streams().await {
+            outcomes.push(match sink.notify_resource_list_changed().await {
+                Ok(()) => StreamOutcome::Delivered,
+                Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => StreamOutcome::Declined,
+                Err(err) => {
+                    tracing::debug!(%err, "mcp::server: subscription send failed");
+                    StreamOutcome::Broken
+                }
+            });
+        }
+        if !needs_broadcast(&outcomes) {
+            return;
+        }
+        if let Err(err) = peer.notify_resource_list_changed().await {
+            tracing::debug!(%err, "mcp::server: resource list-changed notification failed");
+        }
+    }
+}
+
+/// Accept a `subscriptions/listen` opt-in for the two categories the
+/// in-tree servers actually emit.
+///
+/// `resource_subscriptions` is filtered to URIs this server can notify:
+/// the acknowledgment is the client's contract for what it will receive,
+/// so accepting a scheme we never fire leaves it waiting forever. The
+/// SDK then intersects the result with the request and the advertised
+/// capabilities, which is what correctly refuses `toolsListChanged` —
+/// the tool set is compiled in and cannot change.
+pub(super) fn accept_resource_subscriptions(
+    requested: &rmcp::model::SubscriptionFilter,
+    known_uri: impl Fn(&str) -> bool,
+) -> Option<rmcp::model::SubscriptionFilter> {
+    let mut accepted = rmcp::model::SubscriptionFilter::new();
+    accepted.resources_list_changed = requested.resources_list_changed;
+    accepted.resource_subscriptions = requested
+        .resource_subscriptions
+        .as_ref()
+        .map(|uris| uris.iter().filter(|uri| known_uri(uri)).cloned().collect());
+
+    Some(accepted)
+}
 
 /// Return once the MCP transport closes or a termination signal
 /// arrives, whichever comes first.
@@ -280,15 +489,156 @@ mod tests {
     /// The fields `2026-07-28` makes REQUIRED on a cacheable result.
     /// Omitting them is not a partial failure — a validating client
     /// rejects `tools/list` and the session comes up with no tools at
-    /// all. `0` / `private` because nothing we serve is safely cacheable
-    /// for a duration or across users.
+    /// all.
+    ///
+    /// The ttl is deliberately longer than any sidecar lives, which is
+    /// only honest because every mutable surface fires an invalidation
+    /// notification. Lowering it back toward zero would mean the
+    /// invalidation stopped being trustworthy — a real change, not a
+    /// tuning tweak, so it breaks here first.
     #[test]
-    fn cacheable_results_are_stamped_conservatively() {
+    fn cacheable_results_cache_until_invalidated() {
+        // Asserted as an exact value rather than a bound: the point is
+        // that changing it is a deliberate act with consequences for
+        // every cached surface, not that it clears some threshold.
         assert_eq!(
-            RESULT_TTL_MS, 0,
-            "a non-zero ttl would let a client serve a stale catalogue"
+            RESULT_TTL_MS,
+            24 * 60 * 60 * 1000,
+            "the ttl must outlive a sidecar, or clients re-fetch on a timer we told them not to need"
         );
-        assert_eq!(RESULT_CACHE_SCOPE, CacheScope::Private);
+        assert_eq!(
+            RESULT_CACHE_SCOPE,
+            CacheScope::Private,
+            "these results are scoped to one captain's config — no shared intermediary may serve them on"
+        );
+    }
+
+    /// The rule the FIRST rejection was about, pinned.
+    ///
+    /// Reverting to an unconditional `Peer::notify_*` broadcast — the
+    /// original bug — makes this the wrong answer for a client with a
+    /// working stream, so a revert fails here instead of only failing a
+    /// manual transcript.
+    #[test]
+    fn broadcast_is_the_fallback_for_no_usable_stream_and_nothing_else() {
+        use StreamOutcome::{Broken, Declined, Delivered};
+
+        assert!(needs_broadcast(&[]), "no stream at all is the legacy client");
+        assert!(needs_broadcast(&[Broken]), "a dead stream must not swallow the event");
+        assert!(
+            needs_broadcast(&[Broken, Broken]),
+            "every stream dead is still no usable stream"
+        );
+
+        assert!(
+            !needs_broadcast(&[Delivered]),
+            "broadcasting on top of a delivery double-sends it"
+        );
+        assert!(
+            !needs_broadcast(&[Declined]),
+            "a decline is the filter working — broadcasting past it makes the filter pointless"
+        );
+        assert!(
+            !needs_broadcast(&[Broken, Delivered]),
+            "one live stream is enough; the broken sibling does not re-open the broadcast"
+        );
+        assert!(!needs_broadcast(&[Declined, Broken]));
+    }
+
+    /// A fake entry so the registry's bookkeeping — the part that had
+    /// the bug — is testable without a live service to mint a sink from.
+    #[derive(Clone, Debug, PartialEq)]
+    struct Entry(rmcp::model::RequestId);
+
+    impl Keyed for Entry {
+        fn key(&self) -> &rmcp::model::RequestId {
+            &self.0
+        }
+    }
+
+    fn entry(id: i64) -> Entry {
+        Entry(rmcp::model::RequestId::Number(id))
+    }
+
+    /// The bug this type was rebuilt for.
+    ///
+    /// rmcp runs each request in its own task, so `listen(A)`,
+    /// `listen(B)`, `cancel(A)` is legal — and is how a client changes
+    /// its filter. The previous single-slot version had A's teardown
+    /// clear B's sink, after which every notification silently degraded
+    /// to an untagged broadcast. Reverting `remove` to a clear fails
+    /// here.
+    #[tokio::test]
+    async fn cancelling_one_stream_leaves_its_sibling_registered() {
+        let registry = Registry::default();
+        registry.add(entry(10)).await;
+        registry.add(entry(11)).await;
+
+        registry.remove(&rmcp::model::RequestId::Number(10)).await;
+
+        assert_eq!(
+            registry.snapshot().await,
+            vec![entry(11)],
+            "the surviving stream must still be reachable, or its client goes silent"
+        );
+    }
+
+    /// Teardown must be idempotent and must not touch strangers.
+    ///
+    /// A `run` future dropped without cancellation produces ZERO
+    /// removals — the entry leaks, harmlessly, because the sink's
+    /// `DropGuard` closes it and a closed sink falls through to the
+    /// broadcast. What idempotency actually guards is a double
+    /// cancellation racing the same id.
+    #[tokio::test]
+    async fn removing_an_unknown_stream_is_a_no_op() {
+        let registry = Registry::default();
+        registry.add(entry(1)).await;
+
+        registry.remove(&rmcp::model::RequestId::Number(99)).await;
+        registry.remove(&rmcp::model::RequestId::Number(1)).await;
+        registry.remove(&rmcp::model::RequestId::Number(1)).await;
+
+        assert!(registry.snapshot().await.is_empty());
+    }
+
+    /// The acknowledgment is the client's CONTRACT for what it will
+    /// receive, so accepting a URI this server never fires for leaves
+    /// the client waiting on it forever.
+    #[test]
+    fn the_filter_accepts_only_uris_this_server_can_notify() {
+        let mut requested = rmcp::model::SubscriptionFilter::new();
+        requested.resources_list_changed = Some(true);
+        requested.resource_subscriptions = Some(vec![
+            "hyprpilot://sessions/abc".into(),
+            "file:///etc/passwd".into(),
+            "hyprpilot://skills/git-commit".into(),
+        ]);
+
+        let accepted = accept_resource_subscriptions(&requested, |uri| uri.starts_with("hyprpilot://sessions/"))
+            .expect("subscriptions are supported");
+
+        assert_eq!(
+            accepted.resource_subscriptions,
+            Some(vec!["hyprpilot://sessions/abc".to_string()]),
+            "a foreign scheme must be dropped, not acknowledged"
+        );
+        assert_eq!(accepted.resources_list_changed, Some(true));
+    }
+
+    /// `toolsListChanged` is never ours to give — the tool set is
+    /// compiled in. We simply never set it; the SDK's own intersection
+    /// against the advertised capabilities does the rest.
+    #[test]
+    fn the_filter_never_claims_a_category_we_cannot_emit() {
+        let mut requested = rmcp::model::SubscriptionFilter::new();
+        requested.tools_list_changed = Some(true);
+        requested.prompts_list_changed = Some(true);
+
+        let accepted = accept_resource_subscriptions(&requested, |_| true).expect("subscriptions are supported");
+
+        assert_eq!(accepted.tools_list_changed, None);
+        assert_eq!(accepted.prompts_list_changed, None);
     }
 
     fn supported_contains(set: &[ProtocolVersion], want: &ProtocolVersion) -> bool {
