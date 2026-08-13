@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.13.1](https://github.com/hyprpilot/hyprpilot/compare/v3.13.0...v3.13.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **mcp:** serve from the first byte so a subscription opener cannot deadlock ([#245](https://github.com/hyprpilot/hyprpilot/issues/245)) ([be64a6f](https://github.com/hyprpilot/hyprpilot/commit/be64a6f143ecd214a2f8fc24587c5661f9a02b1b))
+
 ## [3.13.0](https://github.com/hyprpilot/hyprpilot/compare/v3.12.0...v3.13.0) (2026-08-13)
 
 
