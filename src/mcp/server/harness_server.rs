@@ -171,13 +171,21 @@ impl ServerHandler for HarnessServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListResourcesResult, rmcp::ErrorData> {
-        let resources = self
+        let mut resources: Vec<rmcp::model::Resource> = self
             .harness
             .session_resources()
             .into_iter()
+            // ONE entry per session, not one per view. Four views
+            // times 64 retained sessions is 256 entries in a listing
+            // every client pays for on connect — the same bloat the
+            // skills server measured and cut. The other views are
+            // advertised as a TEMPLATE below and read by URI.
             .map(|session| {
                 rmcp::model::Resource::new(
-                    crate::mcp::server::harness::session_uri(&session.handle),
+                    crate::mcp::server::harness::session_view_uri(
+                        &session.handle,
+                        crate::mcp::server::harness::SessionView::Status,
+                    ),
                     session.handle.clone(),
                 )
                 .with_description(format!("{} session ({})", session.profile, session.status))
@@ -185,7 +193,47 @@ impl ServerHandler for HarnessServer {
             })
             .collect();
 
+        // The two indexes first: what can be launched, and what is
+        // running. Both are the catalogue a caller starts from.
+        resources.insert(
+            0,
+            rmcp::model::Resource::new(crate::mcp::server::harness::SESSIONS_URI, "sessions")
+                .with_description("Every session this server owns".to_string())
+                .with_mime_type("application/json"),
+        );
+        resources.insert(
+            0,
+            rmcp::model::Resource::new(crate::mcp::server::harness::PROFILES_URI, "profiles")
+                .with_description("Profiles this session may launch".to_string())
+                .with_mime_type("application/json"),
+        );
+
         Ok(rmcp::model::ListResourcesResult::with_all_items(resources)
+            .with_ttl_ms(RESULT_TTL_MS)
+            .with_cache_scope(RESULT_CACHE_SCOPE))
+    }
+
+    /// The views a session URI can carry, advertised rather than
+    /// enumerated.
+    ///
+    /// `resources/list` names one entry per session; four views times 64
+    /// retained sessions would be a listing every client pays for on
+    /// connect. A template says the same thing in one row.
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData> {
+        let templates =
+            vec![
+                rmcp::model::ResourceTemplate::new("hyprpilot://sessions/{handle}/{view}", "session view")
+                    .with_description(
+                        "One view of a session: `result` (the latest turn's answer, or why there is none), \
+             `transcript` (the raw event stream), or `stderr`. The bare handle is its status.",
+                    ),
+            ];
+
+        Ok(rmcp::model::ListResourceTemplatesResult::with_all_items(templates)
             .with_ttl_ms(RESULT_TTL_MS)
             .with_cache_scope(RESULT_CACHE_SCOPE))
     }
@@ -202,22 +250,78 @@ impl ServerHandler for HarnessServer {
         request: rmcp::model::ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ReadResourceResponse, rmcp::ErrorData> {
+        use crate::mcp::server::harness::SessionView;
+
         let uri = &request.uri;
-        let handle = crate::mcp::server::harness::session_handle_from_uri(uri)
+        if uri == crate::mcp::server::harness::SESSIONS_URI {
+            let (_, payload) = self.harness.session_list();
+            return Ok(rmcp::model::ReadResourceResult::new(vec![
+                rmcp::model::ResourceContents::TextResourceContents {
+                    uri: uri.clone(),
+                    mime_type: Some("application/json".into()),
+                    text: serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string()),
+                    meta: None,
+                },
+            ])
+            // `0`, like profiles. This payload embeds each session's
+            // LIVE status, and nothing fires `resources/updated` for the
+            // index URI — `list_changed` invalidates `resources/list`,
+            // not this read. A surface that cannot signal must not claim
+            // freshness.
+            .with_ttl_ms(0)
+            .with_cache_scope(RESULT_CACHE_SCOPE)
+            .into());
+        }
+        if uri == crate::mcp::server::harness::PROFILES_URI {
+            let (_, payload) = self
+                .harness
+                .list_profiles()
+                .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
+            return Ok(rmcp::model::ReadResourceResult::new(vec![
+                rmcp::model::ResourceContents::TextResourceContents {
+                    uri: uri.clone(),
+                    mime_type: Some("application/json".into()),
+                    text: serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string()),
+                    meta: None,
+                },
+            ])
+            // `ttlMs: 0`, unlike every other listing. The profile set
+            // comes from config re-read per call, and NOTHING watches
+            // that file — so there is no notification to invalidate a
+            // cached copy with. Under this branch's own rule, a surface
+            // that cannot signal must not claim freshness.
+            .with_ttl_ms(0)
+            .with_cache_scope(RESULT_CACHE_SCOPE)
+            .into());
+        }
+
+        let (handle, view, turn) = crate::mcp::server::harness::parse_session_uri(uri)
             .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("unknown resource: {uri}"), None))?;
-        let (_, payload) = self
+        let (text, finished) = self
             .harness
-            .session_status(handle)
+            .session_view(handle, view, turn)
             .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
+
+        // A RUNNING session's views change under the caller, so the long
+        // ttl is only honest once the turn has ended. `0` until then —
+        // the notification that fires at turn end cannot retroactively
+        // correct a day-long cache taken a second before it.
+        let ttl = if finished { RESULT_TTL_MS } else { 0 };
+        let mime = match view {
+            SessionView::Status => "application/json",
+            SessionView::Result => "text/plain",
+            SessionView::Transcript => "application/x-ndjson",
+            SessionView::Stderr => "text/plain",
+        };
 
         Ok(
             rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::TextResourceContents {
                 uri: uri.clone(),
-                mime_type: Some("application/json".into()),
-                text: serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string()),
+                mime_type: Some(mime.into()),
+                text,
                 meta: None,
             }])
-            .with_ttl_ms(RESULT_TTL_MS)
+            .with_ttl_ms(ttl)
             .with_cache_scope(RESULT_CACHE_SCOPE)
             .into(),
         )
@@ -322,7 +426,13 @@ impl ServerHandler for HarnessServer {
                         // `exited` read from the previous turn is stale
                         // from here until the exit hook fires again.
                         self.subscriptions
-                            .resource_updated(&context.peer, crate::mcp::server::harness::session_uri(&session))
+                            .resources_updated(
+                                &context.peer,
+                                crate::mcp::server::harness::SessionView::ALL
+                                    .into_iter()
+                                    .map(|view| crate::mcp::server::harness::session_view_uri(&session, view))
+                                    .collect(),
+                            )
                             .await;
                         Ok(as_task_or_result(harness, context, payload))
                     }
@@ -393,7 +503,13 @@ impl ServerHandler for HarnessServer {
                         // terminate changes its status. Both invalidate a
                         // cached read, so both are announced.
                         self.subscriptions
-                            .resource_updated(&context.peer, crate::mcp::server::harness::session_uri(session))
+                            .resources_updated(
+                                &context.peer,
+                                crate::mcp::server::harness::SessionView::ALL
+                                    .into_iter()
+                                    .map(|view| crate::mcp::server::harness::session_view_uri(session, view))
+                                    .collect(),
+                            )
                             .await;
                         self.subscriptions.resource_list_changed(&context.peer).await;
                         let summary = match payload.get("action").and_then(serde_json::Value::as_str) {
@@ -1027,8 +1143,26 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
                 // This is what makes the long `ttlMs` honest for a
                 // session resource: a cached read goes stale here, and
                 // here is where we say so.
+                // Every view: the status, the answer and the
+                // transcript all change when a turn ends, and a
+                // subscriber may hold any subset of them.
                 subscriptions
-                    .resource_updated(&peer, super::harness::session_uri(&handle))
+                    .resources_updated(
+                        &peer,
+                        super::harness::SessionView::ALL
+                            .into_iter()
+                            .map(|view| super::harness::session_view_uri(&handle, view))
+                            // Also the turn that just ended, by number.
+                            // Subscribing to one turn is the whole point
+                            // of addressing turns, and its views become
+                            // final exactly here.
+                            .chain(
+                                super::harness::SessionView::ALL
+                                    .into_iter()
+                                    .map(|view| super::harness::session_turn_uri(&handle, turn, view)),
+                            )
+                            .collect(),
+                    )
                     .await;
                 // The listing embeds each session's live status in its
                 // description, so a turn ending makes a cached

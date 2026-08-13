@@ -47,15 +47,112 @@ pub(crate) const DEPTH_ENV: &str = "HYPRPILOT_SPAWN_DEPTH";
 /// it rather than a second address.
 pub(crate) const SESSION_URI_PREFIX: &str = "hyprpilot://sessions/";
 
-/// Render a handle as its resource URI.
-pub(crate) fn session_uri(handle: &str) -> String {
-    format!("{SESSION_URI_PREFIX}{handle}")
+/// The launchable-profile catalogue, as a resource.
+///
+/// Same payload and same DELEGATE SCOPE as `list_profiles` — the scope
+/// is what a captain uses to keep a work session away from personal
+/// profiles, so a resource that bypassed it would be a hole rather than
+/// a convenience.
+pub(crate) const PROFILES_URI: &str = "hyprpilot://profiles";
+
+/// The session catalogue — what `session_list` returns.
+///
+/// The bare form cannot collide with a handle: every session URI carries
+/// a `sessions/` prefix, so this is the index and those are its members.
+pub(crate) const SESSIONS_URI: &str = "hyprpilot://sessions";
+
+/// Render one view of a session as its resource URI. `SessionView::Status`
+/// is the bare handle, so the URI that existed before the other views
+/// were added still means what it meant.
+pub(crate) fn session_view_uri(handle: &str, view: SessionView) -> String {
+    format!("{SESSION_URI_PREFIX}{handle}{}", view.suffix())
 }
 
-/// Recover the handle from a session URI. `None` for any other scheme,
-/// so `read_resource` can reject rather than guess.
+/// Render one TURN's view of a session.
+///
+/// `Status`'s suffix is empty on the bare form — the handle alone IS the
+/// status — so a turn-scoped URI names it explicitly; `…/turns/3` with
+/// nothing after it would address a turn rather than a view of one.
+pub(crate) fn session_turn_uri(handle: &str, turn: u32, view: SessionView) -> String {
+    let view = match view {
+        SessionView::Status => "/status",
+        other => other.suffix(),
+    };
+    format!("{SESSION_URI_PREFIX}{handle}/turns/{turn}{view}")
+}
+
+/// Which projection of a session a URI addresses.
+///
+/// One session, three reads, so a caller fetches the part it wants
+/// rather than the whole transcript and a `jq` pipeline. `Status` is the
+/// bare handle; the others are `/<view>` suffixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionView {
+    /// What `session_status` returns — state, exit code, `hasResult`.
+    Status,
+    /// The latest turn's answer, extracted per vendor, or the upstream
+    /// error when the run failed. The thing a caller almost always
+    /// wanted, without the transcript it had to page to get it.
+    Result,
+    /// The raw event stream, capped. `session_read` remains the way to
+    /// page a long one — a resource read has no cursor.
+    Transcript,
+    /// The vendor's stderr. Where a LAUNCH failure lands, with the
+    /// transcript left empty — and the only place a run that answered
+    /// but also warned says so, which `/result` cannot show because it
+    /// consults stderr only when there is no answer.
+    Stderr,
+}
+
+impl SessionView {
+    fn parse(view: &str) -> Option<Self> {
+        match view {
+            "result" => Some(Self::Result),
+            "status" => Some(Self::Status),
+            "transcript" => Some(Self::Transcript),
+            "stderr" => Some(Self::Stderr),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn suffix(self) -> &'static str {
+        match self {
+            Self::Status => "",
+            Self::Result => "/result",
+            Self::Transcript => "/transcript",
+            Self::Stderr => "/stderr",
+        }
+    }
+
+    /// Every view, so `resources/list` and the tests enumerate one list.
+    pub(crate) const ALL: [Self; 4] = [Self::Status, Self::Result, Self::Transcript, Self::Stderr];
+}
+
+/// Recover the handle and view from a session URI. `None` for any other
+/// scheme or an unknown view, so `read_resource` rejects rather than
+/// guesses — and so the subscription filter cannot acknowledge a URI
+/// that could never be served.
+pub(crate) fn parse_session_uri(uri: &str) -> Option<(&str, SessionView, Option<u32>)> {
+    let rest = uri.strip_prefix(SESSION_URI_PREFIX).filter(|r| !r.is_empty())?;
+    let Some((handle, tail)) = rest.split_once('/') else {
+        return Some((rest, SessionView::Status, None));
+    };
+    if handle.is_empty() {
+        return None;
+    }
+    // `turns/<n>/<view>` addresses ONE turn, which is how an earlier
+    // turn's output stays reachable once later turns have run.
+    if let Some(spec) = tail.strip_prefix("turns/") {
+        let (turn, view) = spec.split_once('/')?;
+        let turn: u32 = turn.parse().ok().filter(|t| *t > 0)?;
+        return SessionView::parse(view).map(|v| (handle, v, Some(turn)));
+    }
+    SessionView::parse(tail).map(|v| (handle, v, None))
+}
+
+/// Recover just the handle. `None` for any other scheme.
 pub(crate) fn session_handle_from_uri(uri: &str) -> Option<&str> {
-    uri.strip_prefix(SESSION_URI_PREFIX).filter(|h| !h.is_empty())
+    parse_session_uri(uri).map(|(handle, _, _)| handle)
 }
 
 /// A session projected for `resources/list`. Three fields, on purpose —
@@ -375,16 +472,12 @@ impl Harness {
                             format!("could not start the next turn: {err:#}")
                         }
                     })?;
-                // Resume the transcript where the last turn stopped, so a
-                // follow returns only the NEW output.
-                let from = self
-                    .sessions
-                    .with(&handle, |session| {
-                        std::fs::metadata(session.turns_path()).map(|m| m.len()).unwrap_or(0)
-                    })
-                    .unwrap_or(0);
-
-                (handle, from)
+                // Zero: a new turn writes a new file, so its start IS
+                // byte 0. Stat'ing the file here instead would skip
+                // whatever the child had already written between spawn
+                // and the stat — permanently, since offsets only move
+                // forward.
+                (handle, 0)
             }
             None => {
                 let handle = self
@@ -420,8 +513,13 @@ impl Harness {
             "mcp harness: turn started"
         );
 
+        // The turn this launch started — captured now, because a
+        // concurrent `session_send` cannot begin one but a later read of
+        // `session.turn` would still be a different question.
+        let turn_now = self.sessions.with(&handle, |session| session.turn).unwrap_or(1);
+
         if !args.wait {
-            return Ok(self.describe(&handle, None, Some(resume_from)));
+            return Ok(self.describe(&handle, None, Some(resume_from), turn_now));
         }
 
         // Waiting IS following: stream the transcript to the caller
@@ -433,7 +531,7 @@ impl Harness {
             sink: args.sink,
             cancel: args.cancel.unwrap_or_default(),
         };
-        let followed = self.follow(&handle, resume_from, &watch).await;
+        let followed = self.follow(&handle, turn_now, resume_from, &watch).await;
         let finished = followed.finished;
 
         // Whether it finished or timed out, the transcript is on disk —
@@ -445,7 +543,7 @@ impl Harness {
             tracing::info!(%handle, secs = args.timeout_seconds, "mcp harness: turn outlived its timeout");
         }
 
-        Ok(self.describe(&handle, Some(finished), Some(resume_from)))
+        Ok(self.describe(&handle, Some(finished), Some(resume_from), turn_now))
     }
 
     /// Follow a session's transcript from `from`, pushing each new chunk
@@ -454,10 +552,13 @@ impl Harness {
     /// Ends when the agent exits, when the caller cancels the request,
     /// or when `watch.seconds` elapses — whichever comes first. Returns
     /// what it saw, where it stopped, and whether the agent finished.
-    async fn follow(&self, handle: &str, from: u64, watch: &WatchOptions) -> FollowResult {
+    async fn follow(&self, handle: &str, turn: u32, from: u64, watch: &WatchOptions) -> FollowResult {
+        // The turn the CALLER is reading, not whatever is current. A
+        // cursor names its turn, so streaming `turns_path()` would pair
+        // one turn's byte offset with another turn's file.
         let Some((turns, mut completion)) = self
             .sessions
-            .with(handle, |session| (session.turns_path(), session.completion()))
+            .with(handle, |session| (session.turn_transcript(turn), session.completion()))
         else {
             return FollowResult { finished: true };
         };
@@ -536,14 +637,18 @@ impl Harness {
     /// unreachable, offsets only moving forward. Reading from the file
     /// makes `nextOffset` the first byte NOT returned, so a caller that
     /// keeps paging reconstructs the whole transcript.
-    fn describe(&self, handle: &str, finished: Option<bool>, turn_start: Option<u64>) -> Value {
+    /// `turn` names WHICH turn's transcript to read. A completed task is
+    /// immutable per SEP-2663, so reading `turns_path()` — the current
+    /// turn — made a finished task's result change into a later turn's
+    /// output the moment `session_send` ran.
+    fn describe(&self, handle: &str, finished: Option<bool>, turn_start: Option<u64>, turn: u32) -> Value {
         let Some(snapshot) = self.sessions.with(handle, |session| {
             (
                 session.profile_id.clone(),
                 session.provider.wire_id(),
                 session.status(),
                 session.exit_code(),
-                session.turns_path(),
+                session.turn_transcript(turn),
             )
         }) else {
             return json!({ "session": handle, "status": "exited" });
@@ -562,7 +667,7 @@ impl Harness {
         if finished == Some(false) {
             out["timedOut"] = json!(true);
         }
-        out["sessionInfo"] = self.provenance(handle);
+        out["sessionInfo"] = self.provenance(handle, turn);
         // Read forward from where this turn began, so the documented
         // "poll `session_read { session, cursor }`" loop reconstructs the
         // transcript with no gap — however far the turn overran the cap.
@@ -573,7 +678,7 @@ impl Harness {
             // running session always gets one: without a resume point a
             // poller would fall back to `tail` and lose its place.
             if truncated || status != SessionStatus::Exited {
-                out["nextCursor"] = json!(encode_cursor(next));
+                out["nextCursor"] = json!(encode_cursor(turn, next));
             }
         }
 
@@ -615,6 +720,132 @@ impl Harness {
     /// `session_read` returns the transcript itself, which runs to tens
     /// of kilobytes. This is the cheap poll: a handle lookup plus one
     /// `stat`.
+    /// What to say when a finished turn produced no answer.
+    ///
+    /// Three shapes, each landing somewhere different, and checking only one
+    /// is how a billing failure reports as "the agent returned nothing".
+    /// The launch-failure label is claimed ONLY when the transcript is empty
+    /// on the first turn — otherwise the session plainly did start, and
+    /// stderr is just whatever it warned about.
+    fn no_answer(stderr: &std::path::Path, exit_code: Option<i32>, turn: u32, body: &str) -> String {
+        let dump = std::fs::read_to_string(stderr).unwrap_or_default();
+        let dump = dump.trim();
+        let code = exit_code.map_or_else(|| "?".to_string(), |c| c.to_string());
+        if dump.is_empty() {
+            return format!("error: the session exited with code {code} and produced no answer");
+        }
+        // Per-turn stderr makes this exact rather than a guess: an
+        // empty transcript beside a non-empty stderr means THIS turn
+        // never got going, whichever turn it is. With one shared stderr
+        // it could have been an earlier turn's wreckage.
+        if body.trim().is_empty() {
+            return format!("error: turn {turn} failed to launch\n\n{dump}");
+        }
+        format!("error: turn {turn} produced no answer (exit {code}). Its stderr:\n\n{dump}")
+    }
+
+    /// One view of a session, for `resources/read`. Reads whole files,
+    /// unlike the status poll below.
+    ///
+    /// Returns the text plus whether the session has FINISHED, which
+    /// decides the cache ttl at the call site: a running session's
+    /// result and transcript change under the caller, so promising a day
+    /// of freshness for them would be a lie the notification cannot
+    /// correct in time.
+    pub(crate) fn session_view(
+        &self,
+        handle: &str,
+        view: SessionView,
+        turn: Option<u32>,
+    ) -> Result<(String, bool), String> {
+        if view == SessionView::Status {
+            let (_, payload) = self.session_status(handle)?;
+            let finished = payload.get("status").and_then(Value::as_str) == Some("exited");
+            let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
+            return Ok((text, finished));
+        }
+
+        let found = self.sessions.with(handle, |session| {
+            let wanted = turn.unwrap_or(session.turn);
+            (
+                session.turn_transcript(wanted),
+                session.turn_stderr(wanted),
+                session.turn_dir(wanted),
+                session.exit_code(),
+                session.turn,
+                wanted,
+                session.provider,
+                session.status() == SessionStatus::Exited,
+            )
+        });
+        let Some((path, stderr, turn_dir, exit_code, current, wanted, provider, exited_now)) = found else {
+            return Err(format!(
+                "unknown session `{handle}`. Call `session_list` for live handles."
+            ));
+        };
+        // A turn the session never reached has no directory to read.
+        if wanted > current || !turn_dir.exists() {
+            return Err(format!(
+                "session `{handle}` has no turn {wanted} — it is on turn {current}."
+            ));
+        }
+        // Only the CURRENT turn can still be running; an earlier one is
+        // finished by definition, so its views are cacheable even while
+        // the session works on something else.
+        let finished = exited_now || wanted < current;
+        let turn = wanted;
+
+        let text = match view {
+            SessionView::Status => unreachable!("handled above"),
+            SessionView::Result => {
+                // The turn's OWN file. No offsets and no boundary
+                // hunting: a turn writes into `turns/<n>/`, so its
+                // output is a whole file rather than a byte range of a
+                // shared one, and reading it cannot reach into the next
+                // turn's.
+                let body = std::fs::read_to_string(&path).unwrap_or_default();
+                if !finished {
+                    // The turn has not produced its answer yet, and the
+                    // previous turn's answer is a different question.
+                    String::new()
+                } else {
+                    match super::transcript::extract(&body, provider) {
+                        // Finished with nothing of its own: killed
+                        // mid-run, or it died. Say which.
+                        super::transcript::Answer::Pending => Self::no_answer(&stderr, exit_code, turn, &body),
+                        answer => answer.render(),
+                    }
+                }
+            }
+            SessionView::Stderr => {
+                // This turn's own stderr. Nothing from an earlier turn
+                // can appear here, which is what makes "stderr is
+                // non-empty" mean THIS turn wrote it.
+                let (tail, truncated) = tail_of(&stderr, usize::MAX);
+                if truncated {
+                    format!("[earlier output omitted]\n{tail}")
+                } else {
+                    tail
+                }
+            }
+            SessionView::Transcript => {
+                // Capped like `session_read`, and truncated from the
+                // FRONT: the answer is at the end, so dropping the head
+                // keeps what a caller reading a transcript came for.
+                let (tail, truncated) = tail_of(&path, usize::MAX);
+                if truncated {
+                    format!("[earlier events omitted — page the full stream with `session_read`]\n{tail}")
+                } else {
+                    tail
+                }
+            }
+        };
+
+        Ok((text, finished))
+    }
+
+    /// One session's state without its transcript — the cheap poll: a
+    /// handle lookup plus one `stat`.
     pub(crate) fn session_status(&self, handle: &str) -> Result<(String, Value), String> {
         self.sessions
             .with(handle, |session| {
@@ -640,15 +871,41 @@ impl Harness {
                     //   a `text` part for every completed sentence, so
                     //   asking mid-run reports the first one as the
                     //   answer.
-                    // - `session_send` APPENDS to this same file, so a
-                    //   scan from byte 0 keeps finding turn 1's marker
-                    //   forever and every later turn reads as finished
-                    //   the instant it starts.
+                    //   Scoped to the CURRENT turn's own file, so an
+                    //   earlier turn's marker cannot make a running turn
+                    //   read as finished.
                     "hasResult": session.status() == SessionStatus::Exited && tail_has_terminal_result(&turns),
                 });
                 if let Some(code) = session.exit_code() {
                     out["exitCode"] = json!(code);
                 }
+                // Every turn and how it ended, so one read answers
+                // "which turns exist and which is worth fetching"
+                // instead of walking `…/turns/<n>/status` until one
+                // 404s. Bounded by the turn count, and each row is three
+                // fields — the transcripts stay behind their own URIs.
+                out["turns"] = json!((1..=session.turn)
+                    .filter_map(|n| session.turn_record(n))
+                    .map(|record| {
+                        let (state, code) = match record.outcome {
+                            super::sessions::TurnOutcome::Running => ("running", None),
+                            super::sessions::TurnOutcome::Exited(code) => ("exited", Some(code)),
+                            // The exit code a kill produces is `-1`,
+                            // which says nothing — the stamp is the
+                            // fact worth reporting.
+                            super::sessions::TurnOutcome::Killed => ("killed", None),
+                        };
+                        let mut row = json!({
+                            "turn": record.turn,
+                            "status": state,
+                            "uri": session_turn_uri(&session.handle, record.turn, SessionView::Result),
+                        });
+                        if let Some(code) = code {
+                            row["exitCode"] = json!(code);
+                        }
+                        row
+                    })
+                    .collect::<Vec<_>>());
                 out
             })
             .map(|row| (status_summary(&row), row))
@@ -734,35 +991,64 @@ impl Harness {
     /// redacted at capture (flag names survive, value payloads become
     /// size placeholders) because it carries the system prompt and, for
     /// some vendors, MCP bearer tokens.
-    fn provenance(&self, handle: &str) -> Value {
+    /// `turn` names WHICH turn's launch to describe. A turn's argv, pid
+    /// and file paths are recorded on its own `TurnRecord`, because the
+    /// session's are overwritten by every later turn — so a terminal
+    /// SEP-2663 task keeps reporting the bytes it reported.
+    fn provenance(&self, handle: &str, turn: u32) -> Value {
         self.sessions
             .with(handle, |session| {
+                // The turn's own record, falling back to the session's
+                // live provenance for a turn that has none (only
+                // possible for a turn number that never ran, which the
+                // callers already reject).
+                let record = session.turn_record(turn);
+                let prov = record
+                    .as_ref()
+                    .map_or_else(|| session.provenance.clone(), |record| record.provenance.clone());
                 json!({
                     "profile": session.profile_id,
                     "provider": session.provider.wire_id(),
-                    "model": session.provenance.model,
-                    "effort": session.provenance.effort,
-                    "mode": session.provenance.mode,
+                    "model": prov.model,
+                    "effort": prov.effort,
+                    "mode": prov.mode,
                     "cwd": session.launch.cwd.as_ref().map(|c| c.display().to_string()),
                     "startedAt": unix_secs(session.created_at),
-                    "lastTurnAt": unix_secs(session.last_turn_at),
-                    "pid": session.pid(),
-                    // Every file the session owns, named once. A caller
-                    // with shell access can `jq` the transcript directly
-                    // rather than paging it through `session_read` — that
-                    // is a feature, so the paths are first-class rather
-                    // than derivable from a sibling.
+                    // THIS turn's start and pid, not the session's
+                    // running ones — both are overwritten by every later
+                    // turn, which is what made a terminal task's payload
+                    // change under a caller who re-polled it.
+                    "turnStartedAt": record.as_ref().map_or_else(
+                        || unix_secs(session.last_turn_at),
+                        |record| unix_secs(record.started_at_wall),
+                    ),
+                    "pid": record.as_ref().map_or_else(|| session.pid(), |record| record.pid),
+                    // The session's own files, plus THIS turn's. A
+                    // caller with shell access can `jq` the transcript
+                    // directly rather than paging it through
+                    // `session_read` — that is a feature, so the paths
+                    // are first-class rather than derived from a
+                    // sibling.
+                    //
+                    // Earlier turns are deliberately NOT enumerated:
+                    // they live at `<turnsDir>/<n>/` for every `n` from
+                    // 1 to `turn`, which is inferable, and listing them
+                    // would grow this payload with every turn while
+                    // saying nothing new.
                     "files": {
                         "dir": session.dir_path().display().to_string(),
-                        "transcript": session.turns_path().display().to_string(),
-                        "stderr": session.stderr_path().display().to_string(),
-                        "done": session.done_path().display().to_string(),
+                        "turnsDir": session.dir_path().join("turns").display().to_string(),
+                        "turn": turn,
+                        "turnDir": session.turn_dir(turn).display().to_string(),
+                        "transcript": session.turn_transcript(turn).display().to_string(),
+                        "stderr": session.turn_stderr(turn).display().to_string(),
+                        "done": session.turn_done(turn).display().to_string(),
                         "breadcrumb": session.breadcrumb_path().display().to_string(),
                     },
-                    "command": session.provenance.program,
-                    "argv": session.provenance.argv,
-                    "envKeys": session.provenance.env_keys,
-                    "promptBytes": session.provenance.prompt_bytes,
+                    "command": prov.program,
+                    "argv": prov.argv,
+                    "envKeys": prov.env_keys,
+                    "promptBytes": prov.prompt_bytes,
                 })
             })
             .unwrap_or(Value::Null)
@@ -839,21 +1125,31 @@ impl Harness {
         cursor: Option<String>,
         watch: Option<WatchOptions>,
     ) -> Result<Value, String> {
+        let cursor = cursor.as_deref().map(decode_cursor).transpose()?;
+        // A cursor names its turn, so a resume reads the file it was
+        // taken from — not whatever turn is current now. Without a
+        // cursor the read is of the current turn.
         let paths = self
             .sessions
             .with(handle, |session| {
-                (session.turns_path(), session.stderr_path(), session.status())
+                let turn = cursor.map_or(session.turn, |(turn, _)| turn);
+                (
+                    turn,
+                    session.turn_transcript(turn),
+                    session.turn_stderr(turn),
+                    session.status(),
+                )
             })
             .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))?;
-        let (turns, stderr_path, mut status) = paths;
-        let offset = cursor.as_deref().map(decode_cursor).transpose()?;
+        let (turn, turns, stderr_path, mut status) = paths;
+        let offset = cursor.map(|(_, offset)| offset);
 
         // Following streams from `offset` forward; a tail-follow would
         // have no stable resume point. The follow's own text/cursor are
         // deliberately NOT reused for the result — see the match below.
         let followed = watch.is_some();
         if let Some(watch) = watch {
-            self.follow(handle, offset.unwrap_or(0), &watch).await;
+            self.follow(handle, turn, offset.unwrap_or(0), &watch).await;
             status = self.sessions.with(handle, |s| s.status()).unwrap_or(status);
         }
 
@@ -882,14 +1178,14 @@ impl Harness {
             "session": handle,
             "status": status.as_str(),
             "lines": text,
-            "sessionInfo": self.provenance(handle),
+            "sessionInfo": self.provenance(handle, turn),
         });
         // MCP pagination: `nextCursor` present means there is more to
         // read, absent means the session is finished AND fully read. A
         // running session always gets one — without a resume point a
         // poller would fall back to `tail` and lose its place.
         if truncated || status != SessionStatus::Exited {
-            out["nextCursor"] = json!(encode_cursor(next_offset));
+            out["nextCursor"] = json!(encode_cursor(turn, next_offset));
         }
         // Only surface stderr when it has something — an empty diagnostic
         // channel is noise in every successful result.
@@ -1175,8 +1471,8 @@ pub(crate) async fn notify_task_finished(
 fn tail_has_terminal_result(path: &std::path::Path) -> bool {
     // The tail, not the whole file: terminal events are at the end by
     // definition, and this is advertised as the cheap poll. Also keeps
-    // the answer scoped to the LATEST turn — earlier turns' markers sit
-    // further back in the same appended transcript.
+    // the answer scoped to this turn — it reads this turn's own file, so
+    // no earlier turn's marker is in range.
     let (tail, _truncated) = tail_of(path, TERMINAL_SCAN_LINES);
 
     has_terminal_result(&tail)
@@ -1255,16 +1551,28 @@ fn tail_of(path: &std::path::Path, lines: usize) -> (String, bool) {
 /// verbatim, never parse or synthesise it. Hex keeps that honest: there
 /// is no arithmetic to do on `"1a2b"`, whereas a raw byte offset invites
 /// a caller to compute a position and skip bytes it never read.
-fn encode_cursor(offset: u64) -> String {
-    format!("{offset:x}")
+/// A cursor names the TURN as well as the offset.
+///
+/// Each turn writes its own file, so a bare offset is meaningless
+/// against a different one: paging turn 1, sending turn 2, then reusing
+/// the old cursor would read turn 2's bytes from turn 1's position.
+/// Still opaque — hex, `turn.offset` — so a caller cannot synthesise a
+/// position it never read.
+fn encode_cursor(turn: u32, offset: u64) -> String {
+    format!("{turn:x}.{offset:x}")
 }
 
-fn decode_cursor(raw: &str) -> Result<u64, String> {
-    u64::from_str_radix(raw, 16).map_err(|_| {
+fn decode_cursor(raw: &str) -> Result<(u32, u64), String> {
+    let invalid = || {
         format!(
             "invalid cursor `{raw}`. Pass a `nextCursor` from a previous result verbatim, or omit it to read the tail."
         )
-    })
+    };
+    let (turn, offset) = raw.split_once('.').ok_or_else(invalid)?;
+    Ok((
+        u32::from_str_radix(turn, 16).map_err(|_| invalid())?,
+        u64::from_str_radix(offset, 16).map_err(|_| invalid())?,
+    ))
 }
 
 fn read_from(path: &std::path::Path, offset: u64) -> (String, bool, u64) {
@@ -1611,7 +1919,78 @@ mod tests {
     fn a_session_uri_round_trips_to_its_handle() {
         let handle = "d4cbf498-7eb4-4c47-9a96-d0662c2be165";
 
-        assert_eq!(session_handle_from_uri(&session_uri(handle)), Some(handle));
+        assert_eq!(
+            session_handle_from_uri(&session_view_uri(handle, SessionView::Status)),
+            Some(handle)
+        );
+    }
+
+    /// Every view round-trips, and the bare handle is the status view
+    /// — so the URI that existed before the other views were added
+    /// still means what it meant.
+    #[test]
+    fn every_view_round_trips_and_the_bare_handle_is_status() {
+        let handle = "d4cbf498-7eb4-4c47-9a96-d0662c2be165";
+
+        assert_eq!(
+            parse_session_uri(&session_view_uri(handle, SessionView::Status)),
+            Some((handle, SessionView::Status, None))
+        );
+        for view in SessionView::ALL {
+            assert_eq!(
+                parse_session_uri(&session_view_uri(handle, view)),
+                Some((handle, view, None)),
+                "{view:?} must survive the round trip"
+            );
+        }
+    }
+
+    /// A cursor names the turn it was taken from. Each turn writes its
+    /// own file, so a bare offset would address the wrong bytes the
+    /// moment the next turn started — paging turn 1, sending turn 2,
+    /// then resuming would read turn 2's file from turn 1's position.
+    #[test]
+    fn a_cursor_round_trips_its_turn_and_offset() {
+        for (turn, offset) in [(1u32, 0u64), (2, 4096), (17, u64::MAX)] {
+            assert_eq!(decode_cursor(&encode_cursor(turn, offset)), Ok((turn, offset)));
+        }
+    }
+
+    /// Opaque, so a caller cannot synthesise a position it never read.
+    #[test]
+    fn a_malformed_cursor_is_refused() {
+        for raw in ["", "1", "beef", "1.", ".0", "z.0", "1.z", "1.2.3"] {
+            assert!(decode_cursor(raw).is_err(), "{raw:?} must not decode");
+        }
+    }
+
+    /// A turn-scoped URI addresses ONE turn of a conversation, which is
+    /// the only way an earlier turn's answer stays reachable once the
+    /// transcript has been appended to.
+    #[test]
+    fn a_turn_scoped_uri_round_trips() {
+        let handle = "abc";
+
+        for view in SessionView::ALL {
+            assert_eq!(
+                parse_session_uri(&session_turn_uri(handle, 3, view)),
+                Some((handle, view, Some(3))),
+                "{view:?} must survive the round trip"
+            );
+        }
+        assert_eq!(parse_session_uri("hyprpilot://sessions/abc/turns/0/result"), None);
+        assert_eq!(parse_session_uri("hyprpilot://sessions/abc/turns/x/result"), None);
+        assert_eq!(parse_session_uri("hyprpilot://sessions/abc/turns/1/bogus"), None);
+    }
+
+    /// An unknown view must be REFUSED, not silently read as the status.
+    /// The subscription filter is built on this parser, so accepting one
+    /// would acknowledge a URI that can never be served or fired for.
+    #[test]
+    fn an_unknown_view_is_refused() {
+        assert_eq!(parse_session_uri("hyprpilot://sessions/abc/bogus"), None);
+        assert_eq!(parse_session_uri("hyprpilot://sessions/abc/"), None);
+        assert_eq!(parse_session_uri("hyprpilot://sessions//result"), None);
     }
 
     /// `read_resource` must reject rather than guess: a URI from another
@@ -1758,7 +2137,7 @@ mod tests {
             sink: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         };
-        let result = harness.follow(&handle, 0, &watch).await;
+        let result = harness.follow(&handle, 1, 0, &watch).await;
 
         assert!(result.finished, "follow must report the session finished");
         // The follow no longer carries the text — it drains the file and
@@ -1833,7 +2212,7 @@ mod tests {
             sink: None,
             cancel: tokio_util::sync::CancellationToken::new(),
         };
-        harness.follow(&handle, 0, &watch).await;
+        harness.follow(&handle, 1, 0, &watch).await;
         harness.harvest(&handle);
 
         assert_eq!(
@@ -1844,9 +2223,9 @@ mod tests {
 
         let (_, status) = harness.session_status(&handle).expect("status");
         let (_, list) = harness.session_list();
-        let described = harness.describe(&handle, Some(true), Some(0));
+        let described = harness.describe(&handle, Some(true), Some(0), 1);
 
-        for payload in [&described, &harness.provenance(&handle), &status, &list] {
+        for payload in [&described, &harness.provenance(&handle, 1), &status, &list] {
             let rendered = serde_json::to_string(payload).unwrap();
             assert!(
                 !rendered.contains("vendorSessionId"),
@@ -1857,7 +2236,7 @@ mod tests {
         // event stream verbatim — the id is IN there because the vendor
         // printed it, and scrubbing a transcript would be lying about
         // what the agent emitted.
-        for payload in [harness.provenance(&handle), status, list] {
+        for payload in [harness.provenance(&handle, 1), status, list] {
             let rendered = serde_json::to_string(&payload).unwrap();
             assert!(
                 !rendered.contains("VENDOR-ID-9"),
@@ -2221,7 +2600,11 @@ impl Harness {
                 // block included, so a task-mode caller and a normal one
                 // read the same bytes. A structured-only payload renders
                 // as "Unknown" in opencode.
-                let payload = self.describe(handle, Some(true), Some(record.transcript_from));
+                // THIS task's turn, from byte 0 — a turn writes its
+                // own file, so its start IS the start of the file. A
+                // terminal task must keep reporting what it reported;
+                // reading the current turn made it mutate.
+                let payload = self.describe(handle, Some(true), Some(0), turn);
                 let summary = super::harness_server::launch_summary(&payload);
                 let mut result = rmcp::model::CallToolResult::structured(payload);
                 result.content = vec![rmcp::model::ContentBlock::text(summary)];

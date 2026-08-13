@@ -373,15 +373,65 @@ missing. Do not re-merge them.
 | `mcp skills` | `hyprpilot_skills` | `server/skills_server.rs` | skills tools + resources | on |
 | `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) + session resources | **off** |
 
-**Sessions are resources** — `hyprpilot://sessions/<handle>`, so a
-caller can `subscriptions/listen` on one handle and be WOKEN when its
-turn ends instead of polling `session_status` or watching `done.json`
-from a shell. The listing carries handle / profile / status and nothing
-else, and `resources/read` returns the same payload `session_status`
-does. **Deliberately not the transcript**: a read is capped at 60 kB and
-routinely far larger on disk, so `session_read` (or `jq` on
-`files.transcript`) stays the way to get output — the value here is
-subscribing to a handle you already hold, not browsing.
+**Sessions are resources in FOUR views** — `hyprpilot://sessions/
+<handle>` (status), `/result`, `/transcript` and `/stderr` — plus two
+indexes, `hyprpilot://sessions` (what `session_list` returns) and
+`hyprpilot://profiles` (what `list_profiles` returns, same delegate
+scope). **Each turn owns a directory** — `turns/<n>/{turns.jsonl,stderr.log,
+done.json}` under the session, with `session.json` session-scoped. That
+layout is load-bearing three ways: a turn's output IS its file, so
+reading turn N cannot reach turn N+1 and needs no byte offsets; its
+stderr is its own, so "stderr is non-empty" means THIS turn wrote it
+rather than an earlier one; and a fresh turn is a fresh directory, so no
+completion marker has to be cleared before it starts. `sessionInfo.files`
+names the session's paths plus the CURRENT turn's (`turn`, `turnDir`,
+`turnsDir`); earlier turns are inferable from the turn number and are
+deliberately not enumerated. `session_read`'s cursor carries its turn
+(`turn.offset`, hex) — a bare offset would address the wrong file once
+the next turn started.
+
+Reading `hyprpilot://sessions/<handle>` also lists every turn with its
+outcome and the URI that fetches it, so one read answers "which turns
+exist and which is worth fetching" instead of walking
+`…/turns/<n>/status` until one errors. The UN-TURNED forms stay the
+shortcut to the current turn. Every view is also addressable PER TURN
+(`…/turns/<n>/<view>`). Guessing the boundary from the events was
+a live bug twice — a heuristic mis-attributed one turn's error to the
+next, then an unbounded slice swallowed every later turn — which is what
+the per-turn layout retires rather than patches. `resources/list` names the indexes and ONE entry per session,
+never one per view — four views across 64 retained sessions is 256 rows
+every client pays for on connect, the bloat the skills listing already
+measured and cut. The views ride a resource TEMPLATE instead.
+Both INDEXES carry `ttlMs: 0`: `hyprpilot://sessions` embeds live per-session status and nothing fires `resources/updated` for the index URI, and for profiles, config is
+re-read per call and nothing watches that file, so there is no signal to
+invalidate it with. `done.json` and the breadcrumb are deliberately NOT
+resources — the status view answers the first, whose whole purpose is
+being reachable without MCP, and the second is orphan plumbing. A caller
+can
+`subscriptions/listen` on a handle and be WOKEN when its turn ends
+instead of polling `session_status` or watching `done.json`, and then
+read only the part it wants.
+
+`/result` is the load-bearing one: `server/transcript.rs` does the
+per-vendor extraction the `jq` recipes did by hand, and the two silent
+failures are structurally impossible there — it slices by EVENT so a
+multi-line answer cannot be truncated to its last line (`tail -n1` did
+exactly that), and an `error` event OUTRANKS text so an upstream 402
+cannot report as "returned nothing". It never returns blank for a
+finished session: the three no-answer shapes land in different places —
+`error` event in the transcript, launch failure in `stderr.log` with the
+transcript EMPTY, or neither — so it falls through transcript, stderr,
+exit code and names which one happened. `/transcript` is capped and cut
+from the front, since the answer is at the end; `session_read` stays
+the pager because a resource read has no cursor.
+
+**TTL is conditional here, unlike everywhere else**: a running session's
+views carry `ttlMs: 0`, because they change under the caller and the
+turn-end notification cannot retroactively correct a cache taken a
+second before it. Only a finished session gets the 24h ttl. An unknown
+view is refused rather than read as the status — the subscription filter
+is built on the same parser, so accepting one would acknowledge a URI
+that can never be served.
 
 `server/rpc.rs` owns the plumbing all three import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
@@ -850,6 +900,14 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   replaces the `done` watch wholesale, so a previous turn's exit code is
   otherwise unreachable. The session handle rides `CreateTaskResult._meta`
   (`io.hyprpilot/session`) so a caller never has to PARSE the task id.
+- **A terminal task's payload must not MOVE**, so every field of
+  `sessionInfo` is read off the turn's own `TurnRecord` — its
+  `provenance` (model / effort / mode / argv), `pid`, `turnStartedAt`
+  and its file paths. The session's copies of all of those are
+  overwritten by the next turn, which is what made a re-polled finished
+  task hand back a later turn's answer. Any NEW `sessionInfo` field has
+  to come off the record too; sourcing one from the live session is
+  invisible until a caller re-polls.
 - **`TurnOutcome::Killed` is stamped in `SessionTable::kill`, not
   derived.** The waiter stores `status.code().unwrap_or(-1)` and `code()`
   is `None` for signal death, so a kill, an external signal and a wait
