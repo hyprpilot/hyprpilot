@@ -71,6 +71,22 @@ And as tools:
 | `read_skill_references` | Fetch reference bodies by path.                                      |
 | `reload`                | Rescan the skill roots (picks up edits / new bundles).               |
 
+### What `reload` tells connected clients
+
+Results carry a `ttlMs` of 24 hours — longer than a sidecar lives — so a client caches until told otherwise. `reload` earns that by **diffing** the catalogue and firing only what actually changed:
+
+| What you changed              | What fires                                                   |
+| ----------------------------- | ------------------------------------------------------------ |
+| A skill's body or frontmatter | `notifications/resources/updated` for that skill's URI alone |
+| Added or removed a skill      | `notifications/resources/list_changed`                       |
+| Nothing                       | nothing — a no-op reload never invalidates a client's cache  |
+
+The tool result reports the same thing (`{ reloaded, membershipChanged, updated }`), so you can see what a reload actually moved.
+
+A client on `2026-07-28` opts in with `subscriptions/listen` (`resourcesListChanged` and/or `resourceSubscriptions`); older clients receive these notifications unsolicited, as before. **A new-revision client that subscribes to nothing will not be told**, and caches for the full TTL.
+
+Reload refreshes the **sidecar**, not anything already in an agent's context — a skill body read earlier this session stays as it was until re-read.
+
 ## References
 
 A skill declares its references in frontmatter, as paths relative to the skill's own directory:

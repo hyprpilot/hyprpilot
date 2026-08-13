@@ -371,7 +371,17 @@ missing. Do not re-merge them.
 | ---------- | ------------ | ------ | ------ | ------- |
 | `mcp serve` | `hyprpilot` | `server/tools.rs` | `open` | on |
 | `mcp skills` | `hyprpilot_skills` | `server/skills_server.rs` | skills tools + resources | on |
-| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) | **off** |
+| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) + session resources | **off** |
+
+**Sessions are resources** — `hyprpilot://sessions/<handle>`, so a
+caller can `subscriptions/listen` on one handle and be WOKEN when its
+turn ends instead of polling `session_status` or watching `done.json`
+from a shell. The listing carries handle / profile / status and nothing
+else, and `resources/read` returns the same payload `session_status`
+does. **Deliberately not the transcript**: a read is capped at 60 kB and
+routinely far larger on disk, so `session_read` (or `jq` on
+`files.transcript`) stays the way to get output — the value here is
+subscribing to a handle you already hold, not browsing.
 
 `server/rpc.rs` owns the plumbing all three import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
@@ -404,16 +414,42 @@ reports `connected` and has NO TOOLS AT ALL. Claude Code 2.2.x
 negotiates `2026-07-28` and hit exactly this against the harness, which
 was the one server that had opted in.
 
-`0` / `private` because nothing here is safely cacheable for a duration
-or across users: the skills catalogue changes on `reload` and the
-profile list changes when the captain edits config. Emitting them at
-older revisions is harmless — the spec's `Result` is an open map. The
-earlier per-server split (harness opts in, the other two capped) was
-wrong in the direction that matters: the revision's requirements land
-on `tools/list`, which every server serves, so excluding two of them
-hid the work rather than avoiding it. A new result type that forgets
-the stamp is invisible until a client upgrades — tests pin the
-constants and the set.
+`ttlMs` is **24h — longer than any sidecar lives**, so a client that
+honours it never re-fetches on a timer; every real change arrives as a
+notification instead. That is only honest because the invalidation is
+real, which is the next bullet. `private` because these results are
+scoped to one captain's config. Emitting both at older revisions is
+harmless — the spec's `Result` is an open map. The earlier per-server
+split (harness opts in, the other two capped) was wrong in the
+direction that matters: the revision's requirements land on
+`tools/list`, which every server serves, so excluding two of them hid
+the work rather than avoiding it. A new result type that forgets the
+stamp is invisible until a client upgrades — tests pin the constants
+and the set.
+
+**`subscriptions/listen` is the delivery channel, and it is OPT-IN on
+our side too.** rmcp's `accepted_subscription_filter` returns `None` by
+default — subscriptions unimplemented — so a `2026-07-28` client had no
+channel for notifications both servers already emit. Skills and harness
+both override it, echoing back `resourcesListChanged` +
+`resourceSubscriptions`; the SDK intersects that with the request and
+the advertised capabilities, so a client asking for `toolsListChanged`
+is correctly refused (the tool set is compiled in).
+
+**Every mutable surface pairs the ttl with a signal.** `reload` DIFFS
+the catalogue (`CatalogueDelta`) rather than firing blind: membership
+changes emit `resources/list_changed`, a body or metadata edit under an
+unchanged slug emits `resources/updated` for that URI alone, and a
+reload that changed nothing emits **nothing**. Firing spuriously would
+make every reload cost a full re-fetch and teach clients to ignore us.
+A harness turn ending emits `resources/updated` for its session.
+
+**The residual gap is deliberate:** `resources/updated` is routed by the
+SDK to subscribers only, so a `2026-07-28` client that subscribes to
+nothing caches for the full ttl and never learns of a change. Older
+clients are unaffected — they get the unsolicited notification down the
+pipe as always. Any NEW mutable surface without a notification must
+lower the ttl for itself rather than assume clients re-fetch.
 
 `tool_error` / `structured_with_text` return rmcp 3's `CallToolResponse`
 envelope, converting at that single point so no `call_tool` body deals

@@ -198,6 +198,32 @@ jq -r 'select(.type=="text")       | .part.text' "$T"   # opencode
 
 Everything under `files` is a path into a directory that can disappear — treat a missing file as "the session was cleaned up", never as an error.
 
+### Being woken instead of watching
+
+Every session is also a **resource** — `hyprpilot://sessions/<handle>` — so a client can subscribe to one handle and be notified when its turn ends, with no polling and no shell watcher:
+
+```jsonc
+// once, after `spawn` returns the handle
+{"method": "subscriptions/listen",
+ "params": {"subscribe": {"resourceSubscriptions": ["hyprpilot://sessions/<handle>"]}}}
+
+// when the turn ends
+{"method": "notifications/resources/updated",
+ "params": {"uri": "hyprpilot://sessions/<handle>"}}
+```
+
+`resources/read` on that URI returns exactly what `session_status` returns — state, exit code, `hasResult` — so a woken client answers "did it finish, and how" in one read. It is **not** the transcript: output stays behind `session_read` or `jq` on `files.transcript`, which is where the size lives.
+
+`resources/list` enumerates sessions as handle / profile / status. Useful for recovering a handle, but the point is subscribing to one you already hold.
+
+**Every older mechanism still works, unchanged.** `notifications/claude/channel` still fires for Claude Code, `notifications/tasks` still pushes to clients that took a task handle, `session_status` is still the cheap poll, and `done.json` is still there for shell watchers. The subscription is an addition, not a replacement — a client that opts into nothing behaves exactly as before.
+
+::: warning Subscribe, or accept staleness
+
+Results carry `ttlMs` of 24 hours — longer than a sidecar lives — so a client that honours it re-fetches only when notified. `resources/updated` is routed to **subscribers only**. A `2026-07-28` client that subscribes to nothing may therefore serve a cached status indefinitely. Clients on older revisions are unaffected: they receive the notification unsolicited, as they always have.
+
+:::
+
 ### Watching from a shell
 
 Every session directory gets a `done.json` when its turn's process exits, written by the same `child.wait()` task that owns the truth — so no recycled PID and no zombie can produce a false reading. Its path rides on `spawn` / `session_send` / `session_read` results as `sessionInfo.files.done`.

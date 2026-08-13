@@ -61,6 +61,15 @@ impl ServerHandler for HarnessServer {
         let mut tools = rmcp::model::ToolsCapability::default();
         tools.list_changed = Some(false);
         caps.tools = Some(tools);
+        // Sessions are resources so a caller can subscribe to ONE handle
+        // and be woken when its turn ends. `list_changed` because a
+        // `spawn` adds a session and eviction removes one; `subscribe`
+        // because the per-handle signal is the whole point — the list
+        // moving says nothing about the turn you are waiting on.
+        let mut resources = rmcp::model::ResourcesCapability::default();
+        resources.subscribe = Some(true);
+        resources.list_changed = Some(true);
+        caps.resources = Some(resources);
         // Claude Code registers a channel listener only when it sees
         // this key. Declaring it costs nothing elsewhere: the spec says
         // unknown capabilities are ignored, and a client that never
@@ -107,6 +116,76 @@ impl ServerHandler for HarnessServer {
         Ok(ListToolsResult::with_all_items(harness_tools())
             .with_ttl_ms(RESULT_TTL_MS)
             .with_cache_scope(RESULT_CACHE_SCOPE))
+    }
+
+    /// Accept a `subscriptions/listen` opt-in. Without this rmcp leaves
+    /// subscriptions unimplemented, and the per-session wake-up below
+    /// would have no channel to arrive on.
+    fn accepted_subscription_filter(
+        &self,
+        requested: &rmcp::model::SubscriptionFilter,
+    ) -> Option<rmcp::model::SubscriptionFilter> {
+        let mut accepted = rmcp::model::SubscriptionFilter::new();
+        accepted.resources_list_changed = requested.resources_list_changed;
+        accepted.resource_subscriptions = requested.resource_subscriptions.clone();
+        Some(accepted)
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListResourcesResult, rmcp::ErrorData> {
+        let resources = self
+            .harness
+            .session_resources()
+            .into_iter()
+            .map(|session| {
+                rmcp::model::Resource::new(
+                    crate::mcp::server::harness::session_uri(&session.handle),
+                    session.handle.clone(),
+                )
+                .with_description(format!("{} session ({})", session.profile, session.status))
+                .with_mime_type("application/json")
+            })
+            .collect();
+
+        Ok(rmcp::model::ListResourcesResult::with_all_items(resources)
+            .with_ttl_ms(RESULT_TTL_MS)
+            .with_cache_scope(RESULT_CACHE_SCOPE))
+    }
+
+    /// A session's STATUS, not its transcript.
+    ///
+    /// Same payload `session_status` returns, deliberately: this exists
+    /// so a woken subscriber can answer "did it finish, and how" in one
+    /// read. Output stays behind `session_read` (or `jq` on the
+    /// transcript path), which is where the size lives — a transcript is
+    /// capped at 60 kB per read and routinely far larger on disk.
+    async fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResponse, rmcp::ErrorData> {
+        let uri = &request.uri;
+        let handle = crate::mcp::server::harness::session_handle_from_uri(uri)
+            .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("unknown resource: {uri}"), None))?;
+        let (_, payload) = self
+            .harness
+            .session_status(handle)
+            .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))?;
+
+        Ok(
+            rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::TextResourceContents {
+                uri: uri.clone(),
+                mime_type: Some("application/json".into()),
+                text: serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string()),
+                meta: None,
+            }])
+            .with_ttl_ms(RESULT_TTL_MS)
+            .with_cache_scope(RESULT_CACHE_SCOPE)
+            .into(),
+        )
     }
 
     /// SEP-2663 poll. The task id names one TURN of one session, so a
@@ -862,6 +941,23 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
             table.seal_turn(&handle, turn, code);
             tokio::spawn(async move {
                 super::harness::notify_session_finished(&peer, &name, &handle, code).await;
+
+                // The standard wake-up, alongside the two above it.
+                //
+                // UNGATED, unlike the task push: `resources/updated` is
+                // routed by the SDK against what the client subscribed
+                // to, so a peer that opted into nothing receives nothing.
+                // The task push has no such routing — it goes straight
+                // down the pipe — which is why that one has to gate
+                // itself and this one must not.
+                //
+                // This is also what makes the indefinite `ttlMs` honest
+                // for a session resource: its status changes exactly here.
+                let uri = super::harness::session_uri(&handle);
+                let param = rmcp::model::ResourceUpdatedNotificationParam::new(uri.clone());
+                if let Err(err) = peer.notify_resource_updated(param).await {
+                    tracing::debug!(%err, %uri, "mcp harness: session resource-updated notification failed");
+                }
 
                 // SEP-2663 status push — GATED, and it has to be. The
                 // hook fires for every turn of every session, so an

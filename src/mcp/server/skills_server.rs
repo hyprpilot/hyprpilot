@@ -143,7 +143,9 @@ pub async fn run_skills(args: SkillsArgs, config: super::ConfigSource) -> anyhow
 }
 
 async fn run(handler: SkillsServer) -> anyhow::Result<()> {
-    handler.reload_skills().await;
+    // Startup scan. Nothing is connected yet, so the delta has no
+    // one to notify — discard it deliberately rather than by accident.
+    let _ = handler.reload_skills().await;
 
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let running = handler
@@ -305,7 +307,11 @@ impl SkillsServer {
         )
     }
 
-    async fn reload_skills(&self) {
+    /// Rescan disk and report what changed, so the caller can fire the
+    /// notification that matches. Returns an empty delta when the reload
+    /// failed — a failed rescan leaves the cache untouched, so claiming
+    /// anything changed would invalidate a client's cache for nothing.
+    async fn reload_skills(&self) -> CatalogueDelta {
         let registry = self.registry.clone();
         let result = tokio::task::spawn_blocking(move || {
             registry.reload().map_err(|e| e.to_string())?;
@@ -317,16 +323,64 @@ impl SkillsServer {
             Ok(Ok(s)) => s,
             Ok(Err(err)) => {
                 tracing::error!(%err, "mcp::server: skills reload failed");
-                return;
+                return CatalogueDelta::default();
             }
             Err(err) => {
                 tracing::error!(%err, "mcp::server: blocking reload join failed");
-                return;
+                return CatalogueDelta::default();
             }
         };
 
         let mut cache = self.skills_cache.write().await;
-        *cache = build_cache(skills);
+        let next = build_cache(skills);
+        let delta = CatalogueDelta::between(&cache, &next);
+        *cache = next;
+        delta
+    }
+}
+
+/// What a `reload` actually changed, so the right notification fires for
+/// the right URI.
+///
+/// With `ttlMs` effectively indefinite (`rpc::RESULT_TTL_MS`), a client
+/// re-fetches only when told to. `resources/list_changed` covers a skill
+/// appearing or disappearing; it says nothing about a body that changed
+/// under an unchanged slug, which is the common edit and the one
+/// `hyprpilot-reload` exists to catch. That needs a per-URI
+/// `resources/updated`.
+#[derive(Debug, Default, PartialEq)]
+struct CatalogueDelta {
+    /// Slugs added or removed — membership, so the LIST changed.
+    membership_changed: bool,
+    /// Slugs whose body or metadata differs from the previous scan.
+    updated: Vec<String>,
+}
+
+impl CatalogueDelta {
+    fn between(before: &SkillsCache, after: &SkillsCache) -> Self {
+        let updated = after
+            .order
+            .iter()
+            .filter(|slug| {
+                // Compare the body AND the metadata block: an edit that
+                // only touches frontmatter leaves the body identical but
+                // still changes what every surface reports.
+                match (before.skills.get(*slug), after.skills.get(*slug)) {
+                    (Some(old), Some(new)) => old.body != new.body || old.meta_block != new.meta_block,
+                    _ => false,
+                }
+            })
+            .cloned()
+            .collect();
+
+        Self {
+            membership_changed: before.order != after.order,
+            updated,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.membership_changed && self.updated.is_empty()
     }
 }
 
@@ -636,7 +690,13 @@ impl ServerHandler for SkillsServer {
         tools.list_changed = Some(false);
         caps.tools = Some(tools);
         let mut resources = rmcp::model::ResourcesCapability::default();
-        resources.subscribe = Some(false);
+        // Per-resource subscriptions are how a client learns that ONE
+        // skill body changed rather than re-reading the catalogue. It is
+        // what makes the indefinite `ttlMs` safe — see
+        // `rpc::RESULT_TTL_MS` — so it is advertised, and
+        // `accepted_subscription_filter` below is what actually accepts
+        // the opt-in at `2026-07-28`.
+        resources.subscribe = Some(true);
         resources.list_changed = Some(true);
         caps.resources = Some(resources);
         ServerInfo::new(caps)
@@ -645,6 +705,28 @@ impl ServerHandler for SkillsServer {
                 env!("CARGO_PKG_VERSION").to_string(),
             ))
             .with_instructions(self.instructions())
+    }
+
+    /// Accept the `subscriptions/listen` opt-in at `2026-07-28`.
+    ///
+    /// rmcp leaves this `None` — subscriptions unimplemented — so
+    /// without it a client on the current revision has NO channel for
+    /// the notifications this server already emits, and the indefinite
+    /// `ttlMs` would have nothing to invalidate it.
+    ///
+    /// The SDK intersects what we return with both the request and the
+    /// capabilities advertised above, so echoing the two categories we
+    /// actually fire is enough; a client asking for
+    /// `toolsListChanged` gets it dropped, correctly, because the tool
+    /// set cannot change.
+    fn accepted_subscription_filter(
+        &self,
+        requested: &rmcp::model::SubscriptionFilter,
+    ) -> Option<rmcp::model::SubscriptionFilter> {
+        let mut accepted = rmcp::model::SubscriptionFilter::new();
+        accepted.resources_list_changed = requested.resources_list_changed;
+        accepted.resource_subscriptions = requested.resource_subscriptions.clone();
+        Some(accepted)
     }
 
     async fn list_tools(
@@ -820,19 +902,48 @@ impl ServerHandler for SkillsServer {
                 ))
             }
             "reload" => {
-                self.reload_skills().await;
+                let delta = self.reload_skills().await;
                 let count = self.skills_cache.read().await.skills.len();
-                // The resource list (one per skill) may have changed —
-                // fire the list-changed notification `get_info`
-                // advertises so a connected client re-fetches instead of
-                // trusting a stale `list_resources`. Best-effort: a
-                // failed notify logs but doesn't fail the reload.
-                if let Err(err) = context.peer.notify_resource_list_changed().await {
-                    tracing::debug!(%err, "mcp::server: reload resource list-changed notification failed");
+                if delta.is_empty() {
+                    // Nothing moved, so nothing is invalidated. Firing
+                    // anyway would cost every subscriber a full re-fetch
+                    // for a no-op reload.
+                    tracing::debug!(count, "mcp::server: skills reloaded — no change");
                 }
+                // `ttlMs` is effectively indefinite, so a client re-reads
+                // only when told to — which makes these notifications the
+                // whole invalidation story rather than a nicety.
+                //
+                // Membership first: a skill appearing or disappearing is
+                // what `resources/list_changed` describes.
+                if delta.membership_changed {
+                    if let Err(err) = context.peer.notify_resource_list_changed().await {
+                        tracing::debug!(%err, "mcp::server: reload resource list-changed notification failed");
+                    }
+                }
+                // Then per-skill. A body edited under an unchanged slug
+                // does not move the list, so the list-changed signal
+                // cannot express it — and that is the common edit.
+                for slug in &delta.updated {
+                    let uri = format!("hyprpilot://skills/{slug}");
+                    let param = rmcp::model::ResourceUpdatedNotificationParam::new(uri.clone());
+                    if let Err(err) = context.peer.notify_resource_updated(param).await {
+                        tracing::debug!(%err, %uri, "mcp::server: reload resource-updated notification failed");
+                    }
+                }
+                tracing::info!(
+                    count,
+                    membership_changed = delta.membership_changed,
+                    updated = delta.updated.len(),
+                    "mcp::server: skills reloaded"
+                );
                 Ok(structured_with_text(
                     format!("Reloaded {count} skill(s)."),
-                    serde_json::json!({ "reloaded": count }),
+                    serde_json::json!({
+                        "reloaded": count,
+                        "membershipChanged": delta.membership_changed,
+                        "updated": delta.updated,
+                    }),
                 ))
             }
             other => Err(rmcp::ErrorData::new(
@@ -1045,6 +1156,86 @@ mod tests {
             body: String::new(),
             refs: frontmatter_references(&frontmatter),
         }
+    }
+
+    /// Build a cache from `(slug, body)` pairs — the delta is about
+    /// bodies and membership, so that is all these fixtures need.
+    fn cache_of(entries: &[(&str, &str)]) -> SkillsCache {
+        let mut cache = SkillsCache::default();
+        for (slug, body) in entries {
+            let mut skill = loaded_skill(slug, slug, "d", "name: x\n", &format!("/tmp/{slug}/SKILL.md"));
+            skill.body = (*body).to_string();
+            cache.order.push((*slug).to_string());
+            cache.skills.insert((*slug).to_string(), skill);
+        }
+        cache
+    }
+
+    /// The common edit: a body changes under an unchanged slug. The list
+    /// has not moved, so `resources/list_changed` cannot express it —
+    /// only a per-URI `resources/updated` can, and with an indefinite
+    /// `ttlMs` that notification is the ONLY thing that invalidates the
+    /// client's copy.
+    #[test]
+    fn an_edited_body_updates_only_that_skill() {
+        let delta = CatalogueDelta::between(
+            &cache_of(&[("alpha", "v1"), ("beta", "same")]),
+            &cache_of(&[("alpha", "v2"), ("beta", "same")]),
+        );
+
+        assert!(!delta.membership_changed, "no skill was added or removed");
+        assert_eq!(delta.updated, vec!["alpha".to_string()], "beta did not change");
+    }
+
+    /// Frontmatter-only edits leave the body byte-identical while
+    /// changing what every surface reports, so the metadata block is
+    /// compared too.
+    #[test]
+    fn a_frontmatter_only_edit_still_counts_as_updated() {
+        let mut before = cache_of(&[("alpha", "same")]);
+        let mut after = cache_of(&[("alpha", "same")]);
+        before.skills.get_mut("alpha").unwrap().meta_block = skill_block(
+            &frontmatter_json(&yaml_serde::from_str("name: old\n").unwrap()),
+            std::path::Path::new("/tmp/a"),
+        );
+        after.skills.get_mut("alpha").unwrap().meta_block = skill_block(
+            &frontmatter_json(&yaml_serde::from_str("name: new\n").unwrap()),
+            std::path::Path::new("/tmp/a"),
+        );
+
+        assert_eq!(
+            CatalogueDelta::between(&before, &after).updated,
+            vec!["alpha".to_string()]
+        );
+    }
+
+    #[test]
+    fn adding_or_removing_a_skill_is_a_membership_change() {
+        let added = CatalogueDelta::between(
+            &cache_of(&[("alpha", "b")]),
+            &cache_of(&[("alpha", "b"), ("beta", "b")]),
+        );
+        assert!(added.membership_changed);
+        assert!(added.updated.is_empty(), "an untouched skill must not be re-sent");
+
+        let removed = CatalogueDelta::between(
+            &cache_of(&[("alpha", "b"), ("beta", "b")]),
+            &cache_of(&[("alpha", "b")]),
+        );
+        assert!(removed.membership_changed);
+    }
+
+    /// The one that makes an indefinite ttl viable: a reload that
+    /// changed nothing must invalidate nothing. Firing spuriously would
+    /// make every `reload` cost a full re-fetch and teach clients to
+    /// ignore us.
+    #[test]
+    fn a_reload_that_changed_nothing_notifies_nothing() {
+        let delta = CatalogueDelta::between(&cache_of(&[("alpha", "b")]), &cache_of(&[("alpha", "b")]));
+
+        assert!(delta.is_empty());
+        assert!(!delta.membership_changed);
+        assert!(delta.updated.is_empty());
     }
 
     #[test]

@@ -55,15 +55,32 @@ pub(super) fn supported_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
 /// then has NO TOOLS AT ALL, because the listing is the door. Claude Code
 /// 2.2.x negotiates `2026-07-28` and hit exactly this.
 ///
-/// `0` because nothing we serve is safely cacheable for a duration: the
-/// skills catalogue changes on `reload`, and the profile list changes
-/// whenever the captain edits config. Emitting them at older revisions
-/// is harmless — the spec's `Result` is an open map, so an extra key is
-/// permitted everywhere.
+/// **Effectively "cache until I say otherwise."** 24 hours is longer
+/// than any sidecar lives — the vendor spawns one per session and it
+/// dies with that session — so a client that honours this never has to
+/// re-fetch on a timer, and every real invalidation arrives as a
+/// notification instead.
 ///
-/// Stamp them on EVERY list and read result, on every server. A result
-/// that forgets is invisible until a client upgrades.
-pub(super) const RESULT_TTL_MS: u64 = 0;
+/// That only works because the invalidation is real. Every mutable
+/// surface pairs the ttl with a signal: `reload` diffs the catalogue and
+/// fires `resources/list_changed` for membership plus
+/// `resources/updated` per changed skill, and a harness turn ending
+/// fires `resources/updated` for its session. `tools/list` needs no
+/// signal because the tool set is compiled in and cannot change while
+/// the process lives.
+///
+/// **The residual gap, accepted deliberately:** `resources/updated`
+/// reaches only clients that opted in through `subscriptions/listen`, so
+/// a `2026-07-28` client that subscribes to nothing caches a skill body
+/// for the full ttl and never learns it changed. Older clients are fine
+/// — they get the unsolicited notification down the pipe as they always
+/// have. Anything that widens this gap (a new mutable surface with no
+/// notification) must lower the ttl for that surface rather than rely on
+/// clients re-fetching.
+///
+/// Stamp both fields on EVERY list and read result, on every server. A
+/// result that forgets is invisible until a client upgrades.
+pub(super) const RESULT_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// Companion to [`RESULT_TTL_MS`]. `Private` is the conservative choice
 /// and matches what the reference SDKs default to: these results are
@@ -280,15 +297,28 @@ mod tests {
     /// The fields `2026-07-28` makes REQUIRED on a cacheable result.
     /// Omitting them is not a partial failure — a validating client
     /// rejects `tools/list` and the session comes up with no tools at
-    /// all. `0` / `private` because nothing we serve is safely cacheable
-    /// for a duration or across users.
+    /// all.
+    ///
+    /// The ttl is deliberately longer than any sidecar lives, which is
+    /// only honest because every mutable surface fires an invalidation
+    /// notification. Lowering it back toward zero would mean the
+    /// invalidation stopped being trustworthy — a real change, not a
+    /// tuning tweak, so it breaks here first.
     #[test]
-    fn cacheable_results_are_stamped_conservatively() {
+    fn cacheable_results_cache_until_invalidated() {
+        // Asserted as an exact value rather than a bound: the point is
+        // that changing it is a deliberate act with consequences for
+        // every cached surface, not that it clears some threshold.
         assert_eq!(
-            RESULT_TTL_MS, 0,
-            "a non-zero ttl would let a client serve a stale catalogue"
+            RESULT_TTL_MS,
+            24 * 60 * 60 * 1000,
+            "the ttl must outlive a sidecar, or clients re-fetch on a timer we told them not to need"
         );
-        assert_eq!(RESULT_CACHE_SCOPE, CacheScope::Private);
+        assert_eq!(
+            RESULT_CACHE_SCOPE,
+            CacheScope::Private,
+            "these results are scoped to one captain's config — no shared intermediary may serve them on"
+        );
     }
 
     fn supported_contains(set: &[ProtocolVersion], want: &ProtocolVersion) -> bool {

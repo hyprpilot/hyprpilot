@@ -38,6 +38,34 @@ use crate::spawn::{LaunchOrigin, SpawnRequest};
 /// number.
 pub(crate) const DEPTH_ENV: &str = "HYPRPILOT_SPAWN_DEPTH";
 
+/// Scheme for a session addressed as an MCP resource.
+///
+/// Sessions are resources so a client can `subscriptions/listen` on one
+/// handle and be WOKEN when its turn ends, instead of polling
+/// `session_status` or watching `done.json` from a shell. The handle is
+/// already the session's only identifier, so the URI is a rendering of
+/// it rather than a second address.
+pub(crate) const SESSION_URI_PREFIX: &str = "hyprpilot://sessions/";
+
+/// Render a handle as its resource URI.
+pub(crate) fn session_uri(handle: &str) -> String {
+    format!("{SESSION_URI_PREFIX}{handle}")
+}
+
+/// Recover the handle from a session URI. `None` for any other scheme,
+/// so `read_resource` can reject rather than guess.
+pub(crate) fn session_handle_from_uri(uri: &str) -> Option<&str> {
+    uri.strip_prefix(SESSION_URI_PREFIX).filter(|h| !h.is_empty())
+}
+
+/// A session projected for `resources/list`. Three fields, on purpose —
+/// see [`Harness::session_resources`].
+pub(crate) struct SessionResource {
+    pub handle: String,
+    pub profile: String,
+    pub status: String,
+}
+
 /// Ceiling on concurrently *running* sessions. Depth bounds recursion;
 /// this bounds breadth. Both matter: a profile's `command` is an
 /// arbitrary binary, so an agent that can spawn without limit is an
@@ -738,6 +766,23 @@ impl Harness {
                 })
             })
             .unwrap_or(Value::Null)
+    }
+
+    /// One row per session for `resources/list` — handle, profile,
+    /// status, and nothing else.
+    ///
+    /// The VALUE here is `resourceSubscriptions` on a handle you already
+    /// hold, not browsing the catalogue, so the listing stays a routing
+    /// aid. Deliberately no transcript and no argv: a transcript is
+    /// capped at 60 kB per read for a reason, and putting one in a
+    /// listing would pay that for every session at once. `session_read`
+    /// remains the way to get output.
+    pub(crate) fn session_resources(&self) -> Vec<SessionResource> {
+        self.sessions.map_all(|session| SessionResource {
+            handle: session.handle.clone(),
+            profile: session.profile_id.clone(),
+            status: session.status().as_str().to_string(),
+        })
     }
 
     pub(crate) fn session_list(&self) -> (String, Value) {
@@ -1557,6 +1602,25 @@ mod tests {
         harness.depth = 0;
 
         assert!(harness.check_capacity().is_err(), "maxDepth = 0 denies everyone");
+    }
+
+    /// The handle is a session's only identifier, so its URI must be a
+    /// rendering of it — round-trippable, never a second address that
+    /// could drift.
+    #[test]
+    fn a_session_uri_round_trips_to_its_handle() {
+        let handle = "d4cbf498-7eb4-4c47-9a96-d0662c2be165";
+
+        assert_eq!(session_handle_from_uri(&session_uri(handle)), Some(handle));
+    }
+
+    /// `read_resource` must reject rather than guess: a URI from another
+    /// scheme is not a session, and an empty handle addresses nothing.
+    #[test]
+    fn a_foreign_uri_is_not_mistaken_for_a_session() {
+        assert_eq!(session_handle_from_uri("hyprpilot://skills/git-commit"), None);
+        assert_eq!(session_handle_from_uri(SESSION_URI_PREFIX), None);
+        assert_eq!(session_handle_from_uri("file:///etc/passwd"), None);
     }
 
     /// opencode emits a `text` part for EVERY completed sentence, not
