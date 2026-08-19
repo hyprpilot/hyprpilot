@@ -316,7 +316,7 @@ Arm it on `turnDir` from the call that started the turn. A marker can no longer 
 
 ### Completion notifications (Claude Code channels)
 
-When a turn's process exits the harness pushes a `notifications/claude/channel` event, which Claude Code turns into a `<channel source="hyprpilot_harness">` block in the lead agent's next turn:
+When a turn's process exits the harness pushes a `notifications/claude/channel` event, which Claude Code turns into a `<channel source="hyprpilot-harness">` block in the lead agent's next turn:
 
 ```txt
 content: hyprpilot harness session 4670d5aa… finished (exit 0). Read its output with session_read.

@@ -28,8 +28,9 @@ set_title = true
 # per-profile; to wipe an earlier patch's field, fold a later patch
 # with `$patch: replace` inside the field body.
 #
-# Default seed: one unscoped patch carrying the skills directory and
-# the harness's tunable ceilings.
+# Default seed: one unscoped patch carrying the skills directory, the
+# name each in-tree server is injected under, and the harness's
+# tunable ceilings.
 #
 # `[mcp] enabled`, `autoAcceptTools` and `autoRejectTools` are NOT here:
 # their accessors `.expect()` a value, so they must come from the typed
@@ -63,9 +64,23 @@ set_title = true
 # in your config against `max_depth` here arrives at serde as two keys
 # and fails config load with `duplicate field`.
 [patches.mcp.harness]
+name = "hyprpilot-harness"
 max_depth = 1
 max_sessions = 64
 notify_on_complete = true
+
+# `name` is the key the vendor's MCP catalog is written under, so it is
+# also the tool prefix the agent sees (`mcp__hyprpilot-skills__read_skill`)
+# and the name RESERVED against a same-named configured server. The
+# injector reads this field and nothing else, so renaming a server is a
+# config edit rather than a rebuild. The Rust constants in
+# `config/mcp.rs` only cover a `Config` carrying no patches; a test pins
+# them equal to these.
+[patches.mcp.serve]
+name = "hyprpilot"
+
+[patches.mcp.skills]
+name = "hyprpilot-skills"
 
 [[patches.mcp.skills.dirs]]
 dir = "~/.config/hyprpilot/skills"

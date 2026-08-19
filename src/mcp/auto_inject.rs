@@ -11,8 +11,10 @@
 //! to the skill's own bundle directory at read time — the sidecar
 //! maintains no separate references-root concept.
 //!
-//! Each server's resolved name is what vendors prefix tool calls with
-//! (`mcp__hyprpilot_skills__list_skills`, …) and is RESERVED: a
+//! Each server's resolved name is `[mcp.<server>] name` — a config
+//! value seeded in `defaults.toml`, so renaming one is an edit rather
+//! than a rebuild. It is what vendors prefix tool calls with
+//! (`mcp__hyprpilot-skills__list_skills`, …) and is RESERVED: a
 //! same-named configured server is replaced. Auto-accept rides through
 //! `HyprpilotExtension.auto_accept_tools` — the server's own globs when
 //! set, else the `[mcp]`-level ones (default `["*"]`), so by default

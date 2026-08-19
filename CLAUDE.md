@@ -297,8 +297,9 @@ clobbering the layer list. This closes the footgun where a partial
 `[patches.mcp]` in a user layer silently dropped the seeded skills dir.
 
 `defaults.toml` seeds one unscoped patch pointing the skills server at
-the XDG skills dir. The seed carries **only** `mcp.skills.dirs` (the
-load-bearing value that must survive layer merge);
+the XDG skills dir, naming each in-tree server, and carrying the
+harness ceilings — the values that must survive layer merge, plus every
+NESTED leaf the resolver never backfills.
 `enabled = true` / `autoAcceptTools = ["*"]` / `autoRejectTools = []`
 are the typed `McpConfig::default()` the resolver backfills per-leaf in
 `resolve::effective_mcp_with`, so those values are single-sourced in
@@ -367,11 +368,21 @@ off the skills server behind `--with-harness`, which meant gating both
 `list_tools` and `call_tool` by name — and a reviewer caught one half
 missing. Do not re-merge them.
 
+**A server's name is CONFIG, not a constant.** `[mcp.<server>] name` is
+what `auto_inject` writes into the vendor catalogue and the only thing
+it reads, and `defaults.toml` seeds all three — so renaming one is an
+edit, not a rebuild. `DEFAULT_*_SERVER_NAME` covers only a `Config`
+carrying no patches (a programmatic one in a test, or a captain who
+cleared the seed) and is what each SIDECAR reports as `serverInfo.name`,
+since a sidecar cannot know which catalogue key spawned it.
+`defaults_seed_the_server_names` pins the pair equal, the same way
+`defaults_seed_the_harness_ceilings` does for the numbers.
+
 | Subcommand | Default name | Module | Serves | Default |
 | ---------- | ------------ | ------ | ------ | ------- |
 | `mcp serve` | `hyprpilot` | `server/tools.rs` | `open` | on |
-| `mcp skills` | `hyprpilot_skills` | `server/skills_server.rs` | skills tools + resources | on |
-| `mcp harness` | `hyprpilot_harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) + session resources | **off** |
+| `mcp skills` | `hyprpilot-skills` | `server/skills_server.rs` | skills tools + resources | on |
+| `mcp harness` | `hyprpilot-harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) + session resources | **off** |
 
 **Sessions are resources in FOUR views** — `hyprpilot://sessions/
 <handle>` (status), `/result`, `/transcript` and `/stderr` — plus two
@@ -1197,7 +1208,7 @@ Baseline smokes:
   `hyprpilot mcp {serve,skills,harness} --help` render via clap.
 - Each `mcp` subcommand answers `initialize` + `tools/list` over stdio
   and reports the right `serverInfo.name` (`hyprpilot` /
-  `hyprpilot_skills` / `hyprpilot_harness`) and tool set.
+  `hyprpilot-skills` / `hyprpilot-harness`) and tool set.
 - `hyprpilot profiles` lists configured profiles (empty config →
   validation error naming the empty `[[profiles]]` list).
 - A deliberately broken `config.toml` aborts with a readable garde
