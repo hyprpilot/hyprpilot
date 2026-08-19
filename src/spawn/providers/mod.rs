@@ -47,7 +47,22 @@ pub(crate) struct HarnessProjection {
     /// the harness: turn boundaries, usage, and the vendor session id
     /// all arrive only through it.
     pub structured_output: bool,
-    /// Vendor session id to continue. `None` starts a new conversation.
+}
+
+/// What a launch resumes. `None` starts a fresh conversation.
+///
+/// Vendor-neutral because the three CLIs spell the same three intents
+/// differently — a flag on one, a subcommand on another — so the choice
+/// belongs to the launcher and the spelling to each builder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Resume {
+    /// The vendor's own session picker. Needs a TTY, so `prepare`
+    /// refuses it on a headless launch; opencode exposes no picker at
+    /// all and its builder refuses it outright.
+    Picker,
+    /// The most recent conversation, no picker.
+    Last,
+    /// One session by vendor id — what the harness resumes with.
     ///
     /// All three vendors mint their own id and report it in the first
     /// turn's event stream (`session_id` / `thread_id` / `sessionID` —
@@ -56,7 +71,7 @@ pub(crate) struct HarnessProjection {
     /// a caller-minted `--session-id <uuid>`, but taking that shortcut
     /// for one vendor would mean two code paths and a UUID dependency
     /// to save nothing.
-    pub resume: Option<String>,
+    Session(String),
 }
 
 #[derive(Debug)]
@@ -93,16 +108,37 @@ pub(crate) fn build_command(
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
     prompt: Option<&str>,
+    resume: Option<&Resume>,
     harness: Option<&HarnessProjection>,
 ) -> Result<SpawnCommand> {
     match resolved.agent.provider {
-        AgentProvider::ClaudeCode => {
-            claude::build_claude(resolved, system_prompt, mcp_defs, provider_args, prompt, harness)
-        }
-        AgentProvider::Codex => codex::build_codex(resolved, system_prompt, mcp_defs, provider_args, prompt, harness),
-        AgentProvider::OpenCode => {
-            opencode::build_opencode(resolved, system_prompt, mcp_defs, provider_args, prompt, harness)
-        }
+        AgentProvider::ClaudeCode => claude::build_claude(
+            resolved,
+            system_prompt,
+            mcp_defs,
+            provider_args,
+            prompt,
+            resume,
+            harness,
+        ),
+        AgentProvider::Codex => codex::build_codex(
+            resolved,
+            system_prompt,
+            mcp_defs,
+            provider_args,
+            prompt,
+            resume,
+            harness,
+        ),
+        AgentProvider::OpenCode => opencode::build_opencode(
+            resolved,
+            system_prompt,
+            mcp_defs,
+            provider_args,
+            prompt,
+            resume,
+            harness,
+        ),
     }
 }
 
@@ -118,7 +154,7 @@ pub(crate) fn build_command_cli(
     provider_args: Vec<String>,
     prompt: Option<&str>,
 ) -> Result<SpawnCommand> {
-    build_command(resolved, system_prompt, mcp_defs, provider_args, prompt, None)
+    build_command(resolved, system_prompt, mcp_defs, provider_args, prompt, None, None)
 }
 
 pub(crate) fn exec(command: SpawnCommand) -> Result<ExitCode> {
@@ -609,7 +645,7 @@ mod tests {
             "${HYPRPILOT_TEST_OVERRIDE_OVERLAID_VAR}".into(),
         );
 
-        let command = build_command(&resolved, None, &[], vec![], None, None).unwrap();
+        let command = build_command(&resolved, None, &[], vec![], None, None, None).unwrap();
 
         assert_eq!(
             command.env.get("OVERRIDE_OVERLAID").map(String::as_str),

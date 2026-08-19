@@ -48,6 +48,9 @@ pub(crate) struct SpawnRequest {
     /// own block. `None` on the CLI path, which has no launching
     /// harness to speak for it.
     pub mcp_overlay: Option<crate::config::McpConfig>,
+    /// Which conversation to continue, if any. Vendor-neutral — the
+    /// builders own the per-CLI spelling.
+    pub resume: Option<providers::Resume>,
 }
 
 /// Which front end is driving a launch. Closed set — the two differ in
@@ -103,6 +106,7 @@ pub(crate) fn prepare(
         stdin_consumed,
         spawn_depth,
         mcp_overlay,
+        resume,
     } = request;
 
     // A harness launch has no real stdin to inspect: claiming "TTY" is
@@ -197,6 +201,18 @@ pub(crate) fn prepare(
         bail!("an MCP-initiated launch requires a prompt: pass `prompt` or `file`");
     }
 
+    // The picker is the one resume intent that needs a human at a
+    // terminal, and every vendor refuses it headless in its own words —
+    // claude with "requires a valid session ID … when used with
+    // --print", `codex exec resume` by offering only an id or `--last`.
+    // Refuse it here, where the launch still knows why.
+    if matches!(resume, Some(providers::Resume::Picker)) && prompt.is_some() {
+        bail!(
+            "`--resume` opens the vendor's session picker, which a headless launch has no terminal to answer: \
+             resume the most recent with `--resume-last`, or name one with `--resume=<session-id>`"
+        );
+    }
+
     let skills = build_skills_registry_with(&profile);
     let mcp_defs = build_mcp_registry_with(&profile, Some(&skills), spawn_depth);
 
@@ -210,6 +226,7 @@ pub(crate) fn prepare(
         &mcp_defs,
         provider_args,
         prompt.as_deref(),
+        resume.as_ref(),
         harness,
     )?;
     // Stamped here rather than by the caller so the depth the vendor
@@ -525,11 +542,40 @@ mod tests {
                 stdin_consumed: true,
                 spawn_depth,
                 mcp_overlay,
+                resume: None,
             },
             LaunchOrigin::Harness,
             None,
         )
         .expect("the fixture prepares")
+    }
+
+    /// Every vendor refuses a picker without a terminal in its own
+    /// words, so the launch has to refuse first — by the time claude
+    /// says "requires a valid session ID", the reason it was asked for
+    /// one is gone.
+    #[test]
+    fn a_headless_launch_refuses_the_session_picker() {
+        let err = prepare(
+            &cfg_with_profile_cwd(),
+            SpawnRequest {
+                profile_id: Some("engineer".into()),
+                prompt: Some("hi".into()),
+                cwd: None,
+                mode: None,
+                config_patches: Vec::new(),
+                provider_args: Vec::new(),
+                stdin_consumed: true,
+                spawn_depth: 0,
+                mcp_overlay: None,
+                resume: Some(providers::Resume::Picker),
+            },
+            LaunchOrigin::Harness,
+            None,
+        )
+        .expect_err("a headless picker has no terminal to answer it");
+
+        assert!(err.to_string().contains("--resume-last"), "{err}");
     }
 
     /// The projected catalogue, read back off the argv the vendor will

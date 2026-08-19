@@ -8,7 +8,9 @@ use crate::mcp::{project_transport, MCPDefinition, McpTransport};
 use crate::resolve::profile::ResolvedProfile;
 
 use super::argv::{combined_args, has_config_override, has_flag};
-use super::{base_command, ensure_inline_size, is_exact_tool_name, mcp_leaf_pattern, HarnessProjection, SpawnCommand};
+use super::{
+    base_command, ensure_inline_size, is_exact_tool_name, mcp_leaf_pattern, HarnessProjection, Resume, SpawnCommand,
+};
 
 const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never", "on-failure"];
 const CODEX_SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
@@ -19,6 +21,7 @@ pub(super) fn build_codex(
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
     prompt: Option<&str>,
+    resume: Option<&Resume>,
     harness: Option<&HarnessProjection>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved);
@@ -34,14 +37,19 @@ pub(super) fn build_codex(
     if headless {
         command.args.insert(0, "exec".into());
     }
-    // `resume <SESSION_ID>` is a SUBCOMMAND of `exec`, not a flag, so it
-    // has to sit immediately after `exec` and before every generated
-    // option — unlike claude's `--resume`, which is order-free. Inserted
-    // in reverse so `exec resume <id>` lands in that order.
-    if let Some(id) = harness.and_then(|h| h.resume.as_deref()) {
-        if headless && !has_flag(&command.args, "resume", None) {
-            command.args.insert(1, "resume".into());
-            command.args.insert(2, id.into());
+    // `resume` is a SUBCOMMAND — of `codex`, and again of `codex exec` —
+    // not a flag, so it sits immediately after any `exec` and before
+    // every generated option, unlike claude's `--resume`, which is
+    // order-free.
+    if let Some(resume) = resume {
+        if !has_flag(&command.args, "resume", None) {
+            let at = usize::from(headless);
+            command.args.insert(at, "resume".into());
+            match resume {
+                Resume::Picker => {}
+                Resume::Last => command.args.insert(at + 1, "--last".into()),
+                Resume::Session(id) => command.args.insert(at + 1, id.clone()),
+            }
         }
     }
     let detect_args = combined_args(&command.args, &provider_args);
@@ -458,6 +466,46 @@ mod tests {
     use crate::config::AgentProvider;
     use crate::spawn::providers::build_command_cli as build_command;
     use crate::spawn::providers::fixtures::*;
+
+    /// `resume` is a subcommand, so position is the whole contract:
+    /// it has to land first interactively and immediately after `exec`
+    /// headless, before any generated option codex would reject there.
+    #[test]
+    fn codex_places_resume_as_a_subcommand() {
+        let cases = [
+            (None, Resume::Picker, vec!["resume".to_string()]),
+            (None, Resume::Last, vec!["resume".to_string(), "--last".to_string()]),
+            (
+                None,
+                Resume::Session("abc123".into()),
+                vec!["resume".to_string(), "abc123".to_string()],
+            ),
+            (
+                Some("hi"),
+                Resume::Last,
+                vec!["exec".to_string(), "resume".to_string(), "--last".to_string()],
+            ),
+        ];
+
+        for (prompt, resume, expected) in cases {
+            let command = crate::spawn::providers::build_command(
+                &resolved_with_mode(AgentProvider::Codex, None),
+                None,
+                &[],
+                vec![],
+                prompt,
+                Some(&resume),
+                None,
+            )
+            .unwrap();
+
+            assert_eq!(
+                command.args[..expected.len()],
+                expected[..],
+                "{resume:?} prompt={prompt:?}"
+            );
+        }
+    }
 
     #[test]
     fn codex_projects_mcp_into_config_overrides() {

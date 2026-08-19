@@ -39,6 +39,8 @@ Because subcommands resolve before the positional, `hyprpilot profiles` and `hyp
 | `-f, --file <PATH>`                       | Read the headless prompt from a file (`~` / `$VAR` / relative expanded). Mutually exclusive with `--prompt`. |
 | `--cwd <dir>`                             | Working directory for the vendor process.                                                                    |
 | `--mode <mode>`                           | Mode override, projected onto the vendor where supported.                                                    |
+| `--resume[=<session>]`                    | Continue a conversation — bare opens the vendor's session picker, with a value it resumes that session.      |
+| `--resume-last`                           | Continue the most recent conversation, no picker. Mutually exclusive with `--resume`.                        |
 | `--with-config <path\|@inline\|->`        | Profile overlay patch (repeatable). See [Ad-hoc Overlays](./with-config).                                    |
 | `--with-config-format <toml\|json\|yaml>` | Format for stdin / inline / extension-less overlays (default `json`).                                        |
 | `-- <args>`                               | Everything after `--` is forwarded verbatim to the vendor CLI; generated equivalents are suppressed.         |
@@ -61,6 +63,29 @@ For a one-off model, agent, MCP set, or system prompt — anything that changes 
 hyprpilot engineer --with-config '@{"model":"claude-opus-4-5"}'  # different model, one launch
 hyprpilot engineer --with-config '@{"agent":"codex"}'            # different agent, one launch
 ```
+
+## Resuming a conversation
+
+`--resume` and `--resume-last` are vendor-neutral: hyprpilot maps the intent onto whatever the resolved profile's vendor calls it, so one keybinding works across every profile.
+
+```sh
+hyprpilot engineer --resume              # pick a session in the vendor's own picker
+hyprpilot engineer --resume-last         # straight back into the most recent one
+hyprpilot engineer --resume=<session-id> # a specific session
+```
+
+| Intent        | `claude`        | `codex`         | `opencode`       |
+| ------------- | --------------- | --------------- | ---------------- |
+| Picker        | `--resume`      | `resume`        | **unsupported**  |
+| Most recent   | `--continue`    | `resume --last` | `--continue`     |
+| By session id | `--resume <id>` | `resume <id>`   | `--session <id>` |
+
+Two refusals, both loud rather than silent:
+
+- **opencode has no session picker.** Its CLI registers only `--continue` and `--session <id>`, so a bare `--resume` errors instead of quietly resuming something you did not choose.
+- **No picker survives a headless launch.** A picker needs a terminal to answer it, so combining `--resume` with `--prompt` / `--file` / piped stdin errors. Use `--resume-last` or `--resume=<session-id>` there.
+
+Passing the vendor's own flag through `-- <args>` still wins — the generated projection is suppressed exactly as it is for every other flag.
 
 ## Forwarding native arguments
 

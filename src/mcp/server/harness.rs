@@ -418,7 +418,6 @@ impl Harness {
 
         let projection = HarnessProjection {
             structured_output: true,
-            resume: resume.as_ref().map(|target| target.resume_token.clone()),
         };
         let request = SpawnRequest {
             profile_id: Some(args.profile.clone()),
@@ -434,6 +433,9 @@ impl Harness {
             // gates the delegate's own harness injection on it.
             spawn_depth: self.depth + 1,
             mcp_overlay: self.delegate_mcp.clone(),
+            resume: resume
+                .as_ref()
+                .map(|target| crate::spawn::providers::Resume::Session(target.resume_token.clone())),
         };
 
         let prepared = crate::spawn::prepare(&cfg, request, LaunchOrigin::Harness, Some(&projection))

@@ -1,12 +1,12 @@
 //! opencode (`opencode`) env-projected config + permission shape.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::mcp::{project_transport, MCPDefinition, McpTransport};
 use crate::resolve::profile::ResolvedProfile;
 
 use super::argv::{combined_args, flag_value, has_flag};
-use super::{base_command, ensure_inline_size, mcp_leaf_pattern, HarnessProjection, SpawnCommand};
+use super::{base_command, ensure_inline_size, mcp_leaf_pattern, HarnessProjection, Resume, SpawnCommand};
 
 pub(super) fn build_opencode(
     resolved: &ResolvedProfile,
@@ -14,6 +14,7 @@ pub(super) fn build_opencode(
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
     prompt: Option<&str>,
+    resume: Option<&Resume>,
     harness: Option<&HarnessProjection>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved);
@@ -35,10 +36,26 @@ pub(super) fn build_opencode(
             command.args.push("--format".into());
             command.args.push("json".into());
         }
-        if let Some(id) = harness.resume.as_deref() {
-            if !has_flag(&detect_args, "--session", Some("-s")) {
-                command.args.push("--session".into());
-                command.args.push(id.into());
+    }
+
+    // Both spellings guard each other: `--session <id>` and `--continue`
+    // are the same choice made two ways.
+    if let Some(resume) = resume {
+        if !has_flag(&detect_args, "--session", Some("-s")) && !has_flag(&detect_args, "--continue", Some("-c")) {
+            match resume {
+                Resume::Last => command.args.push("--continue".into()),
+                Resume::Session(id) => {
+                    command.args.push("--session".into());
+                    command.args.push(id.clone());
+                }
+                // opencode registers no picker on either the TUI or
+                // `run` — only `--continue` and `--session <id>` — so
+                // there is nothing to project and a silent fall back to
+                // the most recent session would resume the wrong one.
+                Resume::Picker => bail!(
+                    "opencode has no session picker to open: resume the most recent with `--resume-last`, \
+                     or name one with `--resume=<session-id>`"
+                ),
             }
         }
     }
@@ -329,6 +346,56 @@ mod tests {
     use crate::config::AgentProvider;
     use crate::spawn::providers::build_command_cli as build_command;
     use crate::spawn::providers::fixtures::*;
+
+    #[test]
+    fn opencode_projects_the_two_resume_shapes_it_has() {
+        let cases = [
+            (Resume::Last, vec!["--continue".to_string()]),
+            (
+                Resume::Session("abc123".into()),
+                vec!["--session".to_string(), "abc123".to_string()],
+            ),
+        ];
+
+        for (resume, expected) in cases {
+            let command = crate::spawn::providers::build_command(
+                &resolved(AgentProvider::OpenCode),
+                None,
+                &[],
+                vec![],
+                None,
+                Some(&resume),
+                None,
+            )
+            .unwrap();
+
+            let at = command
+                .args
+                .iter()
+                .position(|arg| arg == &expected[0])
+                .unwrap_or_else(|| panic!("{resume:?} projects {expected:?}, got {:?}", command.args));
+            assert_eq!(command.args[at..at + expected.len()], expected[..], "{resume:?}");
+        }
+    }
+
+    /// opencode registers no picker at all, so the refusal has to be
+    /// loud — falling back to `--continue` would resume a session the
+    /// captain never chose.
+    #[test]
+    fn opencode_refuses_a_picker_it_cannot_open() {
+        let err = crate::spawn::providers::build_command(
+            &resolved(AgentProvider::OpenCode),
+            None,
+            &[],
+            vec![],
+            None,
+            Some(&Resume::Picker),
+            None,
+        )
+        .expect_err("opencode has no picker");
+
+        assert!(err.to_string().contains("--resume-last"), "{err}");
+    }
 
     /// opencode does not take its tool sandbox from the process
     /// working directory — without `--dir` the agent ran in `$HOME`
