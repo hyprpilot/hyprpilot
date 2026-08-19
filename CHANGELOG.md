@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.14.0](https://github.com/hyprpilot/hyprpilot/compare/v3.13.1...v3.14.0) (2026-08-19)
+
+
+### Features
+
+* **mcp:** name the in-tree servers from config, in kebab case ([#247](https://github.com/hyprpilot/hyprpilot/issues/247)) ([ecdd8b1](https://github.com/hyprpilot/hyprpilot/commit/ecdd8b1e3c70ae01ee6f2e3e2ff4548264d11cc2))
+
 ## [3.13.1](https://github.com/hyprpilot/hyprpilot/compare/v3.13.0...v3.13.1) (2026-08-13)
 
 
