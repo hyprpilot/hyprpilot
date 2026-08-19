@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.15.0](https://github.com/hyprpilot/hyprpilot/compare/v3.14.0...v3.15.0) (2026-08-19)
+
+
+### Features
+
+* **spawn:** resume a conversation with vendor-neutral flags ([#249](https://github.com/hyprpilot/hyprpilot/issues/249)) ([2320fb9](https://github.com/hyprpilot/hyprpilot/commit/2320fb9acb3a64616823ca918bbd90d0fad7083c))
+
 ## [3.14.0](https://github.com/hyprpilot/hyprpilot/compare/v3.13.1...v3.14.0) (2026-08-19)
 
 
