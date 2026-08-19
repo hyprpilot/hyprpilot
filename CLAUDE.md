@@ -137,7 +137,8 @@ hyprpilot mcp harness --max-sessions 64
 - **Launch flags** (bare invocation): positional `[PROFILE]`,
   `-p/--prompt <PROMPT>` (inline headless prompt), `-f/--file <PATH>`
   (headless prompt read from a file; `conflicts_with` `--prompt`),
-  `--cwd <dir>`, `--mode`, `--with-config` / `--with-config-format`,
+  `--cwd <dir>`, `--mode`, `--resume[=<session>]` / `--resume-last`
+  (see Resume below), `--with-config` / `--with-config-format`,
   and a trailing `-- <provider args>` forwarded verbatim. The profile
   is the single source of truth for its agent + model — there are **no**
   `--agent` / `--model` launch flags; use `--with-config` (e.g.
@@ -1073,6 +1074,36 @@ COMPOSES with the escape hatch — the prompt rides its usual delivery
 path (stdin for claude/codex, positional for opencode) while the
 `-- <args>` still append to argv (dedup lets a hand-passed flag suppress
 the generated equivalent).
+
+### Resume
+
+`--resume[=<session>]` / `--resume-last` are ONE vendor-neutral intent
+(`providers::Resume` — `Picker` / `Last` / `Session(id)`) that each
+builder spells in its own CLI, the same shape `--mode` already has. The
+harness rides the same enum: `Resume::Session(resume_token)` replaced
+`HarnessProjection.resume`, so the by-id path has one implementation
+rather than a CLI copy and a harness copy.
+
+| Intent | claude | codex | opencode |
+| ------ | ------ | ----- | -------- |
+| `Picker` | `--resume` | `resume` | **refused** |
+| `Last` | `--continue` | `resume --last` | `--continue` |
+| `Session` | `--resume <id>` | `resume <id>` | `--session <id>` |
+
+`--resume` takes `require_equals` so `hyprpilot --resume engineer`
+cannot read the positional `[PROFILE]` as a session id — the optional
+value and the positional would otherwise compete for the same token.
+
+Two refusals, in the two places that own them. **opencode registers no
+picker at all** (only `--continue` / `--session <id>`), so its builder
+bails — a fall back to `--continue` would resume a session the captain
+never chose. **No vendor offers a picker headless** (claude answers
+"requires a valid session ID … when used with `--print`",
+`codex exec resume` takes only an id or `--last`), so `spawn::prepare`
+bails while the launch still knows why it was asked for. Codex's
+`resume` is a SUBCOMMAND — of `codex` and again of `codex exec` — so it
+is INSERTED at index 0, or 1 behind `exec`, ahead of every generated
+option; claude's and opencode's flags are order-free and append.
 
 ### Multiplexer title
 

@@ -6,7 +6,7 @@ use crate::mcp::{expanded_raw, project_transport, MCPDefinition};
 use crate::resolve::profile::ResolvedProfile;
 
 use super::argv::{combined_args, has_flag};
-use super::{base_command, ensure_inline_size, HarnessProjection, SpawnCommand};
+use super::{base_command, ensure_inline_size, HarnessProjection, Resume, SpawnCommand};
 
 pub(super) fn build_claude(
     resolved: &ResolvedProfile,
@@ -14,6 +14,7 @@ pub(super) fn build_claude(
     mcp_defs: &[MCPDefinition],
     provider_args: Vec<String>,
     prompt: Option<&str>,
+    resume: Option<&Resume>,
     harness: Option<&HarnessProjection>,
 ) -> Result<SpawnCommand> {
     let mut command = base_command(resolved);
@@ -42,10 +43,19 @@ pub(super) fn build_claude(
                 command.args.push("--verbose".into());
             }
         }
-        if let Some(id) = harness.resume.as_deref() {
-            if !has_flag(&detect_args, "--resume", Some("-r")) {
-                command.args.push("--resume".into());
-                command.args.push(id.into());
+    }
+
+    // Two flags carry the three intents, so the dedup guard covers both
+    // spellings: a captain who passed either owns the whole choice.
+    if let Some(resume) = resume {
+        if !has_flag(&detect_args, "--resume", Some("-r")) && !has_flag(&detect_args, "--continue", Some("-c")) {
+            match resume {
+                Resume::Picker => command.args.push("--resume".into()),
+                Resume::Last => command.args.push("--continue".into()),
+                Resume::Session(id) => {
+                    command.args.push("--resume".into());
+                    command.args.push(id.clone());
+                }
             }
         }
     }
@@ -203,6 +213,63 @@ mod tests {
     use crate::config::AgentProvider;
     use crate::spawn::providers::build_command_cli as build_command;
     use crate::spawn::providers::fixtures::*;
+
+    /// claude spells the three intents with two flags, so each has to
+    /// be pinned separately — a picker projected as `--continue` would
+    /// silently resume the wrong conversation instead of asking.
+    #[test]
+    fn claude_projects_every_resume_intent() {
+        let cases = [
+            (Resume::Picker, vec!["--resume".to_string()]),
+            (Resume::Last, vec!["--continue".to_string()]),
+            (
+                Resume::Session("abc123".into()),
+                vec!["--resume".to_string(), "abc123".to_string()],
+            ),
+        ];
+
+        for (resume, expected) in cases {
+            let command = crate::spawn::providers::build_command(
+                &resolved(AgentProvider::ClaudeCode),
+                None,
+                &[],
+                vec![],
+                None,
+                Some(&resume),
+                None,
+            )
+            .unwrap();
+
+            let at = command
+                .args
+                .iter()
+                .position(|arg| arg == &expected[0])
+                .unwrap_or_else(|| panic!("{resume:?} projects {expected:?}, got {:?}", command.args));
+            assert_eq!(command.args[at..at + expected.len()], expected[..], "{resume:?}");
+        }
+    }
+
+    /// The captain naming either flag owns the whole choice — projecting
+    /// ours alongside would hand claude two conflicting resume targets.
+    #[test]
+    fn claude_resume_yields_to_a_hand_passed_flag() {
+        let command = crate::spawn::providers::build_command(
+            &resolved(AgentProvider::ClaudeCode),
+            None,
+            &[],
+            vec!["--continue".into()],
+            None,
+            Some(&Resume::Picker),
+            None,
+        )
+        .unwrap();
+
+        assert!(!command.args.iter().any(|arg| arg == "--resume"), "{:?}", command.args);
+        assert_eq!(
+            command.args.iter().filter(|arg| arg.as_str() == "--continue").count(),
+            1
+        );
+    }
 
     #[test]
     fn claude_provider_args_suppress_generated_model() {

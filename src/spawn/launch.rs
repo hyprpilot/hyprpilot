@@ -28,6 +28,15 @@ pub struct LaunchArgs {
     /// Provider-specific mode override mapped to the direct CLI where supported.
     #[arg(long)]
     mode: Option<String>,
+    /// Continue a previous conversation: bare opens the vendor's session
+    /// picker, `--resume=<session-id>` continues that one. opencode has
+    /// no picker, and no vendor offers one headless.
+    #[arg(long, value_name = "SESSION", num_args = 0..=1, require_equals = true, conflicts_with = "resume_last")]
+    resume: Option<Option<String>>,
+    /// Continue the most recent conversation without a picker — the one
+    /// resume shape every vendor supports.
+    #[arg(long = "resume-last")]
+    resume_last: bool,
     #[command(flatten)]
     with_config: WithConfigArgs,
     /// Extra arguments forwarded verbatim to the spawned provider CLI.
@@ -66,6 +75,12 @@ impl LaunchArgs {
         if self.mode.is_some() {
             offenders.push("--mode");
         }
+        if self.resume.is_some() {
+            offenders.push("--resume");
+        }
+        if self.resume_last {
+            offenders.push("--resume-last");
+        }
         if !self.provider_args.is_empty() {
             offenders.push("trailing `-- <provider args>`");
         }
@@ -86,6 +101,19 @@ impl LaunchArgs {
     /// subcommand (`profiles`) folds so its output mirrors a launch.
     pub fn into_config_patches(self) -> Result<Vec<Value>> {
         self.with_config.into_patches()
+    }
+
+    /// Which conversation `--resume` / `--resume-last` continue. clap
+    /// `conflicts_with` guarantees at most one is set, and a bare
+    /// `--resume` arrives as `Some(None)` — the picker.
+    fn resume(&self) -> Option<super::providers::Resume> {
+        if self.resume_last {
+            return Some(super::providers::Resume::Last);
+        }
+        match self.resume.as_ref()? {
+            Some(session) => Some(super::providers::Resume::Session(session.clone())),
+            None => Some(super::providers::Resume::Picker),
+        }
     }
 
     /// The explicit headless prompt from `--prompt` (inline) or
@@ -111,6 +139,7 @@ pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
     // Resolve the explicit `--prompt` / `--file` override BEFORE
     // `into_patches()` moves `args.with_config`.
     let prompt = args.prompt_override()?;
+    let resume = args.resume();
     // Whether `--with-config -` will drain stdin — captured BEFORE
     // `into_patches()` consumes it, so `launch_profile` knows stdin is
     // no longer available as a headless prompt source.
@@ -141,6 +170,7 @@ pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
                 .unwrap_or(0),
             // No launching harness on this path to speak for delegates.
             mcp_overlay: None,
+            resume,
         },
     )
 }
@@ -148,6 +178,42 @@ pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `require_equals` is what keeps `hyprpilot --resume engineer` from
+    /// reading the profile as a session id — the positional and the
+    /// optional value would otherwise compete for the same token.
+    #[test]
+    fn resume_flags_parse_into_their_intents() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Harness {
+            #[command(flatten)]
+            launch: LaunchArgs,
+        }
+
+        let parse = |argv: &[&str]| Harness::try_parse_from(argv).map(|parsed| parsed.launch);
+
+        assert_eq!(parse(&["hyprpilot"]).unwrap().resume(), None);
+        assert_eq!(
+            parse(&["hyprpilot", "--resume"]).unwrap().resume(),
+            Some(super::super::providers::Resume::Picker)
+        );
+        assert_eq!(
+            parse(&["hyprpilot", "--resume=abc123"]).unwrap().resume(),
+            Some(super::super::providers::Resume::Session("abc123".into()))
+        );
+        assert_eq!(
+            parse(&["hyprpilot", "--resume-last"]).unwrap().resume(),
+            Some(super::super::providers::Resume::Last)
+        );
+
+        let launch = parse(&["hyprpilot", "--resume", "engineer"]).expect("the profile stays positional");
+        assert_eq!(launch.profile_id.as_deref(), Some("engineer"));
+        assert_eq!(launch.resume(), Some(super::super::providers::Resume::Picker));
+
+        parse(&["hyprpilot", "--resume", "--resume-last"]).expect_err("the two intents conflict");
+    }
 
     #[test]
     fn subcommand_accepts_launch_args_with_no_launch_only_flags() {
