@@ -1236,13 +1236,14 @@ fn instructions() -> String {
      `spawn` and `session_send` take `wait: true` to block until the turn \
      ends instead — worth it only for a turn you expect to be short, since \
      a turn that outlives `timeout_seconds` comes back `running` anyway.\n\
-     If your client supports channels, a `<channel \
-     source=\"hyprpilot_harness\">` block appears in your context when a \
-     session finishes — read that session with `session_read`. It fires \
-     per TURN, not only when a conversation ends.\n\
+     If your client supports channels, a `<channel source=\""
+        .to_string()
+        + DEFAULT_HARNESS_SERVER_NAME
+        + "\">` block appears in your context when a session finishes — read \
+     that session with `session_read`. It fires per TURN, not only when a \
+     conversation ends.\n\
      Sessions are children of THIS server and die with it: they do not \
      survive a restart, and their transcripts go too."
-        .to_string()
 }
 
 #[cfg(test)]

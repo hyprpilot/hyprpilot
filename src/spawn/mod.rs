@@ -584,11 +584,15 @@ mod tests {
         let cfg = cfg_with_harness_on_every_profile();
 
         assert!(
-            prepared_servers(&cfg, 0, None).iter().any(|n| n == "hyprpilot_harness"),
+            prepared_servers(&cfg, 0, None)
+                .iter()
+                .any(|n| n == crate::config::mcp::DEFAULT_HARNESS_SERVER_NAME),
             "the session the captain started keeps its harness"
         );
         assert!(
-            !prepared_servers(&cfg, 1, None).iter().any(|n| n == "hyprpilot_harness"),
+            !prepared_servers(&cfg, 1, None)
+                .iter()
+                .any(|n| n == crate::config::mcp::DEFAULT_HARNESS_SERVER_NAME),
             "a delegate must not inherit one it can only refuse with"
         );
     }

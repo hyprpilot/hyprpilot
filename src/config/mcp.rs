@@ -42,21 +42,32 @@ pub const DEFAULT_MAX_SPAWN_DEPTH: usize = 1;
 /// See [`DEFAULT_MAX_SPAWN_DEPTH`] for why this fallback exists.
 pub const DEFAULT_MAX_SESSIONS: usize = 64;
 
-/// Default MCP server name for the skills surface.
+/// Fallback name for the skills surface — see
+/// [`DEFAULT_MAX_SPAWN_DEPTH`] for why a nested block needs one.
 ///
-/// **Renaming changes tool attribution** — `mcp__hyprpilot_skills__read_skill`
+/// The name a real launch INJECTS comes from `[mcp.skills] name`,
+/// seeded in `defaults.toml`: the catalog key is a config value, not a
+/// Rust one, so a captain renames a server by writing the field the
+/// injector already reads. This constant covers only a `Config`
+/// carrying no patches, and `defaults_seed_the_server_names` pins the
+/// pair equal.
+///
+/// **Renaming changes tool attribution** — `mcp__hyprpilot-skills__read_skill`
 /// becomes `mcp__<name>__read_skill` — so any skill or instruction file
 /// that names a tool by its prefix breaks with it. The `hyprpilot://`
 /// resource URIs are a fixed scheme and are NOT affected.
-pub const DEFAULT_SKILLS_SERVER_NAME: &str = "hyprpilot_skills";
+pub const DEFAULT_SKILLS_SERVER_NAME: &str = "hyprpilot-skills";
 
-/// Default MCP server name for the harness surface.
-pub const DEFAULT_HARNESS_SERVER_NAME: &str = "hyprpilot_harness";
+/// Fallback name for the harness surface — see
+/// [`DEFAULT_SKILLS_SERVER_NAME`].
+pub const DEFAULT_HARNESS_SERVER_NAME: &str = "hyprpilot-harness";
 
-/// Default MCP server name for the general-tools surface. Keeps the
-/// bare `hyprpilot` name: this is the server that grows whatever
-/// doesn't belong to a dedicated surface, so it is the one a captain
-/// reaches for by the product's own name.
+/// Fallback name for the general-tools surface — see
+/// [`DEFAULT_SKILLS_SERVER_NAME`]. Keeps the bare `hyprpilot` name:
+/// this is the server that grows whatever doesn't belong to a
+/// dedicated surface, so it is the one a captain reaches for by the
+/// product's own name — and with nothing to suffix, the kebab the
+/// other two carry has nothing to separate.
 pub const DEFAULT_TOOLS_SERVER_NAME: &str = "hyprpilot";
 
 /// `[mcp.serve]` — the auto-injected general-tools server.
@@ -560,18 +571,23 @@ mod tests {
         assert_eq!(harness.max_sessions, Some(7), "an unset leaf on the right inherits");
     }
 
-    /// `defaults.toml` is where a captain edits these numbers; the Rust
-    /// constants only cover a `Config` carrying no patches at all. Pin
-    /// them equal so the pair cannot drift into two different answers.
-    #[test]
-    fn defaults_seed_the_harness_ceilings() {
+    /// The `[mcp]` block `defaults.toml` seeds, as the resolver sees it.
+    fn seeded_mcp() -> McpConfig {
         let cfg: super::super::Config = toml::from_str(super::super::DEFAULTS).expect("defaults parse");
         let patches = cfg.patches.as_deref().expect("defaults seed [[patches]]");
         let mcp_value = patches
             .iter()
             .find_map(|p| p.as_object()?.get("mcp"))
             .expect("the default patch carries an mcp field");
-        let seeded: McpConfig = serde_json::from_value(mcp_value.clone()).expect("the seed deserializes");
+        serde_json::from_value(mcp_value.clone()).expect("the seed deserializes")
+    }
+
+    /// `defaults.toml` is where a captain edits these numbers; the Rust
+    /// constants only cover a `Config` carrying no patches at all. Pin
+    /// them equal so the pair cannot drift into two different answers.
+    #[test]
+    fn defaults_seed_the_harness_ceilings() {
+        let seeded = seeded_mcp();
         let harness = seeded.harness.expect("the seed carries [mcp.harness]");
 
         assert_eq!(harness.max_depth, Some(DEFAULT_MAX_SPAWN_DEPTH));
@@ -583,6 +599,28 @@ mod tests {
         assert_eq!(
             harness.enabled, None,
             "seeding `enabled` would turn the harness on for everyone — it stays the captain's call"
+        );
+    }
+
+    /// The name a server is INJECTED under is `[mcp.*] name`, and the
+    /// injector reads nothing else — so the seed is the real default and
+    /// the constants only cover a `Config` carrying no patches. Pinned
+    /// equal for the same reason the ceilings are.
+    #[test]
+    fn defaults_seed_the_server_names() {
+        let seeded = seeded_mcp();
+
+        assert_eq!(
+            seeded.serve.expect("the seed carries [mcp.serve]").name.as_deref(),
+            Some(DEFAULT_TOOLS_SERVER_NAME)
+        );
+        assert_eq!(
+            seeded.skills.expect("the seed carries [mcp.skills]").name.as_deref(),
+            Some(DEFAULT_SKILLS_SERVER_NAME)
+        );
+        assert_eq!(
+            seeded.harness.expect("the seed carries [mcp.harness]").name.as_deref(),
+            Some(DEFAULT_HARNESS_SERVER_NAME)
         );
     }
 

@@ -76,7 +76,7 @@ mcps:
 
 ::: info Reserved names
 
-Each in-tree server's resolved name is reserved — by default `hyprpilot`, `hyprpilot_skills`, and `hyprpilot_harness` (see [the `mcp` block](#the-mcp-block)). A configured server of that name is replaced by the injected entry, and renaming a server via `mcp.<server>.name` moves which name is reserved.
+Each in-tree server's resolved name is reserved — by default `hyprpilot`, `hyprpilot-skills`, and `hyprpilot-harness` (see [the `mcp` block](#the-mcp-block)). A configured server of that name is replaced by the injected entry, and renaming a server via `mcp.<server>.name` moves which name is reserved.
 
 :::
 
@@ -120,8 +120,8 @@ hyprpilot ships **three** in-tree MCP servers. Each is its own subcommand, its o
 | Server        | Subcommand              | Default name        | Serves                                                                                      | Default    |
 | ------------- | ----------------------- | ------------------- | ------------------------------------------------------------------------------------------- | ---------- |
 | General tools | `hyprpilot mcp serve`   | `hyprpilot`         | `open`                                                                                      | enabled    |
-| Skills        | `hyprpilot mcp skills`  | `hyprpilot_skills`  | `list_skills` / `read_skill` / `list_skill_references` / `read_skill_references` / `reload` | enabled    |
-| Agent harness | `hyprpilot mcp harness` | `hyprpilot_harness` | `list_profiles` / `spawn` / `session_*`                                                     | _disabled_ |
+| Skills        | `hyprpilot mcp skills`  | `hyprpilot-skills`  | `list_skills` / `read_skill` / `list_skill_references` / `read_skill_references` / `reload` | enabled    |
+| Agent harness | `hyprpilot mcp harness` | `hyprpilot-harness` | `list_profiles` / `spawn` / `session_*`                                                     | _disabled_ |
 
 The `mcp` block gates and configures all three:
 
@@ -159,7 +159,7 @@ mcp:
 
 A profile's `mcp` field wholesale-replaces this block. `autoAcceptTools` / `autoRejectTools` are glob-validated at config load (like the `ignore` lists) — a malformed glob errors at startup with a field-path message instead of silently failing at match time.
 
-Every per-server block accepts `enabled`, `name`, `autoAcceptTools`, and `autoRejectTools`. `name` is what the vendor prefixes tool calls with, so renaming the skills server to `docs` turns `mcp__hyprpilot_skills__read_skill` into `mcp__docs__read_skill` — anything that addresses a tool by name (a skill file, a system prompt) has to follow. The `hyprpilot://` resource URIs are a fixed scheme and never change. A per-server `autoAcceptTools` overrides the block-level default rather than merging with it.
+Every per-server block accepts `enabled`, `name`, `autoAcceptTools`, and `autoRejectTools`. The default names in the table above are not compiled in — they are seeded as `mcp.serve.name` / `mcp.skills.name` / `mcp.harness.name` in the shipped `[[patches]]`, and the injector reads that field and nothing else, so a rename is a config edit. `name` is what the vendor prefixes tool calls with, so renaming the skills server to `docs` turns `mcp__hyprpilot-skills__read_skill` into `mcp__docs__read_skill` — anything that addresses a tool by name (a skill file, a system prompt) has to follow. The `hyprpilot://` resource URIs are a fixed scheme and never change. A per-server `autoAcceptTools` overrides the block-level default rather than merging with it.
 
 ### `mcp.serve`
 

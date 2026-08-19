@@ -20,7 +20,7 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
 
-use crate::config::mcp::DEFAULT_TOOLS_SERVER_NAME;
+use crate::config::mcp::{DEFAULT_HARNESS_SERVER_NAME, DEFAULT_SKILLS_SERVER_NAME, DEFAULT_TOOLS_SERVER_NAME};
 
 use super::rpc::{
     object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown, RESULT_CACHE_SCOPE,
@@ -115,11 +115,12 @@ impl ServerHandler for ToolsServer {
 
 impl ToolsServer {
     fn instructions(&self) -> String {
-        String::from(
+        format!(
             "Hyprpilot general-tools MCP server. Use `open` to open a URL, \
              file, or directory in the OS default handler. Skills live on the \
-             separate `hyprpilot_skills` server (`list_skills` / `read_skill`); \
-             agent sessions on `hyprpilot_harness` (`spawn` / `session_*`).",
+             separate `{DEFAULT_SKILLS_SERVER_NAME}` server (`list_skills` / \
+             `read_skill`); agent sessions on `{DEFAULT_HARNESS_SERVER_NAME}` \
+             (`spawn` / `session_*`)."
         )
     }
 }
