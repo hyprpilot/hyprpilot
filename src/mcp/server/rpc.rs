@@ -305,25 +305,52 @@ pub(super) fn accept_resource_subscriptions(
 /// listing goes with it.
 ///
 /// The negotiation rule mirrors rmcp's `negotiate_protocol_version`
-/// (`pub(crate)`, so it cannot be called): echo the requested version
-/// when we support it, else fall back to our own.
+/// (`pub(crate)`, so it cannot be called): **sending `initialize` is
+/// itself the choice of legacy semantics**, whatever version the request
+/// names, because `2026-07-28` replaced the handshake with per-request
+/// metadata. So a legacy version we support is echoed, and anything else
+/// — a modern revision, or one we do not implement — negotiates down to
+/// the newest version in our set that still has a handshake.
+///
+/// Answering `2026-07-28` to an `initialize` would be the `ttlMs` bug
+/// from the other side: a handshake client told it agreed a revision
+/// whose result shapes it never asked to parse. Modern clients are
+/// unaffected — they open with `server/discover`, never `initialize`.
 pub(super) fn initialize_negotiated<H: ServerHandler>(
     handler: &H,
     request: rmcp::model::InitializeRequestParams,
     context: &rmcp::service::RequestContext<RoleServer>,
 ) -> rmcp::model::InitializeResult {
+    let supported = handler.supported_protocol_versions();
     let mut info = handler.get_info();
-    if handler
-        .supported_protocol_versions()
-        .contains(&request.protocol_version)
-    {
-        info.protocol_version = request.protocol_version.clone();
-    }
+    info.protocol_version =
+        if is_legacy_version(&request.protocol_version) && supported.contains(&request.protocol_version) {
+            request.protocol_version.clone()
+        } else {
+            // Unwrap-free: `supported_protocol_versions` is the constant
+            // above, which carries four handshake revisions.
+            newest_legacy_version(&supported).unwrap_or(info.protocol_version)
+        };
 
     let mut peer_info = request;
     peer_info.protocol_version = info.protocol_version.clone();
     context.peer.set_peer_info(peer_info);
     info
+}
+
+/// Whether `version` predates `2026-07-28`, the revision that replaced
+/// the `initialize` handshake with per-request metadata.
+fn is_legacy_version(version: &ProtocolVersion) -> bool {
+    version.as_str() < ProtocolVersion::V_2026_07_28.as_str()
+}
+
+/// The newest of `versions` that still has an `initialize` handshake.
+fn newest_legacy_version(versions: &[ProtocolVersion]) -> Option<ProtocolVersion> {
+    versions
+        .iter()
+        .filter(|version| is_legacy_version(version))
+        .max_by_key(|version| version.as_str())
+        .cloned()
 }
 
 /// Start serving from the connection's FIRST byte, with no handshake
@@ -571,6 +598,29 @@ mod tests {
         assert!(
             supported_contains(&supported_protocol_versions(), &ProtocolVersion::V_2026_07_28),
             "a client on the current revision must not be silently downgraded"
+        );
+    }
+
+    /// Sending `initialize` IS the choice of legacy semantics — the
+    /// revision it names does not override that, because `2026-07-28`
+    /// replaced the handshake with per-request metadata. So a handshake
+    /// naming a modern revision negotiates down rather than being
+    /// echoed, or the client is told it agreed result shapes it never
+    /// asked to parse. A modern client is unaffected: it opens with
+    /// `server/discover` and never reaches this rule.
+    #[test]
+    fn a_handshake_never_agrees_a_post_handshake_revision() {
+        let supported = supported_protocol_versions();
+
+        assert!(is_legacy_version(&ProtocolVersion::V_2025_11_25));
+        assert!(
+            !is_legacy_version(&ProtocolVersion::V_2026_07_28),
+            "the revision that retired the handshake is not a handshake revision"
+        );
+        assert_eq!(
+            newest_legacy_version(&supported),
+            Some(ProtocolVersion::V_2025_11_25),
+            "what an `initialize` naming anything newer has to come back with"
         );
     }
 

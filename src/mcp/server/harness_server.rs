@@ -41,12 +41,20 @@ impl HarnessServer {
     fn new(
         config: super::ConfigSource,
         max_sessions: usize,
+        max_live_sessions: usize,
         max_depth: usize,
         delegates: DelegatePolicy,
         delegate_mcp: Option<crate::config::McpConfig>,
     ) -> Self {
         Self {
-            harness: Arc::new(Harness::new(config, max_sessions, max_depth, delegates, delegate_mcp)),
+            harness: Arc::new(Harness::new(
+                config,
+                max_sessions,
+                max_live_sessions,
+                max_depth,
+                delegates,
+                delegate_mcp,
+            )),
             subscriptions: super::rpc::Subscriptions::default(),
         }
     }
@@ -552,20 +560,34 @@ impl ServerHandler for HarnessServer {
 /// subcommands rather than one behind a flag.
 #[derive(Debug, Args, Clone)]
 pub struct HarnessArgs {
-    /// How many agent sessions to retain before evicting the oldest
-    /// FINISHED ones (with their transcripts).
+    /// How many FINISHED agent sessions to retain before evicting the
+    /// oldest (with their transcripts). `0` retains every one.
     ///
     /// A conversation reuses its session however many turns it runs, so
     /// only distinct `spawn`s grow the table — this bounds a long-lived
     /// server's memory and temp directories. A running session is never
-    /// evicted. Raise it on a busy gateway that wants deeper history;
-    /// lower it where temp space is tight.
+    /// evicted and never counts against this. Raise it on a busy gateway
+    /// that wants deeper history; lower it where temp space is tight.
     #[arg(
         long = "max-sessions",
         default_value_t = crate::config::mcp::DEFAULT_MAX_SESSIONS,
         value_name = "N"
     )]
     pub max_sessions: usize,
+
+    /// How many sessions may RUN at once before `spawn` is refused. `0`
+    /// (the default) allows any number.
+    ///
+    /// Bounds breadth where `--max-depth` bounds recursion. Off by
+    /// default because the right number belongs to the host, not to
+    /// hyprpilot; set it where an agent fanning out wide would starve
+    /// the machine.
+    #[arg(
+        long = "max-live-sessions",
+        default_value_t = crate::config::mcp::DEFAULT_MAX_LIVE_SESSIONS,
+        value_name = "N"
+    )]
+    pub max_live_sessions: usize,
 
     /// Suppress the per-turn completion channel.
     ///
@@ -1082,6 +1104,7 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     let delegate_mcp = args.delegate_mcp.as_deref().map(parse_delegate_mcp).transpose()?;
     tracing::info!(
         max_sessions = args.max_sessions,
+        max_live_sessions = args.max_live_sessions,
         max_depth = args.max_depth,
         include_profiles = ?args.include_profiles,
         exclude_profiles = ?args.exclude_profiles,
@@ -1093,7 +1116,14 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     // our own. A non-empty sweep logs at `warn`.
     super::sessions::sweep_stale_sessions();
 
-    let handler = HarnessServer::new(config, args.max_sessions, args.max_depth, delegates, delegate_mcp);
+    let handler = HarnessServer::new(
+        config,
+        args.max_sessions,
+        args.max_live_sessions,
+        args.max_depth,
+        delegates,
+        delegate_mcp,
+    );
     // Clone the table BEFORE serving — it consumes the handler, and
     // `waiting()` consumes the `RunningService`, so this is the only
     // chance to keep a handle for the shutdown reap.

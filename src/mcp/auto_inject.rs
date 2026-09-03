@@ -109,6 +109,8 @@ pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf, spawn_depth: u
     let mut args = vec!["mcp".to_string(), "harness".to_string()];
     args.push("--max-sessions".to_string());
     args.push(harness.max_sessions().to_string());
+    args.push("--max-live-sessions".to_string());
+    args.push(harness.max_live_sessions().to_string());
     // The sidecar enforces the same cap on `spawn` that this function
     // enforced on injection. It cannot re-read the value: `[mcp.harness]`
     // is per-profile and only the launcher knows which profile was
@@ -534,6 +536,7 @@ mod tests {
                 enabled: Some(true),
                 max_depth: Some(3),
                 max_sessions: Some(9),
+                max_live_sessions: Some(4),
                 ..Default::default()
             }),
             ..McpConfig::default()
@@ -548,6 +551,29 @@ mod tests {
         };
         assert_eq!(pair("--max-depth").as_deref(), Some("3"), "got: {args:?}");
         assert_eq!(pair("--max-sessions").as_deref(), Some("9"), "got: {args:?}");
+        assert_eq!(pair("--max-live-sessions").as_deref(), Some("4"), "got: {args:?}");
+    }
+
+    /// An unset ceiling still rides argv, because the flag's own clap
+    /// default is what a HAND-started sidecar gets — and a captain who
+    /// cleared the seed means "no ceiling", not "fall back to whatever
+    /// the binary picks".
+    #[test]
+    fn an_unset_live_ceiling_rides_argv_as_zero() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let args = harness_args(&cfg);
+
+        let value = args
+            .iter()
+            .position(|a| a == "--max-live-sessions")
+            .and_then(|i| args.get(i + 1));
+        assert_eq!(value.map(String::as_str), Some("0"), "got: {args:?}");
     }
 
     /// Absent means "every delegate keeps its own resolved `[mcp]`",

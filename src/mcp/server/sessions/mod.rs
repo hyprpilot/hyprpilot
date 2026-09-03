@@ -421,13 +421,18 @@ impl SessionTable {
 
     /// Snapshot every session into a caller-owned shape. Takes a
     /// projection so the lock is released before anything is rendered.
+    ///
+    /// Running sessions first, then most-recent turn first. The table is
+    /// keyed by a v4 UUID, so its own order is noise — which put the two
+    /// sessions a caller is waiting on somewhere among dozens of retained
+    /// transcripts, in a listing whose whole job is answering "what is
+    /// happening right now".
     pub(crate) fn map_all<T>(&self, f: impl Fn(&Session) -> T) -> Vec<T> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .map(f)
-            .collect()
+        let guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let mut sessions: Vec<&Session> = guard.values().collect();
+        sessions.sort_by_key(|s| (s.status() != SessionStatus::Running, std::cmp::Reverse(s.last_turn_at)));
+
+        sessions.into_iter().map(f).collect()
     }
 
     /// Start another turn on an EXISTING session, keeping its handle.
@@ -512,7 +517,8 @@ impl SessionTable {
             .is_some()
     }
 
-    /// Drop the oldest finished sessions once the table grows past `cap`.
+    /// Drop the oldest finished sessions once they outnumber `cap`.
+    /// A `cap` of zero retains every one of them.
     ///
     /// Exited sessions cost a table entry and a transcript directory
     /// each. Without a bound, a caller that spawns steadily accumulates
@@ -520,19 +526,28 @@ impl SessionTable {
     /// evicted, oldest-by-last-turn first, so a live agent is never
     /// touched — and it is logged, because a caller whose transcript
     /// vanished deserves to find out why.
+    ///
+    /// Running sessions are not counted either, only spared: they hold a
+    /// live model connection rather than history, so counting them would
+    /// spend the retention budget on work still in flight and evict the
+    /// transcripts this cap exists to keep — the more sessions run at
+    /// once, the less history survives.
     pub(crate) fn evict_exited_over(&self, cap: usize) {
-        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        if guard.len() <= cap {
+        if cap == 0 {
             return;
         }
+        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let mut finished: Vec<(SystemTime, String)> = guard
             .values()
             .filter(|session| session.status() == SessionStatus::Exited)
             .map(|session| (session.last_turn_at, session.handle.clone()))
             .collect();
+        if finished.len() <= cap {
+            return;
+        }
         finished.sort_by_key(|(at, _)| *at);
 
-        let excess = guard.len() - cap;
+        let excess = finished.len() - cap;
         for (_, handle) in finished.into_iter().take(excess) {
             guard.remove(&handle);
             tracing::info!(%handle, cap, "mcp harness: evicted a finished session to bound the table");
@@ -1574,8 +1589,10 @@ mod tests {
         table.shutdown().await;
     }
 
-    /// Finished sessions are evicted oldest-first once the table grows
-    /// past the cap; a live one is never touched.
+    /// Finished sessions are evicted oldest-first once they outnumber
+    /// the cap. A live one is never touched and never counted — were it
+    /// counted, a busy sidecar would spend its history budget on work
+    /// still in flight — and it leads the listing.
     #[tokio::test]
     async fn eviction_bounds_the_table_without_touching_live_sessions() {
         let table = table();
@@ -1597,8 +1614,28 @@ mod tests {
         table.evict_exited_over(2);
 
         let remaining = table.map_all(|s| s.handle.clone());
-        assert_eq!(remaining.len(), 2, "the table must be bounded: {remaining:?}");
+        assert_eq!(
+            remaining.len(),
+            3,
+            "two retained transcripts plus the live session: {remaining:?}"
+        );
         assert!(remaining.contains(&live), "a running session is never evicted");
+        assert_eq!(
+            remaining.first(),
+            Some(&live),
+            "a listing leads with what is running: {remaining:?}"
+        );
+        assert!(
+            remaining.contains(finished.last().unwrap()),
+            "the newest finished session survives: {remaining:?}"
+        );
+
+        table.evict_exited_over(0);
+        assert_eq!(
+            table.map_all(|s| s.handle.clone()).len(),
+            3,
+            "a cap of zero retains everything"
+        );
 
         table.shutdown().await;
     }

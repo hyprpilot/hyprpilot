@@ -28,10 +28,11 @@ use crate::spawn::{LaunchOrigin, SpawnRequest};
 ///
 /// The default of one means a spawned agent cannot spawn its own: the
 /// lead delegates, the delegate works. A tree costs whatever its widest
-/// level costs, and only the root can see it — [`MAX_LIVE_SESSIONS`]
-/// bounds each sidecar separately, so N delegates each spawning N is N²
-/// processes no single ceiling catches. That is why raising `maxDepth`
-/// is a resource decision the captain makes deliberately.
+/// level costs, and only the root can see it — `maxLiveSessions`, where
+/// a captain sets one at all, bounds each sidecar separately, so N
+/// delegates each spawning N is N² processes no single ceiling catches.
+/// That is why raising `maxDepth` is a resource decision the captain
+/// makes deliberately.
 ///
 /// `spawn::prepare` writes it, so the depth that gated a session's
 /// harness injection and the depth that session reports are the same
@@ -163,19 +164,13 @@ pub(crate) struct SessionResource {
     pub status: String,
 }
 
-/// Ceiling on concurrently *running* sessions. Depth bounds recursion;
-/// this bounds breadth. Both matter: a profile's `command` is an
-/// arbitrary binary, so an agent that can spawn without limit is an
-/// agent that can exhaust the host.
-const MAX_LIVE_SESSIONS: usize = 8;
-
-// Both ceilings a real launch uses are seeded in `defaults.toml` and
+// Every ceiling a real launch uses is seeded in `defaults.toml` and
 // resolved by the launcher, which hands them to `Harness::new`. The
 // fallbacks in `config::mcp` cover only a hand-started sidecar (via the
 // clap defaults) and the fixtures below — nothing here reads them
 // outside tests.
 #[cfg(test)]
-use crate::config::mcp::{DEFAULT_MAX_SESSIONS, DEFAULT_MAX_SPAWN_DEPTH};
+use crate::config::mcp::{DEFAULT_MAX_LIVE_SESSIONS, DEFAULT_MAX_SESSIONS, DEFAULT_MAX_SPAWN_DEPTH};
 
 /// Cap on bytes returned by a single `session_read` / inline `spawn`
 /// result. Well under Hermes' 150000-byte tool-output limit, so a
@@ -317,6 +312,12 @@ pub(crate) struct Harness {
     depth: usize,
     max_depth: usize,
     max_sessions: usize,
+    /// Ceiling on concurrently *running* sessions, `0` for none. Depth
+    /// bounds recursion; this bounds breadth. A profile's `command` is
+    /// an arbitrary binary, so this is the number that decides whether
+    /// one sidecar can exhaust the host — off by default because only
+    /// the captain knows what their machine can carry.
+    max_live_sessions: usize,
     delegates: DelegatePolicy,
     /// `[mcp.harness.mcp]` from the profile that launched this sidecar,
     /// folded over every delegate's own resolved `[mcp]`.
@@ -327,6 +328,7 @@ impl Harness {
     pub(crate) fn new(
         config: ConfigSource,
         max_sessions: usize,
+        max_live_sessions: usize,
         max_depth: usize,
         delegates: DelegatePolicy,
         delegate_mcp: Option<crate::config::McpConfig>,
@@ -341,9 +343,8 @@ impl Harness {
             sessions: SessionTable::new(),
             depth,
             max_depth,
-            // A zero would evict every finished session the moment it
-            // finished, making `session_read` useless on a completed run.
-            max_sessions: max_sessions.max(1),
+            max_sessions,
+            max_live_sessions,
             delegates,
             delegate_mcp,
         }
@@ -387,12 +388,16 @@ impl Harness {
                 self.depth, self.max_depth
             ));
         }
-        let live = self.sessions.live();
-        if live >= MAX_LIVE_SESSIONS {
-            return Err(format!(
-                "spawn refused: {live} sessions already running (limit {MAX_LIVE_SESSIONS}). \
-                 Call `session_kill` on a finished or runaway session first."
-            ));
+        if self.max_live_sessions > 0 {
+            let live = self.sessions.live();
+            if live >= self.max_live_sessions {
+                return Err(format!(
+                    "spawn refused: {live} sessions already running (`[mcp.harness] maxLiveSessions` = {}). \
+                     Call `session_kill` on a finished or runaway session first, or raise the ceiling on \
+                     the profile that launched this session.",
+                    self.max_live_sessions
+                ));
+            }
         }
 
         Ok(())
@@ -1095,7 +1100,14 @@ impl Harness {
         let summary = if rows.is_empty() {
             "No sessions. Call `spawn` to start one.".to_string()
         } else {
-            let mut out = format!("{} session(s):\n", rows.len());
+            let running = rows
+                .iter()
+                .filter(|row| row["status"] == SessionStatus::Running.as_str())
+                .count();
+            let mut out = format!(
+                "{running} running, {} finished (running first):\n",
+                rows.len() - running
+            );
             for row in &rows {
                 out.push_str(&format!(
                     "- {} [{}] {} ({})\n",
@@ -1817,6 +1829,7 @@ mod tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
             DEFAULT_MAX_SPAWN_DEPTH,
             policy(Some(&["personal/*"]), &[]),
             None,
@@ -1855,6 +1868,7 @@ mod tests {
         let mut harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
             DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
             None,
@@ -1880,6 +1894,7 @@ mod tests {
         let mut harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
             2,
             DelegatePolicy::default(),
             None,
@@ -1905,6 +1920,7 @@ mod tests {
         let mut harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
             0,
             DelegatePolicy::default(),
             None,
@@ -1912,6 +1928,75 @@ mod tests {
         harness.depth = 0;
 
         assert!(harness.check_capacity().is_err(), "maxDepth = 0 denies everyone");
+    }
+
+    /// The live ceiling binds on RUNNING sessions when the captain sets
+    /// one, and is absent entirely at its default of zero — an agent
+    /// fanning out wide is the ordinary case, and only the captain knows
+    /// what their host can carry.
+    #[tokio::test]
+    async fn the_live_ceiling_binds_only_when_set() {
+        let sleeper = || crate::spawn::providers::SpawnCommand {
+            program: "sleep".into(),
+            args: vec!["30".into()],
+            env: Default::default(),
+            cwd: None,
+            stdin_prompt: None,
+        };
+        let start = |harness: &Harness| {
+            harness
+                .sessions
+                .spawn(
+                    sleeper(),
+                    "p".into(),
+                    crate::config::AgentProvider::ClaudeCode,
+                    super::super::sessions::Provenance {
+                        program: "sleep".into(),
+                        argv: Vec::new(),
+                        env_keys: Vec::new(),
+                        model: None,
+                        effort: None,
+                        mode: None,
+                        prompt_bytes: 0,
+                    },
+                    super::super::sessions::LaunchShape::default(),
+                )
+                .expect("the fixture child starts")
+        };
+
+        let capped = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            1,
+            DEFAULT_MAX_SPAWN_DEPTH,
+            DelegatePolicy::default(),
+            None,
+        );
+        assert!(capped.check_capacity().is_ok(), "an empty table is under any ceiling");
+        start(&capped);
+        assert!(
+            capped.check_capacity().is_err(),
+            "one running session must fill a ceiling of one"
+        );
+
+        let uncapped = Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
+            DEFAULT_MAX_SPAWN_DEPTH,
+            DelegatePolicy::default(),
+            None,
+        );
+        for _ in 0..3 {
+            start(&uncapped);
+        }
+        assert!(
+            uncapped.check_capacity().is_ok(),
+            "the default ceiling of zero refuses nothing"
+        );
+
+        capped.sessions.shutdown().await;
+        uncapped.sessions.shutdown().await;
     }
 
     /// The handle is a session's only identifier, so its URI must be a
@@ -2091,6 +2176,7 @@ mod tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
             DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
             None,
@@ -2166,6 +2252,7 @@ mod tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
             DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
             None,
@@ -2770,6 +2857,7 @@ mod task_tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
             DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
             None,
@@ -2815,6 +2903,7 @@ mod task_tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
             DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
             None,
@@ -2883,6 +2972,7 @@ mod task_tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
             DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
             None,
@@ -2940,6 +3030,7 @@ mod task_tests {
         let harness = Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
             DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
             None,

@@ -56,7 +56,12 @@ set_title = true
 #
 # `maxSessions` — finished sessions retained per sidecar before the
 # oldest are evicted with their transcripts. A running session is never
-# evicted.
+# evicted and never counts against this. `0` retains everything.
+#
+# `maxLiveSessions` — sessions allowed to RUN at once before `spawn` is
+# refused. `0`, the default, allows any number: how many agents are
+# worth running at once belongs to your machine and your work, not to
+# this file. Set it on a shared or resource-tight host.
 #
 # Written snake_case to match the rest of this file. Both spellings
 # parse, but patches merge by KEY STRING before anything is typed, so a
@@ -67,6 +72,7 @@ set_title = true
 name = "hyprpilot-harness"
 max_depth = 1
 max_sessions = 64
+max_live_sessions = 0
 notify_on_complete = true
 
 # `name` is the key the vendor's MCP catalog is written under, so it is

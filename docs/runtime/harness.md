@@ -118,7 +118,7 @@ One corollary worth stating: a scoped-out id that **is** configured refuses diff
 3. **`session_status { session }`** until it reports `exited` — do **not** call `spawn` again for the same conversation. It reads no transcript, and its `transcriptBytes` tells you whether a running agent is progressing or wedged, which `status` alone cannot. To watch the output as it arrives instead, follow with `session_read { session, wait: true }`.
 4. **`session_read { session }`** for the transcript once it has finished.
 5. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one.
-6. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports the concurrency limit. It is state-aware, like `session_send`: on a **running** session it terminates the agent and keeps the transcript, so you can still read why; on an **already-finished** one it reaps the session and its transcript. Calling it twice is the natural stop-then-clean-up, and the result's `action` says which happened.
+6. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports a `max_live_sessions` ceiling. It is state-aware, like `session_send`: on a **running** session it terminates the agent and keeps the transcript, so you can still read why; on an **already-finished** one it reaps the session and its transcript. Calling it twice is the natural stop-then-clean-up, and the result's `action` says which happened.
 7. **`session_list`** any time you need to recover a handle you lost.
 
 ### The handle is the session's id
@@ -148,7 +148,7 @@ The session handle rides `_meta` rather than being parsed out of the task id: ev
 
 `tasks/cancel` cancels **that turn**, not the session. Terminal states are immutable, so cancelling a task that already finished is a no-op — deliberately, because routing it through `session_kill` (which reaps an already-finished session) meant a spec-legal cancel of a completed task killed the running turn and deleted the transcript. An unknown handle is `-32602`, matching `tasks/get`.
 
-**Task ids do not outlive the sidecar.** SEP-2663 presents a task id as a durable handle you can resume polling after a client restart; that assumption does not hold here. Sessions die with `hyprpilot mcp harness`, and finished ones are also dropped by `--max-sessions` eviction and by `session_kill`. `ttl_ms` is `null` because retention is bounded by count and by process lifetime, not by a duration — any number would be a stronger promise than we can keep. `tasks/update` is unimplemented (`-32601`): the harness never emits `input_required`, so no task can have outstanding `inputRequests`.
+**Task ids do not outlive the sidecar.** SEP-2663 presents a task id as a durable handle you can resume polling after a client restart; that assumption does not hold here. Sessions die with `hyprpilot mcp harness`, and finished ones are also dropped by `max_sessions` eviction and by `session_kill`. `ttl_ms` is `null` because retention is bounded by count and by process lifetime, not by a duration — any number would be a stronger promise than we can keep. `tasks/update` is unimplemented (`-32601`): the harness never emits `input_required`, so no task can have outstanding `inputRequests`.
 
 **What this does not give you.** `notifications/tasks` is pushed when a turn ends, but rmcp will not route task notifications through `subscriptions/listen` (`SubscriptionFilter` has no `taskIds` field yet), so a client that does not handle the method drops it silently — the same contract as the Claude channel. Polling `tasks/get` is the supported path today.
 
@@ -415,16 +415,20 @@ The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcru
 
 ## Limits
 
-| Limit                       | Value                 | Enforced by                                                                                                                      |
-| --------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Concurrent running sessions | 8                     | `spawn` refused past the ceiling; `session_kill` a finished or runaway one to free a slot.                                       |
-| Spawn nesting depth         | 1 (`max_depth`)       | `HYPRPILOT_SPAWN_DEPTH` env, stamped on every launch. At the cap no harness is injected, and `spawn` is refused.                 |
-| Transcript read per call    | 60,000 bytes          | Caps `session_read` and an inline `spawn`/`session_send` result.                                                                 |
-| Default tail                | 200 lines             | `session_read`'s default when `cursor` is omitted.                                                                               |
-| Default turn timeout        | 300 seconds           | How long `spawn`/`session_send` block when asked to `wait: true`, before reporting status `running`. Inert by default.           |
-| Retained sessions           | 64 (`--max-sessions`) | Past this, the oldest **finished** sessions are evicted (with their transcripts) and logged. A running session is never evicted. |
+| Limit                          | Value                         | Enforced by                                                                                                                                        |
+| ------------------------------ | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Concurrent running sessions    | none (`max_live_sessions: 0`) | Off by default. Set a number and `spawn` is refused past it; `session_kill` a finished or runaway session to free a slot.                          |
+| Spawn nesting depth            | 1 (`max_depth`)               | `HYPRPILOT_SPAWN_DEPTH` env, stamped on every launch. At the cap no harness is injected, and `spawn` is refused.                                   |
+| Transcript read per call       | 60,000 bytes                  | Caps `session_read` and an inline `spawn`/`session_send` result.                                                                                   |
+| Default tail                   | 200 lines                     | `session_read`'s default when `cursor` is omitted.                                                                                                 |
+| Default turn timeout           | 300 seconds                   | How long `spawn`/`session_send` block when asked to `wait: true`, before reporting status `running`. Inert by default.                             |
+| Retained **finished** sessions | 64 (`max_sessions`)           | Past this, the oldest are evicted (with their transcripts) and logged. A running session is never evicted and never counted. `0` retains them all. |
 
-Only distinct `spawn`s grow the table — a conversation reuses its session however many turns it runs — so the retention limit bounds a long-lived server's memory and temp directories without a tool you have to remember to call. Raise `--max-sessions` on a busy gateway that wants deeper history; lower it where temp space is tight.
+Only distinct `spawn`s grow the table — a conversation reuses its session however many turns it runs — so the retention limit bounds a long-lived server's memory and temp directories without a tool you have to remember to call. Raise `max_sessions` on a busy gateway that wants deeper history; lower it where temp space is tight.
+
+**Running sessions are outside the retention count, not merely spared by it.** A running session holds a live model connection rather than history, so counting one would spend the retention budget on work still in flight: with the ceiling off, enough concurrent agents would evict every transcript the cap exists to keep, and the busier the sidecar the less history survived it. `session_list` reflects the same priority — running sessions lead, then the most recent turn first — so what is happening right now is never buried among retained transcripts.
+
+**The concurrency ceiling is off by default.** How many agents are worth running at once is a property of your machine and your work, so hyprpilot does not guess: `spawn` refuses nothing until you set `mcp.harness.max_live_sessions`. Set it on a shared or resource-tight host, where a profile's `command` being an arbitrary binary makes an unbounded fan-out something the host pays for. Leave it where fanning out wide is the point.
 
 To free a session earlier than the limit would, call `session_kill` on it: on a finished session that reaps it and its transcript immediately.
 
@@ -437,7 +441,7 @@ Raise `max_depth` and both move together: at `2` your delegates get a harness an
 
 **The raise has to reach the delegate's own block**, because the gate reads the cap from whichever block it is deciding on. An unscoped patch does that; so does `mcp.harness.mcp.harness.max_depth` on the lead. A raise scoped to the lead alone (`$match: { profile: gateway }`) leaves workers at the seeded `1`, so they still get no harness. The same rule read the other way: a worker profile carrying its own raised `max_depth` may delegate regardless of what the lead's cap says.
 
-That is a resource decision, not a security one. Each sidecar enforces the concurrency ceiling over _its own_ table and cannot see any other's, so allowing one more level lets N delegates each run N sessions — N² processes no single ceiling catches, none of them visible to the lead that started the tree. Keeping the default at 1 makes every session a direct child of the caller who can list and kill it, and leaves the concurrency ceiling as the one number that describes the whole fan-out. Since a profile's `command` can be any binary, an agent that could spawn without limit could exhaust the host. There is no upper bound on `max_depth`; the trade is yours.
+That is a resource decision, not a security one. A `max_live_sessions` ceiling — where you set one at all — is enforced by each sidecar over _its own_ table and cannot see any other's, so allowing one more level lets N delegates each run N sessions: N² processes no single ceiling catches, none of them visible to the lead that started the tree. Keeping the default at 1 makes every session a direct child of the caller who can list and kill it, so one ceiling on that caller still describes the whole fan-out. Since a profile's `command` can be any binary, a tree that spawns without limit can exhaust the host — raise `max_depth` and a concurrency ceiling stops being a number you can reason about. There is no upper bound on `max_depth`; the trade is yours.
 
 ## What your delegates can reach
 

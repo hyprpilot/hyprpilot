@@ -49,7 +49,7 @@ pub(super) fn pick_profile(profiles: Vec<ProfileSummary>) -> Result<ProfileSumma
         bail!("no profiles configured");
     }
 
-    // nucleo-picker 0.11 has no public initial-cursor setter — `pick()`
+    // nucleo-picker has no public initial-cursor setter — `pick()`
     // always starts the cursor on match index 0. With an empty query
     // that's the first-inserted item, so hoisting the `[profile] default`
     // entry to the front pre-selects it under the cursor (Enter launches
