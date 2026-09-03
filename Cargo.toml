@@ -44,7 +44,11 @@ tokio = { version = "1.53", features = ["full"] }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "tracing-log"] }
-nucleo-picker = "0.11.1"
+# Interactive profile picker. 0.12 matches through `ncp-matcher`, which
+# reaches `tinyvec` — whose 1.13.0 does not compile (`vec!` resolves to
+# the `alloc::vec` module it imports). Cargo.lock therefore holds
+# tinyvec at 1.12.0; drop the pin once 1.13.1 lands or 1.13.0 is yanked.
+nucleo-picker = "0.12.1"
 path-absolutize = "4.0.1"
 merge = { version = "0.2.0", features = ["derive"] }
 # Skills MCP server. `transport-io` adds the stdio transport on top of the
