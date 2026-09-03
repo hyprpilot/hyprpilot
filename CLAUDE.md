@@ -125,7 +125,7 @@ hyprpilot profiles              # table of configured profiles
 hyprpilot profiles --json       # machine-readable
 hyprpilot mcp serve             # general tools (`open`)
 hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[]}'
-hyprpilot mcp harness --max-sessions 64
+hyprpilot mcp harness --max-sessions 64 --max-live-sessions 0
 ```
 
 - **Bare launch** picks the profile via the optional positional
@@ -584,8 +584,8 @@ Skills reach the agent **only** through the skills server.
   `autoAcceptTools`, `autoRejectTools`, plus their own fields:
   `[mcp.skills].dirs` (`Vec<SkillEntry { dir, ignore }>`, default
   seed `~/.config/hyprpilot/skills`) and `[mcp.harness]`'s
-  `maxDepth` / `maxSessions` / `notifyOnComplete` / `includeProfiles` /
-  `excludeProfiles` / `mcp`.
+  `maxDepth` / `maxSessions` / `maxLiveSessions` / `notifyOnComplete` /
+  `includeProfiles` / `excludeProfiles` / `mcp`.
   A per-server tool-policy glob list OVERRIDES the `[mcp]`-level one
   rather than merging. `[mcp.harness].enabled` defaults to **false**
   and that is a security property, not a preference — a profile's
@@ -607,7 +607,8 @@ Skills reach the agent **only** through the skills server.
   and `env` are keyed by vendor server name and env var, which must
   survive verbatim. Consequence: patches merge by KEY STRING before
   anything is typed, so writing a `defaults.toml`-seeded key
-  (`maxDepth` / `maxSessions` / `notifyOnComplete`) in the OTHER
+  (`maxDepth` / `maxSessions` / `maxLiveSessions` /
+  `notifyOnComplete`) in the OTHER
   spelling reaches serde as a duplicate field and fails config load.
   Loud, pinned by a test, and the reason to write a seeded key the way
   the seed writes it.
@@ -895,10 +896,27 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   built in `harness.rs`. **The content is a fixed template**: never
   interpolate agent output, or a spawned agent writes into its parent's
   context through a path the parent never called.
-- **Bounded retention.** `--max-sessions` (default 64) evicts the oldest
-  *finished* sessions; a running one is never touched. `session_kill` is
-  state-aware — it terminates a running session (keeping the transcript)
-  and reaps an already-finished one.
+- **Bounded retention counts FINISHED sessions only.** `maxSessions`
+  (default 64, `0` retains everything) evicts the oldest *finished*
+  ones; a running session is never evicted AND never counted. Counting
+  one would spend the history budget on work still in flight, so with
+  the concurrency ceiling off, enough concurrent agents would evict
+  every transcript the cap exists to keep. `session_kill` is
+  state-aware — it terminates a running session (keeping the
+  transcript) and reaps an already-finished one.
+- **The concurrency ceiling is OFF by default.**
+  `[mcp.harness].maxLiveSessions` (default `0` = unlimited) refuses
+  `spawn` past N *running* sessions. It bounds breadth where `maxDepth`
+  bounds recursion, and it is off because how many agents a host can
+  carry is the captain's fact, not ours — a resource knob for a shared
+  or tight machine, not a safety boundary (`spawn` runs an arbitrary
+  binary either way). Rides argv as `--max-live-sessions`, the same way
+  `--max-sessions` does.
+- **Listings lead with what is RUNNING**, then most-recent turn first
+  (`SessionTable::map_all`). The table is keyed by UUID, so its own
+  order is noise — which scattered the sessions a caller is waiting on
+  among dozens of retained transcripts, in a listing whose whole job is
+  answering what is happening now.
 - **`with_config` is an ALLOW-list** (`model` / `effort` / `mode`). A
   deny-list of `command`/`args`/`env` was not the reachable surface:
   `mcps` carries inline `mcp_servers` with their own `command`, and

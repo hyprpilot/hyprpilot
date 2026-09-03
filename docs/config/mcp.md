@@ -146,6 +146,7 @@ mcp:
   harness:
     enabled: true
     max_sessions: 64
+    max_live_sessions: 0
 ```
 
 | Field             | Type             | Default | What it does                                                                       |
@@ -185,17 +186,18 @@ Unlike the other two, this server is also gated on having something to serve: if
 | Field                | Type             | Default | What it does                                                                                                   |
 | -------------------- | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
 | `max_depth`          | int              | `1`     | Levels of delegation allowed. See below.                                                                       |
-| `max_sessions`       | int              | `64`    | Sessions retained before the oldest **finished** ones are evicted.                                             |
+| `max_sessions`       | int              | `64`    | **Finished** sessions retained before the oldest are evicted. `0` retains every one. See below.                |
+| `max_live_sessions`  | int              | `0`     | Sessions allowed to run at once before `spawn` is refused. `0` allows any number. See below.                   |
 | `notify_on_complete` | bool             | `true`  | Push a completion event into the lead's context when a turn finishes. See [Agent Harness](../runtime/harness). |
 | `includeProfiles`    | string[] (globs) | unset   | Profile ids **this launch** may delegate to. Unset applies no filter; `[]` means none. See below.              |
 | `excludeProfiles`    | string[] (globs) | `[]`    | Profile ids this launch may **not** delegate to. Beats `includeProfiles` on overlap.                           |
 | `mcp`                | `mcp` block      | unset   | The `[mcp]` block every delegate this harness spawns receives. See below.                                      |
 
-`max_depth`, `max_sessions` and `notify_on_complete` are seeded by the compiled defaults, so your own config overrides them per field without restating the rest.
+`max_depth`, `max_sessions`, `max_live_sessions` and `notify_on_complete` are seeded by the compiled defaults, so your own config overrides them per field without restating the rest.
 
 ::: warning Write a seeded key the way the seed writes it
 
-Config keys accept both `snake_case` and `camelCase`, but patches merge by **key string** before anything is typed. These three are seeded `snake_case`, so overriding one as `maxDepth` / `maxSessions` / `notifyOnComplete` arrives as a second key and fails config load with `duplicate field`. Every other key is unaffected — nothing seeds them, so there is nothing to collide with.
+Config keys accept both `snake_case` and `camelCase`, but patches merge by **key string** before anything is typed. These four are seeded `snake_case`, so overriding one as `maxDepth` / `maxSessions` / `maxLiveSessions` / `notifyOnComplete` arrives as a second key and fails config load with `duplicate field`. Every other key is unaffected — nothing seeds them, so there is nothing to collide with.
 
 :::
 
@@ -216,7 +218,21 @@ How many levels deep delegation may go. It is read in exactly one place — the 
 
 The injection half is **absolute** — no `enabled: true` re-opens it, because a harness at the cap could only ever refuse `spawn`, so injecting one buys a long-lived process and seven tools that exist to error.
 
-**Raising it is a resource decision, not a security one.** Each sidecar's concurrency ceiling covers only its own table, so an extra level lets N delegates each run N sessions — a fan-out no single ceiling catches and the lead that started the tree cannot see. There is deliberately no upper bound; the trade is yours to make.
+**Raising it is a resource decision, not a security one.** A `max_live_sessions` ceiling, where you set one at all, covers only its own sidecar's table, so an extra level lets N delegates each run N sessions — a fan-out no single ceiling catches and the lead that started the tree cannot see. There is deliberately no upper bound; the trade is yours to make.
+
+### `mcp.harness.max_live_sessions`
+
+How many sessions this sidecar may have **running** at once. Past it, `spawn` is refused with a message naming the knob; `session_kill` on a finished or runaway session frees a slot. It bounds breadth where `max_depth` bounds recursion.
+
+**It is `0` — off — by default.** How many agents are worth running at once is a property of your machine and your work, and hyprpilot has no way to guess it, so it refuses nothing until you say otherwise. Set a number on a shared or resource-tight host, where a profile's `command` being an arbitrary binary makes an unbounded fan-out something the host pays for. Leave it at `0` where an agent fanning out wide is exactly the point.
+
+### `mcp.harness.max_sessions`
+
+How many **finished** sessions are retained before the oldest are evicted with their transcripts. `0` retains all of them.
+
+Running sessions are outside this count, not merely spared by it — they hold a live model connection rather than history. Counting one would spend the retention budget on work still in flight, so with the concurrency ceiling off, enough concurrent agents would evict every transcript the cap exists to keep. `session_list` follows the same priority: running sessions lead, then most recent turn first.
+
+Only distinct `spawn`s grow the table — a conversation reuses its session however many turns it runs — so this bounds a long-lived sidecar's memory and temp directories without a tool you have to remember to call.
 
 ### `mcp.harness.mcp`
 

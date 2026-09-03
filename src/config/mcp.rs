@@ -42,6 +42,14 @@ pub const DEFAULT_MAX_SPAWN_DEPTH: usize = 1;
 /// See [`DEFAULT_MAX_SPAWN_DEPTH`] for why this fallback exists.
 pub const DEFAULT_MAX_SESSIONS: usize = 64;
 
+/// See [`DEFAULT_MAX_SPAWN_DEPTH`] for why this fallback exists.
+///
+/// Zero is unlimited, and it is the default: how many agents are worth
+/// running at once is a property of the captain's machine and their
+/// work, not something this crate can pick for them. The ceiling stays
+/// available for a shared or resource-tight host.
+pub const DEFAULT_MAX_LIVE_SESSIONS: usize = 0;
+
 /// Fallback name for the skills surface — see
 /// [`DEFAULT_MAX_SPAWN_DEPTH`] for why a nested block needs one.
 ///
@@ -151,10 +159,29 @@ pub struct HarnessServerConfig {
     #[garde(skip)]
     pub name: Option<String>,
 
-    /// Sessions retained before the oldest finished ones are evicted.
+    /// Finished sessions retained before the oldest are evicted. `0`
+    /// retains every one of them.
+    ///
+    /// Counts only finished sessions: a running one holds a live model
+    /// connection rather than history, and evicting it is exactly what
+    /// this must never do. Were running sessions counted, a busy sidecar
+    /// would spend its whole retention budget on work still in flight
+    /// and drop the transcripts the cap exists to keep.
     #[garde(skip)]
     #[serde(alias = "max_sessions")]
     pub max_sessions: Option<usize>,
+
+    /// Sessions allowed to run at once before `spawn` is refused. `0`
+    /// (the default) allows any number.
+    ///
+    /// Breadth, where `max_depth` is recursion: a profile's `command` is
+    /// an arbitrary binary, so a ceiling here is what stops one sidecar
+    /// exhausting the host. Off by default because the right number is a
+    /// property of the machine — set it on a shared or resource-tight
+    /// host, leave it where an agent fanning out wide is the point.
+    #[garde(skip)]
+    #[serde(alias = "max_live_sessions")]
+    pub max_live_sessions: Option<usize>,
 
     /// Push a completion event into the lead agent's context when a
     /// turn finishes. Defaults to `true`.
@@ -210,10 +237,11 @@ pub struct HarnessServerConfig {
     /// (`d < maxDepth`), and whether a running sidecar at depth `d` may
     /// `spawn` (same comparison). `0` denies both everywhere.
     ///
-    /// Raising it is a resource decision, not a security one: a session
-    /// ceiling bounds one sidecar's own table, so N delegates each
-    /// running N sessions is a fan-out no single ceiling catches and the
-    /// lead cannot see. Deliberately unbounded — the captain owns that
+    /// Raising it is a resource decision, not a security one: a
+    /// `maxLiveSessions` ceiling, where one is set at all, bounds one
+    /// sidecar's own table, so N delegates each running N sessions is a
+    /// fan-out no single ceiling catches and the lead cannot see.
+    /// Deliberately unbounded — the captain owns that
     /// trade, and a validator guessing a ceiling would only be wrong
     /// somewhere else.
     #[garde(skip)]
@@ -272,6 +300,13 @@ impl HarnessServerConfig {
     #[must_use]
     pub fn max_sessions(&self) -> usize {
         self.max_sessions.unwrap_or(DEFAULT_MAX_SESSIONS)
+    }
+
+    /// Sessions this sidecar may run at once — see
+    /// [`Self::max_live_sessions`].
+    #[must_use]
+    pub fn max_live_sessions(&self) -> usize {
+        self.max_live_sessions.unwrap_or(DEFAULT_MAX_LIVE_SESSIONS)
     }
 
     /// The delegate overlay, unboxed. Absent declares nothing, which
@@ -592,6 +627,7 @@ mod tests {
 
         assert_eq!(harness.max_depth, Some(DEFAULT_MAX_SPAWN_DEPTH));
         assert_eq!(harness.max_sessions, Some(DEFAULT_MAX_SESSIONS));
+        assert_eq!(harness.max_live_sessions, Some(DEFAULT_MAX_LIVE_SESSIONS));
         assert_eq!(
             harness.notify_on_complete,
             Some(HarnessServerConfig::default().notifies_on_complete())
@@ -668,9 +704,11 @@ mod tests {
     #[test]
     fn either_casing_parses_to_the_same_block() {
         let camel: HarnessServerConfig =
-            toml::from_str("maxDepth = 2\nmaxSessions = 9\nnotifyOnComplete = false\n").expect("camelCase parses");
+            toml::from_str("maxDepth = 2\nmaxSessions = 9\nmaxLiveSessions = 4\nnotifyOnComplete = false\n")
+                .expect("camelCase parses");
         let snake: HarnessServerConfig =
-            toml::from_str("max_depth = 2\nmax_sessions = 9\nnotify_on_complete = false\n").expect("snake_case parses");
+            toml::from_str("max_depth = 2\nmax_sessions = 9\nmax_live_sessions = 4\nnotify_on_complete = false\n")
+                .expect("snake_case parses");
 
         assert_eq!(camel, snake);
     }
