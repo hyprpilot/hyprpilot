@@ -327,7 +327,16 @@ impl SkillsServer {
                     builder.build().ok()
                 };
                 ResolvedSkillEntry {
-                    dir: entry.dir,
+                    // Absolutized here because notify joins a relative
+                    // watch path onto the process cwd while we would
+                    // keep the relative form — every event would then
+                    // fail `strip_prefix` and be dropped, which reads as
+                    // a root that is watched and never fires. The
+                    // launcher already absolutizes (`resolve_user`), so
+                    // this only covers a hand-written catalogue entry,
+                    // which is exactly the case with no launcher to fix
+                    // it.
+                    dir: crate::paths::resolve_user(&entry.dir.to_string_lossy()),
                     ignore_patterns: entry.ignore,
                     ignore,
                     watch: entry.watch,
@@ -406,6 +415,15 @@ impl SkillsServer {
     /// two cannot drift into announcing different things for the same
     /// delta.
     async fn announce(&self, peer: &rmcp::service::Peer<RoleServer>, delta: &CatalogueDelta) {
+        // Deliberately NOT gated on `peer.peer_info()`. A client that
+        // opens with `subscriptions/listen` — which is the NORMAL path
+        // for Claude Code's v2 runtime, per the opener tests — takes
+        // rmcp's stateless branch and never records peer info at all,
+        // so gating on it would silence every notification for exactly
+        // the clients that asked for them. An unsolicited notification
+        // before `initialize` is at worst ignored; a subscriber that
+        // never hears anything is the failure this feature exists to
+        // prevent.
         let plan = delta.plan();
         if plan.list_changed {
             self.subscriptions.resource_list_changed(peer).await;
@@ -424,12 +442,25 @@ impl SkillsServer {
             // Drain the burst before doing any work: a `git checkout`
             // that outlasts the debounce window still costs one rescan
             // per quiet window, and no signal is skipped.
-            let mut degraded = first.degraded().map(str::to_string);
+            //
+            // Every degradation in the burst is recorded, not just the
+            // first: two roots can fail in one window, and keeping only
+            // one would report the other as covered.
+            let mut degradations: Vec<(Vec<std::path::PathBuf>, crate::watch::Degradation)> = Vec::new();
+            let mut note = |signal: &crate::watch::WatchSignal| {
+                if let Some((dirs, reason)) = signal.degraded() {
+                    degradations.push((dirs.to_vec(), reason.clone()));
+                }
+            };
+            note(&first);
             while let Ok(more) = signals.try_recv() {
-                degraded = degraded.or_else(|| more.degraded().map(str::to_string));
+                note(&more);
             }
-            if let Some(reason) = degraded {
-                self.watch_status.write().await.degrade_all(&reason);
+            if !degradations.is_empty() {
+                let mut status = self.watch_status.write().await;
+                for (dirs, reason) in &degradations {
+                    status.degrade(dirs, reason);
+                }
             }
             let delta = self.reload_skills().await;
             if delta.is_empty() {
@@ -448,10 +479,20 @@ impl SkillsServer {
             );
             self.announce(&peer, &delta).await;
         }
-        // The sender dropped, so the watcher thread is gone. Say so once
-        // rather than reporting coverage that no longer exists.
-        self.watch_status.write().await.degrade_all("watcher thread exited");
-        tracing::warn!("mcp::server: skills watcher stopped — `reload` is the only refresh now");
+        // The sender dropped. When nothing was ever armed that is the
+        // ordinary shape of a config with no watchable root, not a
+        // failure — warning there would fire at startup on a correct
+        // deployment and teach the captain to ignore the line that
+        // matters.
+        let mut status = self.watch_status.write().await;
+        if status
+            .roots
+            .iter()
+            .any(|r| r.state == crate::watch::WatchState::Watching)
+        {
+            status.degrade(&[], &crate::watch::Degradation::BackendExited);
+            tracing::warn!("mcp::server: skills watcher stopped — `reload` is the only refresh now");
+        }
     }
 
     /// Rescan disk and report what changed, so the caller can fire the
@@ -518,11 +559,23 @@ impl CatalogueDelta {
             .order
             .iter()
             .filter(|slug| {
-                // Compare the body AND the metadata block: an edit that
-                // only touches frontmatter leaves the body identical but
-                // still changes what every surface reports.
+                // Every field a surface actually serves, compared
+                // directly. `meta_block` alone is not enough:
+                // `skill_block` STRIPS `title` / `description` /
+                // `references` because other fields carry them, so an
+                // edit to only those reached this comparison solely
+                // through the SKILL.md mtime embedded in the block —
+                // which is truncated to seconds, so a fast edit was
+                // invisible. Comparing the served values is the answer;
+                // depending on a timestamp's resolution was never one.
                 match (before.skills.get(*slug), after.skills.get(*slug)) {
-                    (Some(old), Some(new)) => old.body != new.body || old.meta_block != new.meta_block,
+                    (Some(old), Some(new)) => {
+                        old.body != new.body
+                            || old.meta_block != new.meta_block
+                            || old.title != new.title
+                            || old.description != new.description
+                            || old.refs != new.refs
+                    }
                     _ => false,
                 }
             })
@@ -1507,6 +1560,34 @@ mod tests {
         cache
     }
 
+    /// The `watch` payload and the summary line are what tell an
+    /// MCP-only client it needs `reload`, and nothing asserted either.
+    #[tokio::test]
+    async fn list_skills_reports_watch_coverage_in_both_shapes() {
+        let covered = crate::watch::WatchStatus {
+            roots: vec![crate::watch::RootWatch {
+                dir: std::path::PathBuf::from("/a"),
+                state: crate::watch::WatchState::Watching,
+            }],
+        };
+        assert_eq!(watch_payload(&covered)["active"], serde_json::Value::Bool(true));
+        assert!(covered.summary_line().is_none(), "a covered root says nothing");
+
+        let mut partial = covered.clone();
+        partial.roots.push(crate::watch::RootWatch {
+            dir: std::path::PathBuf::from("/b"),
+            state: crate::watch::WatchState::Off,
+        });
+        let payload = watch_payload(&partial);
+        assert_eq!(payload["active"], serde_json::Value::Bool(false));
+        assert_eq!(payload["roots"].as_array().map(Vec::len), Some(2));
+        assert_eq!(payload["roots"][1]["state"], serde_json::Value::from("off"));
+        assert!(
+            partial.summary_line().is_some_and(|l| l.contains("/b")),
+            "an uncovered root must reach a text-only client"
+        );
+    }
+
     /// A hand-written MCP catalogue entry predates the flag and must
     /// still get a watched root - the sidecar is reachable without a
     /// config to consult, so the JSON shape has to tolerate its own
@@ -1518,6 +1599,29 @@ mod tests {
         let off: SkillDirEntry =
             serde_json::from_str(r#"{"dir":"/skills","ignore":[],"watch":false}"#).expect("parses");
         assert!(!off.watch);
+    }
+
+    /// notify joins a RELATIVE watch path onto the process cwd while we
+    /// would keep the relative form, so every event would fail
+    /// `strip_prefix` and be dropped - a root that reports `watching`
+    /// and never fires. Only a hand-written catalogue entry can produce
+    /// one, which is exactly the case with no launcher to fix it.
+    #[test]
+    fn a_relative_skill_dir_is_absolutized() {
+        let server = SkillsServer::new(
+            SkillsArgs {
+                skill_dirs: vec![SkillDirEntry {
+                    dir: std::path::PathBuf::from("./relative-skills"),
+                    ignore: Vec::new(),
+                    watch: true,
+                }],
+            },
+            crate::mcp::server::ConfigSource::default(),
+        )
+        .expect("build skills server");
+
+        let dir = &server.registry.dirs()[0].dir;
+        assert!(dir.is_absolute(), "a relative root would never match an event: {dir:?}");
     }
 
     /// Give `slug` a declared reference at `path` with fingerprint
@@ -1532,6 +1636,7 @@ mod tests {
                     size: Some(1),
                     modified: Some(stat.to_string()),
                     created: None,
+                    raw_modified: None,
                 },
             },
         );
@@ -1649,6 +1754,51 @@ mod tests {
         let delta = CatalogueDelta::between(&before, &after);
         assert!(delta.is_empty());
         assert_eq!(delta.plan(), Announcement::default());
+    }
+
+    /// The silent-staleness pin. `modified` is truncated to SECONDS for
+    /// the wire, so comparing on it made two same-length edits inside
+    /// one second identical - the rescan diffed to nothing and every
+    /// citer stayed stale for the full 24h ttl with no notification.
+    /// `FileStat` therefore compares the RAW mtime.
+    #[test]
+    fn two_edits_inside_one_second_are_still_two_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.md");
+
+        std::fs::write(&path, "aaaa").unwrap();
+        let before = crate::mcp::skills::wire_time::FileStat::read(&path);
+        // Same length, so `size` cannot distinguish them either.
+        std::fs::write(&path, "bbbb").unwrap();
+        let after = crate::mcp::skills::wire_time::FileStat::read(&path);
+
+        assert_eq!(before.size, after.size, "the fixture must not differ by size");
+        assert_ne!(before, after, "a same-second same-size edit must still register");
+        // And the wire form stays human-readable seconds.
+        assert!(after.modified.as_deref().is_some_and(|m| m.ends_with('Z')));
+    }
+
+    /// A frontmatter-only edit changes `title` / `description` /
+    /// `references`, all of which `skill_block` STRIPS because other
+    /// fields carry them. Detecting it must not depend on the SKILL.md
+    /// mtime happening to land in a different second.
+    #[test]
+    fn a_description_only_edit_updates_the_skill() {
+        let mut before = cache_of(&[("alpha", "same")]);
+        let mut after = cache_of(&[("alpha", "same")]);
+        after.skills.get_mut("alpha").unwrap().description = "a new description".to_string();
+
+        let delta = CatalogueDelta::between(&before, &after);
+        assert_eq!(delta.updated, vec!["alpha".to_string()]);
+
+        // Same for the declared-reference list.
+        before = cache_of(&[("beta", "same")]);
+        let mut after2 = cache_of(&[("beta", "same")]);
+        after2.skills.get_mut("beta").unwrap().refs.references = vec!["../refs/new.md".to_string()];
+        assert_eq!(
+            CatalogueDelta::between(&before, &after2).updated,
+            vec!["beta".to_string()]
+        );
     }
 
     /// One `metadata()` per unique file, not per citation. 479

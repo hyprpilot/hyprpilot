@@ -47,22 +47,54 @@ pub struct WatchRoot {
     pub watch: bool,
 }
 
-/// What the watcher has to say. Never names a path: see the module doc.
+/// Why coverage was lost. A closed set, so a consumer can branch on it
+/// rather than parse prose; `Failed` carries the backend's own words
+/// only for the errors that are genuinely open-ended (io).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Degradation {
+    /// The directory does not exist.
+    Missing,
+    /// The kernel's per-user watch limit is exhausted.
+    WatchLimit,
+    /// The backend thread is gone, so nothing will arrive again.
+    BackendExited,
+    Failed(String),
+}
+
+impl std::fmt::Display for Degradation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => f.write_str("directory does not exist"),
+            Self::WatchLimit => f.write_str("inotify watch limit reached - raise fs.inotify.max_user_watches"),
+            Self::BackendExited => f.write_str("watcher thread exited"),
+            Self::Failed(err) => f.write_str(err),
+        }
+    }
+}
+
+/// What the watcher has to say.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchSignal {
     /// Something under a watched root changed.
     Changed,
-    /// The watcher lost coverage. Carries a rescan too — the tree moved
-    /// under a directory that is now unwatched, so the last thing worth
-    /// doing with that coverage is using it.
-    Degraded(String),
+    /// Coverage was lost. Carries a rescan too — the tree moved under a
+    /// directory that is now unwatched, so the last thing worth doing
+    /// with that coverage is using it.
+    ///
+    /// `dirs` names the roots affected, and an EMPTY list means every
+    /// root: an error the backend could not attribute to a path is the
+    /// only case where blaming all of them is honest. Attributing
+    /// matters because a mid-session failure under one root otherwise
+    /// reports every other root unwatched, permanently, when they are
+    /// fine.
+    Degraded { dirs: Vec<PathBuf>, reason: Degradation },
 }
 
 impl WatchSignal {
     #[must_use]
-    pub fn degraded(&self) -> Option<&str> {
+    pub fn degraded(&self) -> Option<(&[PathBuf], &Degradation)> {
         match self {
-            Self::Degraded(reason) => Some(reason),
+            Self::Degraded { dirs, reason } => Some((dirs, reason)),
             Self::Changed => None,
         }
     }
@@ -107,11 +139,15 @@ impl WatchStatus {
         !self.roots.is_empty() && self.roots.iter().all(|r| r.state == WatchState::Watching)
     }
 
-    /// Mark every still-`Watching` root degraded. Used when the failure
-    /// is the watcher itself rather than one root.
-    pub fn degrade_all(&mut self, reason: &str) {
+    /// Mark the named roots degraded, or every still-`Watching` root
+    /// when `dirs` is empty.
+    ///
+    /// Empty means "the backend could not say which", which is the only
+    /// honest reason to blame roots that may be fine.
+    pub fn degrade(&mut self, dirs: &[PathBuf], reason: &Degradation) {
         for root in &mut self.roots {
-            if root.state == WatchState::Watching {
+            let named = dirs.is_empty() || dirs.iter().any(|d| d.starts_with(&root.dir) || root.dir.starts_with(d));
+            if named && root.state == WatchState::Watching {
                 root.state = WatchState::Degraded {
                     reason: reason.to_string(),
                 };
@@ -198,7 +234,7 @@ pub fn arm(roots: &[WatchRoot], debounce: Duration) -> Armed {
                 status.roots.push(RootWatch {
                     dir: root.dir.clone(),
                     state: WatchState::Degraded {
-                        reason: err.to_string(),
+                        reason: Degradation::Failed(err.to_string()).to_string(),
                     },
                 });
             }
@@ -219,9 +255,11 @@ pub fn arm(roots: &[WatchRoot], debounce: Duration) -> Armed {
                 WatchState::Watching
             }
             Err(err) => {
-                let reason = describe(&err);
+                let reason = classify(&err);
                 tracing::warn!(dir = %root.dir.display(), %reason, "watch: root is unwatched");
-                WatchState::Degraded { reason }
+                WatchState::Degraded {
+                    reason: reason.to_string(),
+                }
             }
         };
         status.roots.push(RootWatch {
@@ -254,8 +292,16 @@ fn dispatch(tx: &UnboundedSender<WatchSignal>, roots: &[WatchRoot], result: Debo
         Err(errors) => {
             // `MaxFilesWatch` here means a directory created just now
             // could not be watched, so coverage is already partial.
+            //
+            // notify carries the paths an error concerns; pass them
+            // through so one root's failure does not report every other
+            // root unwatched. An error naming none degrades all, which
+            // is what the empty list means.
             for err in errors {
-                let _ = tx.send(WatchSignal::Degraded(describe(&err)));
+                let _ = tx.send(WatchSignal::Degraded {
+                    dirs: err.paths.clone(),
+                    reason: classify(&err),
+                });
             }
         }
     }
@@ -297,14 +343,13 @@ fn covers(root: &WatchRoot, path: &Path) -> bool {
         .map_or(true, |first| !ignore.is_match(first.as_os_str()))
 }
 
-/// A reason a human can act on, not just the error's own words.
-fn describe(err: &notify::Error) -> String {
+/// Map a backend error onto the closed set, keeping its own words only
+/// for the open-ended kinds.
+fn classify(err: &notify::Error) -> Degradation {
     match &err.kind {
-        notify::ErrorKind::MaxFilesWatch => {
-            "inotify watch limit reached - raise fs.inotify.max_user_watches".to_string()
-        }
-        notify::ErrorKind::PathNotFound => "directory does not exist".to_string(),
-        _ => err.to_string(),
+        notify::ErrorKind::MaxFilesWatch => Degradation::WatchLimit,
+        notify::ErrorKind::PathNotFound => Degradation::Missing,
+        _ => Degradation::Failed(err.to_string()),
     }
 }
 
@@ -437,7 +482,7 @@ mod tests {
         assert!(status.active());
         assert!(status.summary_line().is_none());
 
-        status.degrade_all("watcher thread exited");
+        status.degrade(&[], &Degradation::BackendExited);
         assert!(!status.active());
         assert_eq!(
             status.summary_line().as_deref(),
@@ -494,7 +539,55 @@ mod tests {
     #[test]
     fn a_watch_limit_error_names_the_sysctl_to_raise() {
         let err = notify::Error::new(notify::ErrorKind::MaxFilesWatch);
-        assert!(describe(&err).contains("fs.inotify.max_user_watches"));
+        assert_eq!(classify(&err), Degradation::WatchLimit);
+        assert!(classify(&err).to_string().contains("fs.inotify.max_user_watches"));
+    }
+
+    /// One root failing must not report the others unwatched. Before
+    /// attribution a mid-session `ENOSPC` under root A degraded root B
+    /// permanently, and `list_skills` then told the captain to reload
+    /// for a directory that was being watched fine.
+    #[test]
+    fn a_degradation_naming_one_root_leaves_the_others_watching() {
+        let mut status = WatchStatus {
+            roots: vec![
+                RootWatch {
+                    dir: PathBuf::from("/a"),
+                    state: WatchState::Watching,
+                },
+                RootWatch {
+                    dir: PathBuf::from("/b"),
+                    state: WatchState::Watching,
+                },
+            ],
+        };
+        status.degrade(&[PathBuf::from("/a/deep/new-dir")], &Degradation::WatchLimit);
+
+        assert!(matches!(status.roots[0].state, WatchState::Degraded { .. }));
+        assert_eq!(status.roots[1].state, WatchState::Watching);
+    }
+
+    /// An error the backend could not attribute is the only honest
+    /// reason to blame every root.
+    #[test]
+    fn an_unattributed_degradation_marks_every_root() {
+        let mut status = WatchStatus {
+            roots: vec![
+                RootWatch {
+                    dir: PathBuf::from("/a"),
+                    state: WatchState::Watching,
+                },
+                RootWatch {
+                    dir: PathBuf::from("/b"),
+                    state: WatchState::Watching,
+                },
+            ],
+        };
+        status.degrade(&[], &Degradation::BackendExited);
+        assert!(status
+            .roots
+            .iter()
+            .all(|r| matches!(r.state, WatchState::Degraded { .. })));
     }
 
     /// The signal a degraded root carries has to be distinguishable
@@ -508,7 +601,9 @@ mod tests {
             Err(vec![notify::Error::new(notify::ErrorKind::MaxFilesWatch)]),
         );
         let signal = rx.try_recv().unwrap();
-        assert!(signal.degraded().is_some_and(|r| r.contains("inotify watch limit")));
-        assert_eq!(WatchSignal::Changed.degraded(), None);
+        let (dirs, reason) = signal.degraded().expect("a degraded signal");
+        assert_eq!(reason, &Degradation::WatchLimit);
+        assert!(dirs.is_empty(), "this error names no path, so it degrades all");
+        assert!(WatchSignal::Changed.degraded().is_none());
     }
 }

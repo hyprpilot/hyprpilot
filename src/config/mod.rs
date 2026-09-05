@@ -639,4 +639,79 @@ autoAcceptTools = ["read_*"]
         assert_eq!(effective.auto_accept_tools(), ["read_*".to_string()]);
         assert_eq!(effective.resolved_skills().len(), 1, "seeded skills flow to the launch");
     }
+
+    /// The documented off-switch has to actually reach the seeded root.
+    ///
+    /// `[[patches]]` concatenate across layers, so a user layer naming
+    /// the seeded dir merges into that entry only if the array is
+    /// treated as KEYED. Keyed on `id` alone it fell to the primitive
+    /// branch and APPENDED a second entry for the same directory: the
+    /// first was still watched, the second reported `off`, and
+    /// `list_skills` told the captain to reload a directory that was
+    /// being watched fine.
+    #[test]
+    fn a_user_layer_overrides_a_seeded_skills_root_rather_than_duplicating_it() {
+        let p = write_tmp(
+            "override-seeded-root.toml",
+            r#"
+[[profiles]]
+id = "engineer"
+agent = "claude-code"
+
+[[patches]]
+[[patches.mcp.skills.dirs]]
+dir = "~/.config/hyprpilot/skills"
+watch = false
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("load");
+        fs::remove_file(&p).ok();
+
+        let patched = crate::resolve::resolve_effective_profile(&cfg, Some("engineer"), &[]).expect("resolve");
+        let dirs = patched
+            .mcp
+            .as_ref()
+            .and_then(|m| m.skills.as_ref())
+            .and_then(|s| s.dirs.as_deref())
+            .expect("skills dirs");
+
+        assert_eq!(dirs.len(), 1, "the override must not append a second root: {dirs:?}");
+        assert_eq!(dirs[0].watch, Some(false), "the captain's off-switch won");
+
+        let resolved = crate::resolve::effective_mcp_with(&patched).resolved_skills();
+        assert_eq!(resolved.len(), 1);
+        assert!(!resolved[0].watch, "one root, reported off, actually unwatched");
+    }
+
+    /// A user layer naming a DIFFERENT root still appends - overriding
+    /// by key must not collapse genuinely distinct entries.
+    #[test]
+    fn a_user_layer_adding_a_new_skills_root_still_appends() {
+        let p = write_tmp(
+            "add-skills-root.toml",
+            r#"
+[[profiles]]
+id = "engineer"
+agent = "claude-code"
+
+[[patches]]
+[[patches.mcp.skills.dirs]]
+dir = "~/.team/shared-skills"
+"#,
+        );
+        let cfg = load(Some(&p), None).expect("load");
+        fs::remove_file(&p).ok();
+
+        let patched = crate::resolve::resolve_effective_profile(&cfg, Some("engineer"), &[]).expect("resolve");
+        let dirs = patched
+            .mcp
+            .as_ref()
+            .and_then(|m| m.skills.as_ref())
+            .and_then(|s| s.dirs.as_deref())
+            .expect("skills dirs");
+
+        assert_eq!(dirs.len(), 2, "a distinct root is an addition, not an override");
+        assert_eq!(dirs[0].dir, PathBuf::from("~/.config/hyprpilot/skills"));
+        assert_eq!(dirs[1].dir, PathBuf::from("~/.team/shared-skills"));
+    }
 }

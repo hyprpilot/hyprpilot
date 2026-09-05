@@ -39,7 +39,7 @@ use super::wire_time::FileStat;
 /// Parsed frontmatter — only the slice we care about. The full skill
 /// loader keeps richer data; the sidecar only needs the references
 /// array to do its bundle.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FrontmatterRefs {
     pub references: Vec<String>,
 }

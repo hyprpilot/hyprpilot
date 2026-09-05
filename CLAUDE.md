@@ -602,7 +602,12 @@ Skills reach the agent **only** through the skills server.
   file the captain edits. `DEFAULT_SKILL_ROOT_WATCH` covers only a
   `Config` carrying no patches, and `defaults_seed_the_skills_watch`
   pins the pair equal. One word, so no casing alias and no
-  duplicate-key hazard when a captain overrides the seed) and `[mcp.harness]`'s
+  duplicate-key hazard when a captain overrides the seed. A `dirs` entry
+  is keyed by `dir` in the patch engine — without that the array fell to
+  the primitive branch and a user layer naming the seeded root APPENDED
+  a second entry for the same directory instead of overriding it, so the
+  documented `watch = false` watched the root anyway and reported it
+  off) and `[mcp.harness]`'s
   `maxDepth` / `maxSessions` / `maxLiveSessions` / `notifyOnComplete` /
   `includeProfiles` / `excludeProfiles` / `mcp`.
   A per-server tool-policy glob list OVERRIDES the `[mcp]`-level one
@@ -774,8 +779,16 @@ Skills reach the agent **only** through the skills server.
   file's size + mtime FINGERPRINT: the fingerprint is what lets a
   rescan tell a reference edit from silence, and because `modified` is
   a served manifest field a fingerprint change IS a served-content
-  change — exact, not a heuristic. One `metadata()` per unique declared
-  file per rescan, so a file 60 skills share costs one stat.
+  change. The comparison is on the RAW mtime, not the served string:
+  `modified` is truncated to seconds for readability, and comparing on
+  that made two same-length edits inside one second identical — a rescan
+  that diffed to nothing while every citer went stale for the full ttl.
+  Display basis and comparison basis are deliberately different.
+  `between` likewise compares `title` / `description` / `refs` DIRECTLY,
+  because `skill_block` strips all three, so a frontmatter-only edit
+  otherwise rode on that same second-granularity stat. One `metadata()`
+  per unique declared file per rescan, so a file 60 skills share costs
+  one stat.
 - Bundles delimit each file with a `reference:` YAML block carrying its
   full manifest row, under a `skill_references:` banner naming the skill
   and count, so an appended bundle can never be mistaken for more skill
@@ -794,7 +807,11 @@ Skills reach the agent **only** through the skills server.
   warn-and-DEGRADE, never fatal: unlike `--delegate-mcp`, losing the
   watcher widens nothing and leaves the catalogue exactly as stale as
   before one existed, so `ENOSPC`, a missing root or a dead watcher
-  thread mark that root degraded and keep serving. Coverage is reported
+  thread mark the affected root degraded and keep serving. A
+  `WatchSignal::Degraded` carries the dirs the backend attributed the
+  error to; an EMPTY list means every root, and that is the only honest
+  reason to blame roots that may be fine — otherwise one root's
+  mid-session failure reported every other one unwatched, permanently. Coverage is reported
   in `list_skills` (`watch: { active, roots }`) AND appended to its text
   summary when partial, so an opencode-style text-only client learns it
   needs the fallback. Two cases a watch cannot cover, which is why

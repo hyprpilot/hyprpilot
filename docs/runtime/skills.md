@@ -79,13 +79,15 @@ Two things make watching affordable rather than noisy. The debouncer collapses a
 
 A root can lose coverage, and the sidecar keeps serving when it does:
 
-| Situation                                                   | State      |
-| ----------------------------------------------------------- | ---------- |
-| Normal                                                      | `watching` |
-| Root does not exist, or the inotify watch limit was reached | `degraded` |
-| `watch = false` on that root                                | `off`      |
+| Situation                                                                                                             | State      |
+| --------------------------------------------------------------------------------------------------------------------- | ---------- |
+| Normal                                                                                                                | `watching` |
+| Root does not exist, the inotify watch limit was reached, the watcher thread exited, or the backend reported an error | `degraded` |
+| `watch = false` on that root                                                                                          | `off`      |
 
-`list_skills` reports this as a `watch` object (`{ active, roots }`), and its text summary names any uncovered root. `active` is true only when **every** root is covered. When it is not, `reload` is the way to refresh.
+`list_skills` reports this as a `watch` object (`{ active, roots }`), and its text summary names any uncovered root. `active` is true only when there is at least one root and **every** one of them is covered. When it is not, `reload` is the way to refresh.
+
+An error the backend attributes to a path degrades only the roots that path falls under; one it cannot attribute degrades all of them, which is the only case where blaming a root that may be fine is honest.
 
 Two cases a watch cannot cover, both of which are what `reload` is for:
 
@@ -111,7 +113,9 @@ A client on `2026-07-28` opts in with `subscriptions/listen` (`resourcesListChan
 
 `resources/list_changed` fires on **any** change, not only on membership, precisely so a client that cannot subscribe still has a signal it can act on: a body edit would otherwise reach it only as a `resources/updated` it has no way to have asked for.
 
-Reference **bodies** stay uncached — they resolve from disk on every fetch, so `modified` is always live. What the cache holds is each declared file's size and modification time, read once per rescan (one `metadata()` per unique file, however many skills cite it). A change in either is a change in **served** content, because `modified` is a field the manifest and the resource footer both report — which is what makes the reference row in the table above exact rather than a guess.
+Reference **bodies** stay uncached — they resolve from disk on every fetch, so `modified` is always live. What the cache holds is each declared file's size and modification time, read once per rescan (one `metadata()` per unique file, however many skills cite it). A change in either is a change in **served** content, because `modified` is a field the manifest and the resource footer both report.
+
+The comparison uses the raw modification time, not the seconds-truncated string it serves: displaying seconds is right for a reader, and comparing on them would make two same-length edits inside one second indistinguishable.
 
 A rescan refreshes the **sidecar**, not anything already in an agent's context — a skill body read earlier this session stays as it was until re-read. The notification is what tells a client to re-read; acting on it is the client's own behaviour.
 

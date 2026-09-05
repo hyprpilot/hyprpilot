@@ -75,12 +75,27 @@ fn apply_primitive_list_deletes(left: &mut Map<String, Value>, right: &mut Map<S
 /// carries a string `id` field. The signature for "keyed Vec on the
 /// Rust side" — matches `[[agents]]` (id: claude-code) and
 /// `[[profiles]]` (id: strict).
+/// The field that IDENTIFIES an entry in a keyed array.
+///
+/// `id` for `[[agents]]` / `[[profiles]]`, `dir` for
+/// `[[mcp.skills.dirs]]`. A skills root is identified by its path in
+/// exactly the way an agent is by its id — nothing else distinguishes
+/// two entries — but without this it fell to the primitive-array
+/// branch, so a user layer naming the seeded root APPENDED a second
+/// entry for the same directory instead of overriding the first. The
+/// documented `watch = false` off-switch then watched the root anyway
+/// and reported it unwatched.
+fn entry_key(v: &Value) -> Option<String> {
+    let obj = v.as_object()?;
+    ["id", "dir"]
+        .iter()
+        .find_map(|k| obj.get(*k))
+        .and_then(Value::as_str)
+        .map(String::from)
+}
+
 fn is_keyed_object_array(arr: &[Value]) -> bool {
-    !arr.is_empty()
-        && arr.iter().all(|v| match v {
-            Value::Object(o) => matches!(o.get("id"), Some(Value::String(_))),
-            _ => false,
-        })
+    !arr.is_empty() && arr.iter().all(|v| entry_key(v).is_some())
 }
 
 /// Keyed-Vec merge: override left entry when right has same id,
@@ -88,12 +103,7 @@ fn is_keyed_object_array(arr: &[Value]) -> bool {
 /// Right entries with `$patch: delete` drop the matching left
 /// entry instead of overriding.
 fn merge_keyed_arrays(mut left: Vec<Value>, right: Vec<Value>) -> Vec<Value> {
-    let id_of = |v: &Value| -> Option<String> {
-        v.as_object()
-            .and_then(|o| o.get("id"))
-            .and_then(|v| v.as_str())
-            .map(String::from)
-    };
+    let id_of = entry_key;
 
     // Pass 1 — process deletes.
     let (deletes, overrides): (Vec<Value>, Vec<Value>) = right
