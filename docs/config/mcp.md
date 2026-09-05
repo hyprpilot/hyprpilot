@@ -142,6 +142,8 @@ mcp:
         ignore:
           - work-*
           - '*-experimental'
+      - dir: /mnt/nfs/team-skills
+        watch: false
 
   harness:
     enabled: true
@@ -176,11 +178,11 @@ Unlike the other two, this server is also gated on having something to serve: if
 
 #### `dirs` entries
 
-| Field    | Type             | Default | What it does                                                                                                                                                                                           |
-| -------- | ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `dir`    | path             | —       | Skill root to scan. Missing roots warn and are skipped.                                                                                                                                                |
-| `ignore` | string[] (globs) | `[]`    | Slugs matching any pattern are skipped. First root wins on slug collision.                                                                                                                             |
-| `watch`  | bool             | `true`  | Watch this root and announce changes. Turn it off for a root on a filesystem that cannot deliver events (NFS, SSHFS, most FUSE) — those accept the watch and never fire, so edits there need `reload`. |
+| Field    | Type             | Default | What it does                                                                                                                                                                                                                           |
+| -------- | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dir`    | path             | —       | Skill root to scan. Missing roots warn and are skipped.                                                                                                                                                                                |
+| `ignore` | string[] (globs) | `[]`    | Slugs matching any pattern are skipped. First root wins on slug collision.                                                                                                                                                             |
+| `watch`  | bool             | `true`  | Watch this root and announce changes. Seeded on for the default root. Turn it off for a root on a filesystem that cannot deliver events (NFS, SSHFS, most FUSE) — those accept the watch and never fire, so edits there need `reload`. |
 
 ### `mcp.harness`
 

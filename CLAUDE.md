@@ -304,8 +304,8 @@ clobbering the layer list. This closes the footgun where a partial
 `[patches.mcp]` in a user layer silently dropped the seeded skills dir.
 
 `defaults.toml` seeds one unscoped patch pointing the skills server at
-the XDG skills dir, naming each in-tree server, and carrying the
-harness ceilings — the values that must survive layer merge, plus every
+the XDG skills dir (watched), naming each in-tree server, and carrying
+the harness ceilings — the values that must survive layer merge, plus every
 NESTED leaf the resolver never backfills.
 `enabled = true` / `autoAcceptTools = ["*"]` / `autoRejectTools = []`
 are the typed `McpConfig::default()` the resolver backfills per-leaf in
@@ -595,9 +595,14 @@ Skills reach the agent **only** through the skills server.
 - **Per-server blocks** each carry `enabled`, `name`,
   `autoAcceptTools`, `autoRejectTools`, plus their own fields:
   `[mcp.skills].dirs` (`Vec<SkillEntry { dir, ignore, watch }>`,
-  default seed `~/.config/hyprpilot/skills`; `watch` is one word so
-  there is no casing alias, and it is NOT seeded — the `watches()`
-  accessor owns its `true` default the way `enabled` does) and `[mcp.harness]`'s
+  default seed `~/.config/hyprpilot/skills` with `watch = true`. Like
+  the harness ceilings, `watch` is SEEDED in `defaults.toml` rather than
+  left to Rust: `[mcp.skills]` is nested, so the resolver never
+  backfills its leaves, and the value a real launch reads belongs in the
+  file the captain edits. `DEFAULT_SKILL_ROOT_WATCH` covers only a
+  `Config` carrying no patches, and `defaults_seed_the_skills_watch`
+  pins the pair equal. One word, so no casing alias and no
+  duplicate-key hazard when a captain overrides the seed) and `[mcp.harness]`'s
   `maxDepth` / `maxSessions` / `maxLiveSessions` / `notifyOnComplete` /
   `includeProfiles` / `excludeProfiles` / `mcp`.
   A per-server tool-policy glob list OVERRIDES the `[mcp]`-level one

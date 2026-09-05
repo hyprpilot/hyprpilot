@@ -88,8 +88,20 @@ name = "hyprpilot"
 [patches.mcp.skills]
 name = "hyprpilot-skills"
 
+# `watch` — watch this root and announce edits over MCP, so a change to
+# a `SKILL.md` or a declared reference reaches connected clients without
+# anyone calling `reload`. Seeded ON here rather than left to the Rust
+# accessor for the same reason the harness ceilings are: `[mcp.skills]`
+# is nested, so the resolver never backfills its leaves, and the value a
+# real launch reads belongs in the file the captain edits.
+#
+# Turn it off ONLY for a root on a filesystem that cannot deliver events
+# — NFS, SSHFS and most FUSE mounts accept the watch and then never fire
+# for a remote write, so there is nothing to degrade on and the sidecar
+# cannot know. Those roots need `reload`.
 [[patches.mcp.skills.dirs]]
 dir = "~/.config/hyprpilot/skills"
+watch = true
 
 # `[[agents]]` — vendor registry. `command` / `args` are the NATIVE
 # vendor CLI the launcher `exec`s into directly (no ACP bridge). The

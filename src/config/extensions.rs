@@ -120,12 +120,15 @@ impl SkillEntry {
     }
 
     /// One word, so camelCase and snake_case are the same string and no
-    /// serde alias is needed. Not seeded in `defaults.toml`: nested
-    /// `[mcp.skills]` leaves are never backfilled, so the accessor owns
-    /// the default exactly as `enabled` does for a server block.
+    /// serde alias is needed - and so a captain overriding the seed
+    /// cannot hit the duplicate-key failure a two-word key invites.
+    ///
+    /// The value a real launch reads is SEEDED in `defaults.toml`;
+    /// this fallback covers a `Config` carrying no patches, and a
+    /// paired test pins the two equal.
     #[must_use]
     pub fn watches(&self) -> bool {
-        self.watch.unwrap_or(true)
+        self.watch.unwrap_or(crate::config::mcp::DEFAULT_SKILL_ROOT_WATCH)
     }
 }
 

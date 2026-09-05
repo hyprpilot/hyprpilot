@@ -50,6 +50,15 @@ pub const DEFAULT_MAX_SESSIONS: usize = 64;
 /// available for a shared or resource-tight host.
 pub const DEFAULT_MAX_LIVE_SESSIONS: usize = 0;
 
+/// Fallback for a skill root's `watch` — see
+/// [`DEFAULT_MAX_SPAWN_DEPTH`] for why a nested block needs one.
+///
+/// The value a real launch reads is seeded in `defaults.toml`, on the
+/// `[[patches.mcp.skills.dirs]]` entry. This covers a `Config` carrying
+/// no patches, and `defaults_seed_the_skills_watch` pins the pair
+/// equal.
+pub const DEFAULT_SKILL_ROOT_WATCH: bool = true;
+
 /// Fallback name for the skills surface — see
 /// [`DEFAULT_MAX_SPAWN_DEPTH`] for why a nested block needs one.
 ///
@@ -638,6 +647,20 @@ mod tests {
             harness.enabled, None,
             "seeding `enabled` would turn the harness on for everyone — it stays the captain's call"
         );
+    }
+
+    /// The seed is what a real launch reads; the constant covers only a
+    /// `Config` carrying no patches. Pinned equal so the pair cannot
+    /// drift, exactly as the harness ceilings are.
+    #[test]
+    fn defaults_seed_the_skills_watch() {
+        let seeded = seeded_mcp();
+        let skills = seeded.skills.expect("the seed carries [mcp.skills]");
+        let dirs = skills.dirs.expect("the seed carries a skills root");
+        let root = dirs.first().expect("at least one seeded root");
+
+        assert_eq!(root.watch, Some(DEFAULT_SKILL_ROOT_WATCH));
+        assert!(root.watches(), "the seeded root is watched");
     }
 
     /// The name a server is INJECTED under is `[mcp.*] name`, and the
