@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.17.0](https://github.com/hyprpilot/hyprpilot/compare/v3.16.0...v3.17.0) (2026-09-05)
+
+
+### Features
+
+* **skills:** watch the roots and announce edits ([#253](https://github.com/hyprpilot/hyprpilot/issues/253)) ([3af59b2](https://github.com/hyprpilot/hyprpilot/commit/3af59b23552fab221dfb259fd96ced8cf5f7ec27))
+
 ## [3.16.0](https://github.com/hyprpilot/hyprpilot/compare/v3.15.0...v3.16.0) (2026-09-03)
 
 
