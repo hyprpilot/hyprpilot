@@ -168,18 +168,19 @@ The general-tools server — the surface for things that are neither a skills re
 
 ### `mcp.skills`
 
-| Field  | Type                 | Default  | What it does                                                 |
-| ------ | -------------------- | -------- | ------------------------------------------------------------ |
-| `dirs` | `{ dir, ignore? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles. |
+| Field  | Type                         | Default  | What it does                                                                     |
+| ------ | ---------------------------- | -------- | -------------------------------------------------------------------------------- |
+| `dirs` | `{ dir, ignore?, watch? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles. Watched by default. |
 
 Unlike the other two, this server is also gated on having something to serve: if `dirs` resolves to no skills at all, nothing is injected. The root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry rather than a compiled default, so a user layer's `patches` extends the seed instead of replacing it.
 
 #### `dirs` entries
 
-| Field    | Type             | Default | What it does                                                               |
-| -------- | ---------------- | ------- | -------------------------------------------------------------------------- |
-| `dir`    | path             | —       | Skill root to scan. Missing roots warn and are skipped.                    |
-| `ignore` | string[] (globs) | `[]`    | Slugs matching any pattern are skipped. First root wins on slug collision. |
+| Field    | Type             | Default | What it does                                                                                                                                                                                           |
+| -------- | ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `dir`    | path             | —       | Skill root to scan. Missing roots warn and are skipped.                                                                                                                                                |
+| `ignore` | string[] (globs) | `[]`    | Slugs matching any pattern are skipped. First root wins on slug collision.                                                                                                                             |
+| `watch`  | bool             | `true`  | Watch this root and announce changes. Turn it off for a root on a filesystem that cannot deliver events (NFS, SSHFS, most FUSE) — those accept the watch and never fire, so edits there need `reload`. |
 
 ### `mcp.harness`
 

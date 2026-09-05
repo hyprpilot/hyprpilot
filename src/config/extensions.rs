@@ -102,11 +102,30 @@ pub struct SkillEntry {
     #[garde(custom(validate_globs))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ignore: Option<Vec<String>>,
+    /// Watch this root and announce changes. Default on.
+    ///
+    /// The one honest reason to turn it off is a filesystem that cannot
+    /// deliver events - NFS, SSHFS, most FUSE mounts accept the watch
+    /// and then never fire, so there is no error to degrade on and the
+    /// captain is the only one who knows. Per-root rather than
+    /// per-server because that is the scope of the fact.
+    #[garde(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<bool>,
 }
 
 impl SkillEntry {
     pub fn compile_ignore(&self) -> Option<GlobSet> {
         compile_ignore(self.ignore.as_deref())
+    }
+
+    /// One word, so camelCase and snake_case are the same string and no
+    /// serde alias is needed. Not seeded in `defaults.toml`: nested
+    /// `[mcp.skills]` leaves are never backfilled, so the accessor owns
+    /// the default exactly as `enabled` does for a server block.
+    #[must_use]
+    pub fn watches(&self) -> bool {
+        self.watch.unwrap_or(true)
     }
 }
 
@@ -242,11 +261,28 @@ mod tests {
         assert!(err.to_string().contains("must set either"), "got: {err}");
     }
 
+    /// One word, so camelCase and snake_case are the same string —
+    /// there is no second spelling to alias and no duplicate-key hazard
+    /// the patch engine could hit.
+    #[test]
+    fn watching_defaults_on_and_only_an_explicit_false_turns_it_off() {
+        let on: SkillEntry = toml::from_str(r#"dir = "/skills""#).expect("parses without watch");
+        assert_eq!(on.watch, None);
+        assert!(on.watches(), "an unwritten key must watch");
+
+        let off: SkillEntry = toml::from_str("dir = \"/skills\"\nwatch = false\n").expect("parses");
+        assert!(!off.watches());
+
+        let explicit: SkillEntry = toml::from_str("dir = \"/skills\"\nwatch = true\n").expect("parses");
+        assert!(explicit.watches());
+    }
+
     #[test]
     fn skill_entry_uses_same_matcher() {
         let s = SkillEntry {
             dir: "/tmp/skills".into(),
             ignore: Some(vec!["work-*".into()]),
+            watch: None,
         };
         let set = s.compile_ignore().expect("compiles");
         assert!(set.is_match("work-internal"));

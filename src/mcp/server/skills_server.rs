@@ -4,9 +4,14 @@
 //! auto-injects the `hyprpilot-skills` server entry into the vendor's
 //! MCP catalog. The sidecar reads skills by SCANNING DIRECTORIES directly
 //! — the same discovery logic the launcher's `SkillsRegistry` uses —
-//! so adding a new skill to a configured directory is immediately
-//! visible after `reload`, and the launcher doesn't have to enumerate
+//! so adding a new skill to a configured directory is picked up without
+//! restarting the session, and the launcher doesn't have to enumerate
 //! individual files when building the spawn command.
+//!
+//! Every root is WATCHED (`crate::watch`, debounced). A change rescans
+//! and announces itself; `reload` forces the same rescan for the cases
+//! a watch cannot cover — a root the watcher reports degraded or off,
+//! or a reference file outside every root.
 //!
 //! Current surface:
 //! - Resources — the catalogue and skill bodies, and NOTHING else
@@ -42,9 +47,11 @@
 //!     validated against the set some skill actually declares. Paths
 //!     address files rather than skills, so one call spans skills, a
 //!     shared file is fetched once, and repeats collapse.
-//!   - `reload` — rescan dirs, push a resource list-changed
-//!     notification (skills back the resource list; the tool list is
-//!     fixed for a given process, so no tool-list-changed fires)
+//!   - `reload` — force a rescan. The watcher does this on its own for
+//!     any change under a root, and BOTH callers announce through one
+//!     `announce()`, so they cannot disagree about a delta. Skills back
+//!     the resource list; the tool list is fixed for a given process,
+//!     so no tool-list-changed fires
 //!
 //! The harness tools (`spawn` / `session_*`) live on a SEPARATE server
 //! — `hyprpilot mcp harness`, see `super::harness_server`. They were
@@ -87,6 +94,9 @@ use crate::config::mcp::DEFAULT_SKILLS_SERVER_NAME;
 use crate::config::ResolvedSkillEntry;
 use crate::mcp::skills::SkillsRegistry;
 
+/// The receiver half `arm_watch` hands the relay.
+type WatchSignals = tokio::sync::mpsc::UnboundedReceiver<crate::watch::WatchSignal>;
+
 use super::rpc::{
     empty_object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown, RESULT_CACHE_SCOPE,
     RESULT_TTL_MS,
@@ -126,6 +136,14 @@ pub struct SkillDirEntry {
     pub dir: PathBuf,
     #[serde(default)]
     pub ignore: Vec<String>,
+    /// Defaults ON, so a hand-written MCP catalogue entry carrying the
+    /// pre-watcher JSON shape still gets a watched root.
+    #[serde(default = "watch_default")]
+    pub watch: bool,
+}
+
+fn watch_default() -> bool {
+    true
 }
 
 fn parse_skill_dir_arg(raw: &str) -> Result<SkillDirEntry, String> {
@@ -141,12 +159,25 @@ pub async fn run_skills(args: SkillsArgs, config: super::ConfigSource) -> anyhow
 }
 
 async fn run(handler: SkillsServer) -> anyhow::Result<()> {
+    // Armed BEFORE the startup scan, so an edit landing between the scan
+    // and the first drain is queued rather than lost.
+    let (watcher, signals) = handler.arm_watch(crate::watch::DEBOUNCE).await;
+
     // Startup scan. Nothing is connected yet, so the delta has no
     // one to notify — discard it deliberately rather than by accident.
     let _ = handler.reload_skills().await;
 
+    // Cloned before serving consumes the handler — Arcs only, the same
+    // shape the harness uses to keep a handle on its session table.
+    let relay_server = handler.clone();
+
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
+
+    // The peer exists only once the service is running, which is also
+    // the earliest a notification could reach anyone — so this ordering
+    // is correct, not merely convenient.
+    let relay = tokio::spawn(relay_server.relay_watch(signals, running.peer().clone()));
 
     // Race the transport against SIGTERM/SIGHUP. Without this a
     // supervisor stopping the sidecar would skip every destructor and
@@ -154,6 +185,12 @@ async fn run(handler: SkillsServer) -> anyhow::Result<()> {
     // SIGKILL case, but only after the kernel notices, and it cannot
     // remove the session directories.
     wait_for_shutdown(running).await;
+
+    // Stop notifying before the transport is gone, then release the
+    // watcher. `Watcher`'s drop only sets the debouncer's stop flag, so
+    // teardown never blocks on that thread.
+    relay.abort();
+    drop(watcher);
 
     Ok(())
 }
@@ -164,15 +201,32 @@ async fn run(handler: SkillsServer) -> anyhow::Result<()> {
 struct SkillsCache {
     skills: std::collections::HashMap<String, LoadedSkill>,
     order: Vec<String>,
-    /// Every canonical path some skill declares — the allow-list a load
-    /// request is checked against.
+    /// Every canonical path some skill declares, with the skills citing
+    /// it and the fingerprint the manifest serves for it.
     ///
-    /// Built here rather than per request because it is STRUCTURAL: it
-    /// changes only when a skill's frontmatter does, which is exactly
-    /// what `reload` invalidates. Resolving it per call would mean
+    /// The allow-list half is STRUCTURAL: it changes only when a
+    /// skill's frontmatter does, and resolving it per call would mean
     /// canonicalizing every declared path of every skill just to answer
     /// one fetch.
-    declared: std::collections::HashSet<String>,
+    ///
+    /// The fingerprint half is what lets a rescan tell a reference edit
+    /// from silence. Bodies stay uncached deliberately — they resolve
+    /// per call so `modified` is always live — but `modified` is a
+    /// SERVED manifest field, so a fingerprint change IS a change in
+    /// served content. That makes the diff exact rather than a
+    /// heuristic, at one `metadata()` per unique declared file per
+    /// rescan.
+    declared: std::collections::HashMap<String, DeclaredReference>,
+}
+
+/// One declared reference path, as the cache remembers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeclaredReference {
+    /// Slugs citing this path, in catalogue order. A file 60 skills
+    /// share is ONE entry with 60 citers, which is what makes a shared
+    /// convention's edit cost one stat rather than 60.
+    citers: Vec<String>,
+    stat: crate::mcp::skills::wire_time::FileStat,
 }
 
 #[derive(Debug, Clone)]
@@ -226,6 +280,17 @@ struct SkillsServer {
     skills_cache: Arc<RwLock<SkillsCache>>,
     /// The client's `subscriptions/listen` stream, when it opened one.
     subscriptions: super::rpc::Subscriptions,
+    /// Orders rescans against each other.
+    ///
+    /// rmcp runs every request in its own task, so two `reload` calls
+    /// could already interleave as scan A, scan B, swap B, swap A —
+    /// regressing the cache and diffing A against B's state. The
+    /// watcher makes that ordinary rather than rare. The cache's own
+    /// `RwLock` still serves readers; this only orders writers.
+    reload_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Per-root watch coverage, so a caller can tell whether it needs
+    /// `reload` at all.
+    watch_status: Arc<RwLock<crate::watch::WatchStatus>>,
 }
 
 impl SkillsServer {
@@ -265,6 +330,7 @@ impl SkillsServer {
                     dir: entry.dir,
                     ignore_patterns: entry.ignore,
                     ignore,
+                    watch: entry.watch,
                 }
             })
             .collect();
@@ -273,6 +339,8 @@ impl SkillsServer {
             registry: Arc::new(SkillsRegistry::new(entries)),
             skills_cache: Arc::new(RwLock::new(SkillsCache::default())),
             subscriptions: super::rpc::Subscriptions::default(),
+            reload_gate: Arc::new(tokio::sync::Mutex::new(())),
+            watch_status: Arc::new(RwLock::new(crate::watch::WatchStatus::default())),
         })
     }
 
@@ -301,8 +369,89 @@ impl SkillsServer {
              and as the `io.hyprpilot/skill` key in resource `_meta`) — minus \
              `title` / `description` (already in the spec Resource fields) \
              and `references` (superseded by the manifest), plus the runtime \
-             `path`, `bundleDir`, `size`, `modified` and `created`.",
+             `path`, `bundleDir`, `size`, `modified` and `created`. \
+             Skill roots are WATCHED: an edit is rescanned and announced as \
+             `resources/updated` (per affected skill) plus \
+             `resources/list_changed`, so you never need `reload` unless \
+             `list_skills` reports a root degraded or off.",
         )
+    }
+
+    /// Arm the watcher over every configured root and record what it
+    /// covers.
+    ///
+    /// Called BEFORE the startup scan: an edit landing between the scan
+    /// and the first drain is then queued rather than lost. The channel
+    /// is unbounded and nothing reads it yet.
+    async fn arm_watch(&self, debounce: std::time::Duration) -> (Option<crate::watch::Watcher>, WatchSignals) {
+        let roots: Vec<crate::watch::WatchRoot> = self
+            .registry
+            .dirs()
+            .iter()
+            .map(|entry| crate::watch::WatchRoot {
+                dir: entry.dir.clone(),
+                ignore: entry.ignore.clone(),
+                watch: entry.watch,
+            })
+            .collect();
+        let armed = crate::watch::arm(&roots, debounce);
+        *self.watch_status.write().await = armed.status;
+        (armed.watcher, armed.signals)
+    }
+
+    /// Fire what one rescan invalidated.
+    ///
+    /// The single notification path. Both callers — the `reload` tool
+    /// and the watcher relay — reach the wire only through here, so the
+    /// two cannot drift into announcing different things for the same
+    /// delta.
+    async fn announce(&self, peer: &rmcp::service::Peer<RoleServer>, delta: &CatalogueDelta) {
+        let plan = delta.plan();
+        if plan.list_changed {
+            self.subscriptions.resource_list_changed(peer).await;
+        }
+        self.subscriptions.resources_updated(peer, plan.updated).await;
+    }
+
+    /// Turn watch signals into rescans for as long as the transport
+    /// lives.
+    ///
+    /// Never an opener and never on a request's path, so it cannot
+    /// reintroduce the pre-loop deadlock `serve_from_first_byte` exists
+    /// to avoid — the serve loop is already spawned when this starts.
+    async fn relay_watch(self, mut signals: WatchSignals, peer: rmcp::service::Peer<RoleServer>) {
+        while let Some(first) = signals.recv().await {
+            // Drain the burst before doing any work: a `git checkout`
+            // that outlasts the debounce window still costs one rescan
+            // per quiet window, and no signal is skipped.
+            let mut degraded = first.degraded().map(str::to_string);
+            while let Ok(more) = signals.try_recv() {
+                degraded = degraded.or_else(|| more.degraded().map(str::to_string));
+            }
+            if let Some(reason) = degraded {
+                self.watch_status.write().await.degrade_all(&reason);
+            }
+            let delta = self.reload_skills().await;
+            if delta.is_empty() {
+                // Editor temp files and `git` internals reach here and
+                // diff to nothing. Free on the wire, which is why the
+                // filter does not try to guess them by name.
+                tracing::debug!("mcp::server: watched change rescanned — no catalogue change");
+                continue;
+            }
+            tracing::info!(
+                membership_changed = delta.membership_changed,
+                updated = delta.updated.len(),
+                references_changed = delta.references_changed.len(),
+                reference_citers = delta.reference_citers.len(),
+                "mcp::server: skills rescanned from a watched change"
+            );
+            self.announce(&peer, &delta).await;
+        }
+        // The sender dropped, so the watcher thread is gone. Say so once
+        // rather than reporting coverage that no longer exists.
+        self.watch_status.write().await.degrade_all("watcher thread exited");
+        tracing::warn!("mcp::server: skills watcher stopped — `reload` is the only refresh now");
     }
 
     /// Rescan disk and report what changed, so the caller can fire the
@@ -310,6 +459,7 @@ impl SkillsServer {
     /// failed — a failed rescan leaves the cache untouched, so claiming
     /// anything changed would invalidate a client's cache for nothing.
     async fn reload_skills(&self) -> CatalogueDelta {
+        let _ordered = self.reload_gate.lock().await;
         let registry = self.registry.clone();
         let result = tokio::task::spawn_blocking(move || {
             registry.reload().map_err(|e| e.to_string())?;
@@ -352,11 +502,19 @@ struct CatalogueDelta {
     membership_changed: bool,
     /// Slugs whose body or metadata differs from the previous scan.
     updated: Vec<String>,
+    /// Canonical paths whose fingerprint changed, appeared, or vanished.
+    /// Reported so a caller knows which files to re-fetch, by the
+    /// address it already uses.
+    references_changed: Vec<String>,
+    /// Slugs citing any changed path, minus any already in `updated`.
+    /// Their BODIES are unchanged; their manifests and footers are not,
+    /// and both are served text.
+    reference_citers: Vec<String>,
 }
 
 impl CatalogueDelta {
     fn between(before: &SkillsCache, after: &SkillsCache) -> Self {
-        let updated = after
+        let updated: Vec<String> = after
             .order
             .iter()
             .filter(|slug| {
@@ -371,15 +529,96 @@ impl CatalogueDelta {
             .cloned()
             .collect();
 
+        let (references_changed, reference_citers) = Self::references_between(before, after, &updated);
+
         Self {
             membership_changed: before.order != after.order,
             updated,
+            references_changed,
+            reference_citers,
         }
     }
 
-    fn is_empty(&self) -> bool {
-        !self.membership_changed && self.updated.is_empty()
+    /// Which declared files moved, and which surviving skills cite them.
+    ///
+    /// A path on ONE side only counts: a declared file that could not be
+    /// canonicalized is absent from `declared` entirely, so a reference
+    /// appearing flips its citer's manifest row from `status: not-found`
+    /// to a real path — a served change with no body edit behind it.
+    fn references_between(before: &SkillsCache, after: &SkillsCache, updated: &[String]) -> (Vec<String>, Vec<String>) {
+        let mut changed = Vec::new();
+        let mut citers = Vec::new();
+
+        for (path, entry) in &after.declared {
+            let moved = match before.declared.get(path) {
+                Some(old) => old.stat != entry.stat,
+                None => true,
+            };
+            if moved {
+                changed.push(path.clone());
+            }
+        }
+        // Vanished paths: a citer that survives now serves a
+        // `status: not-found` row where it served a real one.
+        for path in before.declared.keys() {
+            if !after.declared.contains_key(path) {
+                changed.push(path.clone());
+            }
+        }
+        changed.sort_unstable();
+
+        for path in &changed {
+            let entry = after.declared.get(path).or_else(|| before.declared.get(path));
+            for slug in entry.map(|e| e.citers.as_slice()).unwrap_or_default() {
+                // Only skills that still exist, and only once. A slug
+                // already in `updated` gets its notification from there.
+                if after.skills.contains_key(slug) && !updated.contains(slug) && !citers.contains(slug) {
+                    citers.push(slug.clone());
+                }
+            }
+        }
+        // Catalogue order, so the announcement is stable across rescans.
+        citers.sort_by_key(|slug| after.order.iter().position(|s| s == slug));
+
+        (changed, citers)
     }
+
+    fn is_empty(&self) -> bool {
+        !self.membership_changed && self.updated.is_empty() && self.references_changed.is_empty()
+    }
+
+    /// The URIs a rescan invalidates, decided in one pure place so the
+    /// watcher and the `reload` tool cannot drift apart.
+    fn plan(&self) -> Announcement {
+        let mut updated: Vec<String> = self.updated.iter().map(|slug| skill_uri(slug)).collect();
+        // A citer's served text (body plus manifest footer) changed even
+        // though its body did not. A subscriber holding that one skill
+        // has no other way to learn it.
+        updated.extend(self.reference_citers.iter().map(|slug| skill_uri(slug)));
+        // The index renders slug, title, description and reference
+        // COUNT — never a reference's own content. Firing it for a
+        // reference edit would be exactly the spurious invalidation the
+        // diff exists to prevent.
+        if self.membership_changed || !self.updated.is_empty() {
+            updated.push(catalogue_uri());
+        }
+        Announcement {
+            // Anything at all. A pre-`2026-07-28` client cannot
+            // subscribe, so `resources/updated` is not a signal it can
+            // act on; `list_changed` is the only one it has, and a
+            // reference edit must reach it as something rather than
+            // silence.
+            list_changed: !self.is_empty(),
+            updated,
+        }
+    }
+}
+
+/// What one rescan tells connected clients.
+#[derive(Debug, Default, PartialEq)]
+struct Announcement {
+    list_changed: bool,
+    updated: Vec<String>,
 }
 
 fn build_cache(skills: Vec<crate::mcp::skills::Skill>) -> SkillsCache {
@@ -400,7 +639,17 @@ fn build_cache(skills: Vec<crate::mcp::skills::Skill>) -> SkillsCache {
         };
         let description = skill.description.clone();
         if let Some(dir) = skill.path.parent() {
-            cache.declared.extend(wire_references::declared_paths(dir, &refs));
+            for path in wire_references::declared_paths(dir, &refs) {
+                cache
+                    .declared
+                    .entry(path)
+                    .or_insert_with_key(|path| DeclaredReference {
+                        citers: Vec::new(),
+                        stat: crate::mcp::skills::wire_time::FileStat::read(std::path::Path::new(path)),
+                    })
+                    .citers
+                    .push(slug.clone());
+            }
         }
         cache.order.push(slug.clone());
         cache.skills.insert(
@@ -595,8 +844,9 @@ fn catalogue_markdown(cache: &SkillsCache) -> String {
          needs no second fetch. `list_skill_references { slug }` shows a skill's paths without \
          reading any bodies.\n\n\
          So the chain is: pick a slug here → read `skills/<slug>` → follow the reference directives \
-         in its body, loading only the paths those steps actually name. The `reload` tool rescans \
-         the roots if this index looks stale.\n\n",
+         in its body, loading only the paths those steps actually name. The roots are watched, so \
+         this index is kept current; `reload` forces a rescan if a root is reported \
+         unwatched.\n\n",
     );
     if cache.order.is_empty() {
         out.push_str("_No skills available._\n");
@@ -656,6 +906,15 @@ fn list_references_summary(slug: &str, entries: &[ReferenceEntry]) -> String {
          under different names, so a path you already loaded needs no second fetch.",
     );
     out
+}
+
+/// Watch coverage as the tools report it. `active` is true only when
+/// every root is covered, so a client reading it can stop checking.
+fn watch_payload(status: &crate::watch::WatchStatus) -> serde_json::Value {
+    serde_json::json!({
+        "active": status.active(),
+        "roots": status.roots,
+    })
 }
 
 fn list_skills_summary(cache: &SkillsCache) -> String {
@@ -834,8 +1093,10 @@ impl ServerHandler for SkillsServer {
             Tool::new_with_raw(
                 "reload",
                 Some(
-                    "Rescan every skill directory from disk. Use after editing a \
-                     skill file to refresh the cache without restarting the session."
+                    "Force a rescan of every skill directory. The roots are WATCHED, so \
+                     an edit is rescanned and announced on its own - call this only when \
+                     `list_skills` reports a root degraded or off, or after editing a \
+                     reference file that lives outside every configured root."
                         .into(),
                 ),
                 empty_object_schema(),
@@ -855,10 +1116,21 @@ impl ServerHandler for SkillsServer {
         match request.name.as_ref() {
             "list_skills" => {
                 let cache = self.skills_cache.read().await;
-                Ok(structured_with_text(
-                    list_skills_summary(&cache),
-                    list_skills_payload(&cache),
-                ))
+                let watch = self.watch_status.read().await;
+                let mut payload = list_skills_payload(&cache);
+                if let Some(map) = payload.as_object_mut() {
+                    map.insert("watch".into(), watch_payload(&watch));
+                }
+                let mut summary = list_skills_summary(&cache);
+                // Appended ONLY when coverage is partial: a text-only
+                // client (opencode renders `content`, never
+                // `structured_content`) would otherwise never learn it
+                // needs `reload`, and an untroubled session pays
+                // nothing for the check.
+                if let Some(line) = watch.summary_line() {
+                    summary.push_str(&format!("\n{line} Call `reload` after editing files under it."));
+                }
+                Ok(structured_with_text(summary, payload))
             }
             "read_skill" => {
                 let slug = require_string(&args, "slug")?;
@@ -927,7 +1199,7 @@ impl ServerHandler for SkillsServer {
                     let Some(raw) = item.as_str() else {
                         return Ok(tool_error("`references` must be an array of strings"));
                     };
-                    match wire_references::canonical(raw).filter(|p| cache.declared.contains(p)) {
+                    match wire_references::canonical(raw).filter(|p| cache.declared.contains_key(p)) {
                         // Repeats are collapsed: a caller assembling a
                         // selection across several steps of a skill, or
                         // across skills that share a file, must not
@@ -963,51 +1235,33 @@ impl ServerHandler for SkillsServer {
                     // for a no-op reload.
                     tracing::debug!(count, "mcp::server: skills reloaded — no change");
                 }
-                // `ttlMs` is effectively indefinite, so a client re-reads
-                // only when told to — which makes these notifications the
-                // whole invalidation story rather than a nicety.
-                //
-                // Membership first: a skill appearing or disappearing is
-                // what `resources/list_changed` describes.
-                // Fired whenever ANYTHING changed, not only on
-                // membership. A client on an older revision cannot
-                // subscribe, so `resources/updated` is not a signal it
-                // can act on — `list_changed` is the only one it has,
-                // and it fired on every reload before this. Narrowing it
-                // to membership would let a body edit reach such a
-                // client as silence.
-                if !delta.is_empty() {
-                    self.subscriptions.resource_list_changed(&context.peer).await;
-                }
-                // Then per-skill. A body edited under an unchanged slug
-                // does not move the list, so the list-changed signal
-                // cannot express it — and that is the common edit.
-                for slug in &delta.updated {
-                    self.subscriptions
-                        .resource_updated(&context.peer, skill_uri(slug))
-                        .await;
-                }
-                // The catalogue index renders every skill's slug, title
-                // and description, so any change at all makes it stale —
-                // including a frontmatter-only edit that never moves the
-                // list.
-                if !delta.is_empty() {
-                    self.subscriptions
-                        .resource_updated(&context.peer, catalogue_uri())
-                        .await;
-                }
+                // The SAME path the watcher relay takes. `ttlMs` is
+                // effectively indefinite, so a client re-reads only when
+                // told to — which makes this the whole invalidation
+                // story rather than a nicety, and makes one shared
+                // notification path the only way the two callers cannot
+                // disagree about a delta.
+                self.announce(&context.peer, &delta).await;
                 tracing::info!(
                     count,
                     membership_changed = delta.membership_changed,
                     updated = delta.updated.len(),
+                    references_changed = delta.references_changed.len(),
                     "mcp::server: skills reloaded"
                 );
+                let watch = self.watch_status.read().await;
                 Ok(structured_with_text(
                     format!("Reloaded {count} skill(s)."),
                     serde_json::json!({
                         "reloaded": count,
                         "membershipChanged": delta.membership_changed,
                         "updated": delta.updated,
+                        // Paths, by the address `read_skill_references`
+                        // already takes — so a caller holding a stale
+                        // reference body knows exactly what to re-fetch
+                        // without re-deriving it from a manifest.
+                        "referencesChanged": delta.references_changed,
+                        "watch": watch_payload(&watch),
                     }),
                 ))
             }
@@ -1253,6 +1507,189 @@ mod tests {
         cache
     }
 
+    /// A hand-written MCP catalogue entry predates the flag and must
+    /// still get a watched root - the sidecar is reachable without a
+    /// config to consult, so the JSON shape has to tolerate its own
+    /// history.
+    #[test]
+    fn a_skill_dir_arg_without_watch_defaults_on() {
+        let entry: SkillDirEntry = serde_json::from_str(r#"{"dir":"/skills","ignore":[]}"#).expect("parses");
+        assert!(entry.watch);
+        let off: SkillDirEntry =
+            serde_json::from_str(r#"{"dir":"/skills","ignore":[],"watch":false}"#).expect("parses");
+        assert!(!off.watch);
+    }
+
+    /// Give `slug` a declared reference at `path` with fingerprint
+    /// `stat`. The delta compares fingerprints, so a test moves a
+    /// reference by moving this and nothing else.
+    fn cite(cache: &mut SkillsCache, path: &str, stat: &str, citers: &[&str]) {
+        cache.declared.insert(
+            path.to_string(),
+            DeclaredReference {
+                citers: citers.iter().map(|s| (*s).to_string()).collect(),
+                stat: crate::mcp::skills::wire_time::FileStat {
+                    size: Some(1),
+                    modified: Some(stat.to_string()),
+                    created: None,
+                },
+            },
+        );
+    }
+
+    /// THE reference-gap pin. A shared convention file changes; no
+    /// skill body moved, so the old delta reported nothing and every
+    /// citing skill went stale in a client's cache for the full ttl.
+    /// `modified` is a served manifest field, so a fingerprint change IS
+    /// a change in served content.
+    #[test]
+    fn a_reference_edit_updates_every_skill_that_cites_it() {
+        let mut before = cache_of(&[("alpha", "same"), ("beta", "same")]);
+        cite(&mut before, "/refs/output-diff.md", "t1", &["alpha", "beta"]);
+        let mut after = cache_of(&[("alpha", "same"), ("beta", "same")]);
+        cite(&mut after, "/refs/output-diff.md", "t2", &["alpha", "beta"]);
+
+        let delta = CatalogueDelta::between(&before, &after);
+        assert!(!delta.is_empty());
+        assert!(delta.updated.is_empty(), "no body moved");
+        assert!(!delta.membership_changed);
+        assert_eq!(delta.references_changed, vec!["/refs/output-diff.md".to_string()]);
+        assert_eq!(delta.reference_citers, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    /// The index renders slug, title, description and reference COUNT —
+    /// never a reference's content. Firing it here would be exactly the
+    /// spurious invalidation the diff exists to prevent.
+    #[test]
+    fn a_reference_edit_does_not_stale_the_catalogue_index() {
+        let mut before = cache_of(&[("alpha", "same")]);
+        cite(&mut before, "/refs/x.md", "t1", &["alpha"]);
+        let mut after = cache_of(&[("alpha", "same")]);
+        cite(&mut after, "/refs/x.md", "t2", &["alpha"]);
+
+        let plan = CatalogueDelta::between(&before, &after).plan();
+        assert!(plan.list_changed, "an older client has no other signal");
+        assert_eq!(plan.updated, vec![skill_uri("alpha")]);
+        assert!(!plan.updated.contains(&catalogue_uri()));
+    }
+
+    /// A body edit DOES stale the index — it renders the description,
+    /// which frontmatter can move without touching membership.
+    #[test]
+    fn a_body_edit_stales_the_catalogue_index() {
+        let plan = CatalogueDelta::between(&cache_of(&[("alpha", "v1")]), &cache_of(&[("alpha", "v2")])).plan();
+        assert_eq!(plan.updated, vec![skill_uri("alpha"), catalogue_uri()]);
+    }
+
+    /// A declared file that could not be canonicalized is absent from
+    /// `declared` entirely, so its citer serves a `status: not-found`
+    /// row. The file appearing flips that row to a real path — served
+    /// content, with no body edit behind it.
+    #[test]
+    fn a_reference_appearing_updates_its_citer() {
+        let before = cache_of(&[("alpha", "same")]);
+        let mut after = cache_of(&[("alpha", "same")]);
+        cite(&mut after, "/refs/new.md", "t1", &["alpha"]);
+
+        let delta = CatalogueDelta::between(&before, &after);
+        assert_eq!(delta.references_changed, vec!["/refs/new.md".to_string()]);
+        assert_eq!(delta.reference_citers, vec!["alpha".to_string()]);
+    }
+
+    #[test]
+    fn a_reference_vanishing_updates_its_surviving_citer() {
+        let mut before = cache_of(&[("alpha", "same")]);
+        cite(&mut before, "/refs/gone.md", "t1", &["alpha"]);
+        let after = cache_of(&[("alpha", "same")]);
+
+        let delta = CatalogueDelta::between(&before, &after);
+        assert_eq!(delta.references_changed, vec!["/refs/gone.md".to_string()]);
+        assert_eq!(delta.reference_citers, vec!["alpha".to_string()]);
+    }
+
+    /// A slug that no longer exists must never be announced — a client
+    /// would fetch a URI that now errors.
+    #[test]
+    fn a_removed_skill_is_never_a_reference_citer() {
+        let mut before = cache_of(&[("alpha", "same"), ("beta", "same")]);
+        cite(&mut before, "/refs/x.md", "t1", &["alpha", "beta"]);
+        let mut after = cache_of(&[("alpha", "same")]);
+        cite(&mut after, "/refs/x.md", "t2", &["alpha"]);
+
+        let delta = CatalogueDelta::between(&before, &after);
+        assert!(delta.membership_changed);
+        assert_eq!(delta.reference_citers, vec!["alpha".to_string()]);
+    }
+
+    /// A skill whose body ALSO changed is announced once. Two
+    /// `resources/updated` for one URI is a client re-fetching twice.
+    #[test]
+    fn a_citer_whose_body_also_moved_is_announced_once() {
+        let mut before = cache_of(&[("alpha", "v1")]);
+        cite(&mut before, "/refs/x.md", "t1", &["alpha"]);
+        let mut after = cache_of(&[("alpha", "v2")]);
+        cite(&mut after, "/refs/x.md", "t2", &["alpha"]);
+
+        let delta = CatalogueDelta::between(&before, &after);
+        assert_eq!(delta.updated, vec!["alpha".to_string()]);
+        assert!(delta.reference_citers.is_empty());
+        assert_eq!(delta.plan().updated, vec![skill_uri("alpha"), catalogue_uri()]);
+    }
+
+    /// The extension of `a_reload_that_changed_nothing_notifies_nothing`
+    /// to references: an untouched reference must stay silent, or the
+    /// watcher would announce on every editor temp file.
+    #[test]
+    fn an_unchanged_reference_fingerprint_announces_nothing() {
+        let mut before = cache_of(&[("alpha", "same")]);
+        cite(&mut before, "/refs/x.md", "t1", &["alpha"]);
+        let mut after = cache_of(&[("alpha", "same")]);
+        cite(&mut after, "/refs/x.md", "t1", &["alpha"]);
+
+        let delta = CatalogueDelta::between(&before, &after);
+        assert!(delta.is_empty());
+        assert_eq!(delta.plan(), Announcement::default());
+    }
+
+    /// One `metadata()` per unique file, not per citation. 479
+    /// citations across the captain's roots resolve to 60 files; the
+    /// per-citation shape would stat each one eight times a rescan.
+    #[test]
+    fn build_cache_stats_each_declared_file_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.md");
+        std::fs::write(&shared, "convention").unwrap();
+        let canonical = std::fs::canonicalize(&shared).unwrap().display().to_string();
+
+        let mut skills = Vec::new();
+        for slug in ["alpha", "beta", "gamma"] {
+            let bundle = dir.path().join(slug);
+            std::fs::create_dir_all(&bundle).unwrap();
+            let path = bundle.join("SKILL.md");
+            std::fs::write(&path, "body").unwrap();
+            skills.push(crate::mcp::skills::Skill {
+                slug: crate::mcp::skills::SkillSlug::parse(slug).unwrap(),
+                path,
+                title: slug.to_string(),
+                description: "d".into(),
+                frontmatter: yaml_serde::from_str(
+                    "references:
+  - ../shared.md
+",
+                )
+                .unwrap(),
+                body: "body".into(),
+            });
+        }
+
+        let cache = build_cache(skills);
+        assert_eq!(cache.declared.len(), 1, "one entry for the shared file");
+        assert_eq!(
+            cache.declared[&canonical].citers,
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
+    }
+
     /// The common edit: a body changes under an unchanged slug. The list
     /// has not moved, so `resources/list_changed` cannot express it —
     /// only a per-URI `resources/updated` can, and with an indefinite
@@ -1372,7 +1809,7 @@ mod tests {
         // The declared path must land in the cache's allow-list, or the
         // address the manifest publishes would be refused by the very
         // call it is meant to feed.
-        assert!(cache.declared.contains(&address));
+        assert!(cache.declared.contains_key(&address));
 
         // Default: the address, not the body.
         let footer = wire_references::manifest_footer(&entries, "myskill");
@@ -1580,6 +2017,234 @@ metadata:
             block.get("bundleDir").and_then(serde_json::Value::as_str),
             Some("/tmp/plan-hard")
         );
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::{SkillDirEntry, SkillsArgs, SkillsServer};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    const META: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"t","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}"#;
+
+    fn write_skill(root: &std::path::Path, slug: &str, body: &str, refs: &str) {
+        let bundle = root.join(slug);
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(
+            bundle.join("SKILL.md"),
+            format!("---\ndescription: d\n{refs}---\n\n# {slug}\n\n{body}\n"),
+        )
+        .unwrap();
+    }
+
+    /// Serve a real skills server over a duplex with the watcher armed
+    /// and the relay running, exactly as `run()` wires it: arm, scan,
+    /// serve, then spawn the relay with the peer.
+    async fn serve_watched(
+        root: &std::path::Path,
+    ) -> (
+        tokio::io::DuplexStream,
+        tokio::io::Lines<BufReader<tokio::io::DuplexStream>>,
+        Option<crate::watch::Watcher>,
+        tokio::task::JoinHandle<()>,
+        rmcp::service::RunningService<rmcp::service::RoleServer, SkillsServer>,
+    ) {
+        let handler = SkillsServer::new(
+            SkillsArgs {
+                skill_dirs: vec![SkillDirEntry {
+                    dir: root.to_path_buf(),
+                    ignore: Vec::new(),
+                    watch: true,
+                }],
+            },
+            crate::mcp::server::ConfigSource::default(),
+        )
+        .expect("build skills server");
+
+        let (watcher, signals) = handler.arm_watch(std::time::Duration::from_millis(50)).await;
+        let _ = handler.reload_skills().await;
+        let relay_server = handler.clone();
+
+        let (client_tx, server_rx) = tokio::io::duplex(1 << 16);
+        let (server_tx, client_rx) = tokio::io::duplex(1 << 16);
+        let running = crate::mcp::server::rpc::serve_from_first_byte(handler, (server_rx, server_tx));
+        let relay = tokio::spawn(relay_server.relay_watch(signals, running.peer().clone()));
+
+        (client_tx, BufReader::new(client_rx).lines(), watcher, relay, running)
+    }
+
+    /// Open a `subscriptions/listen` stream for `uris` and wait for the
+    /// acknowledgment, so the edit that follows cannot race the
+    /// subscription.
+    async fn listen(
+        client_tx: &mut tokio::io::DuplexStream,
+        lines: &mut tokio::io::Lines<BufReader<tokio::io::DuplexStream>>,
+        uris: &[&str],
+    ) {
+        let subs = serde_json::to_string(uris).unwrap();
+        client_tx
+            .write_all(
+                format!(
+                    "{{\"jsonrpc\":\"2.0\",\"id\":\"l\",\"method\":\"subscriptions/listen\",\"params\":{{{META},\"notifications\":{{\"resourcesListChanged\":true,\"resourceSubscriptions\":{subs}}}}}}}\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        client_tx.flush().await.unwrap();
+        collect_until(lines, |seen| {
+            seen.iter().any(|l| l.contains("subscriptions/acknowledged"))
+        })
+        .await;
+    }
+
+    /// Read lines until `done` or a 5 s bound. Bounded per line, because
+    /// the failure this guards produces NOTHING and a fixed line count
+    /// would hang on the healthy path too.
+    async fn collect_until(
+        lines: &mut tokio::io::Lines<BufReader<tokio::io::DuplexStream>>,
+        done: impl Fn(&[String]) -> bool,
+    ) -> Vec<String> {
+        let mut seen = Vec::new();
+        while let Ok(Ok(Some(line))) = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line()).await
+        {
+            seen.push(line);
+            if done(&seen) {
+                break;
+            }
+        }
+        seen
+    }
+
+    fn updated_for(lines: &[String], uri: &str) -> bool {
+        lines
+            .iter()
+            .any(|l| l.contains("notifications/resources/updated") && l.contains(&format!("\"uri\":\"{uri}\"")))
+    }
+
+    /// THE end-to-end pin, and the whole point of the feature: an edit
+    /// on disk reaches a subscribed client with nobody calling `reload`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_edit_on_disk_reaches_a_subscribed_client_without_reload() {
+        let root = tempfile::tempdir().unwrap();
+        write_skill(root.path(), "alpha", "v1", "");
+        let (mut client_tx, mut lines, watcher, relay, running) = serve_watched(root.path()).await;
+        listen(&mut client_tx, &mut lines, &["hyprpilot://skills/alpha"]).await;
+
+        write_skill(root.path(), "alpha", "v2 edited", "");
+
+        let seen = collect_until(&mut lines, |seen| {
+            updated_for(seen, "hyprpilot://skills/alpha")
+                && seen.iter().any(|l| l.contains("notifications/resources/list_changed"))
+        })
+        .await;
+        assert!(
+            updated_for(&seen, "hyprpilot://skills/alpha"),
+            "no per-skill update reached the client: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|l| l.contains("notifications/resources/list_changed")),
+            "no list_changed reached the client: {seen:?}"
+        );
+
+        relay.abort();
+        drop(watcher);
+        drop(client_tx);
+        running.cancel().await.ok();
+    }
+
+    /// The reference-gap pin over the real wire. Editing a shared
+    /// convention file moves no skill body, and before the fingerprint
+    /// diff this reached a client as silence for the full 24h ttl.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reference_edit_on_disk_reaches_the_citing_skill() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("references")).unwrap();
+        std::fs::write(root.path().join("references/shared.md"), "v1").unwrap();
+        write_skill(
+            root.path(),
+            "alpha",
+            "body",
+            "references:\n  - ../references/shared.md\n",
+        );
+
+        let (mut client_tx, mut lines, watcher, relay, running) = serve_watched(root.path()).await;
+        listen(&mut client_tx, &mut lines, &["hyprpilot://skills/alpha"]).await;
+
+        // Only the reference moves. The skill body is untouched.
+        std::fs::write(root.path().join("references/shared.md"), "v2 edited").unwrap();
+
+        let seen = collect_until(&mut lines, |seen| updated_for(seen, "hyprpilot://skills/alpha")).await;
+        assert!(
+            updated_for(&seen, "hyprpilot://skills/alpha"),
+            "a reference edit reached the citing skill as silence: {seen:?}"
+        );
+        // The index renders a reference COUNT, not its content.
+        assert!(
+            !updated_for(&seen, "hyprpilot://skills"),
+            "the catalogue index was invalidated for a reference edit: {seen:?}"
+        );
+
+        relay.abort();
+        drop(watcher);
+        drop(client_tx);
+        running.cancel().await.ok();
+    }
+
+    /// A client that opened no stream still has to hear it: everything
+    /// before `2026-07-28` cannot subscribe, and a broadcast is the only
+    /// channel it has.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_client_with_no_stream_gets_the_broadcast() {
+        let root = tempfile::tempdir().unwrap();
+        write_skill(root.path(), "alpha", "v1", "");
+        let (mut client_tx, mut lines, watcher, relay, running) = serve_watched(root.path()).await;
+
+        client_tx
+            .write_all(
+                format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{{{META}}}}}\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        client_tx.flush().await.unwrap();
+        collect_until(&mut lines, |seen| seen.iter().any(|l| l.contains("\"result\""))).await;
+
+        write_skill(root.path(), "alpha", "v2 edited", "");
+
+        let seen = collect_until(&mut lines, |seen| {
+            seen.iter().any(|l| l.contains("notifications/resources/list_changed"))
+        })
+        .await;
+        assert!(
+            seen.iter().any(|l| l.contains("notifications/resources/list_changed")),
+            "no broadcast reached a stream-less client: {seen:?}"
+        );
+
+        relay.abort();
+        drop(watcher);
+        drop(client_tx);
+        running.cancel().await.ok();
+    }
+
+    /// Editor temp files rescan and diff to nothing. Free on the wire is
+    /// what lets the filter skip guessing them by name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn editor_noise_announces_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        write_skill(root.path(), "alpha", "v1", "");
+        let (mut client_tx, mut lines, watcher, relay, running) = serve_watched(root.path()).await;
+        listen(&mut client_tx, &mut lines, &["hyprpilot://skills/alpha"]).await;
+
+        std::fs::write(root.path().join("alpha/.SKILL.md.swp"), "editor scratch").unwrap();
+
+        let quiet = tokio::time::timeout(std::time::Duration::from_millis(1500), lines.next_line()).await;
+        assert!(quiet.is_err(), "editor noise produced a notification: {quiet:?}");
+
+        relay.abort();
+        drop(watcher);
+        drop(client_tx);
+        running.cancel().await.ok();
     }
 }
 

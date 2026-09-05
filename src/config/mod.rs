@@ -141,6 +141,10 @@ pub struct ResolvedSkillEntry {
     /// CLI arg. Mirrors `SkillEntry.ignore` from the TOML shape.
     pub ignore_patterns: Vec<String>,
     pub ignore: Option<globset::GlobSet>,
+    /// Whether the sidecar watches this root. Rides `--skill-dir`
+    /// alongside the ignore list, so the sidecar reconstructs the same
+    /// entry the launcher resolved.
+    pub watch: bool,
 }
 
 /// One resolved MCP catalog entry. Mirror of `ResolvedSkillEntry` for

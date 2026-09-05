@@ -240,6 +240,10 @@ pub fn build_skills_definition(
         let json = serde_json::json!({
             "dir": entry.dir.display().to_string(),
             "ignore": entry.ignore_patterns,
+            // Always emitted. A bool has no "unset" to confuse with
+            // false, so unlike `--include-profile` there is no empty
+            // list that could decay into its opposite.
+            "watch": entry.watch,
         });
         args.push("--skill-dir".to_string());
         args.push(json.to_string());
@@ -284,6 +288,37 @@ mod tests {
 
     fn default_cfg() -> McpConfig {
         McpConfig::default()
+    }
+
+    /// The flag has to survive the CLI round-trip, or the sidecar
+    /// watches a root the launcher was told to leave alone. Emitted
+    /// always: a bool has no "unset" to decay into its opposite.
+    #[test]
+    fn each_root_rides_argv_with_its_watch_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("alpha");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(bundle.join("SKILL.md"), "---\ndescription: d\n---\n\nbody\n").unwrap();
+
+        for watch in [true, false] {
+            let registry = Arc::new(SkillsRegistry::new(vec![crate::config::ResolvedSkillEntry {
+                dir: dir.path().to_path_buf(),
+                ignore_patterns: Vec::new(),
+                ignore: None,
+                watch,
+            }]));
+            registry.reload().unwrap();
+            let def = build_skills_definition(&registry, &default_cfg(), PathBuf::from("<test>"))
+                .expect("a root with a skill injects");
+            let args = def.raw["args"].as_array().expect("argv");
+            let json = args
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .find(|a| a.starts_with('{'))
+                .expect("a --skill-dir payload");
+            let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed["watch"], serde_json::Value::Bool(watch));
+        }
     }
 
     #[test]
