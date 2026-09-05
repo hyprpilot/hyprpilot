@@ -39,6 +39,20 @@ pub struct FileStat {
     pub size: Option<u64>,
     pub modified: Option<String>,
     pub created: Option<String>,
+    /// The raw mtime, never serialized — it exists so EQUALITY is
+    /// exact.
+    ///
+    /// `modified` is truncated to seconds because that is what a reader
+    /// wants, and comparing on it made two same-length edits inside one
+    /// second indistinguishable: the rescan diffed to nothing and every
+    /// citer stayed stale for the full ttl with no notification. That is
+    /// the one failure this whole fingerprint exists to prevent, so the
+    /// comparison basis has to be finer than the display basis.
+    ///
+    /// Nanosecond on every filesystem that can deliver watch events at
+    /// all; the coarse ones (FAT, NFS) are exactly the roots a captain
+    /// turns watching off for.
+    pub raw_modified: Option<SystemTime>,
 }
 
 impl FileStat {
@@ -51,10 +65,12 @@ impl FileStat {
         let Ok(meta) = std::fs::metadata(path) else {
             return Self::default();
         };
+        let modified = meta.modified().ok();
         Self {
             size: Some(meta.len()),
-            modified: meta.modified().ok().map(rfc3339),
+            modified: modified.map(rfc3339),
             created: meta.created().ok().map(rfc3339),
+            raw_modified: modified,
         }
     }
 
@@ -137,6 +153,7 @@ mod tests {
             size: Some(42),
             modified: Some("2026-08-11T09:08:59Z".into()),
             created: None,
+            raw_modified: None,
         };
         let mut map = Map::new();
         stat.extend(&mut map);

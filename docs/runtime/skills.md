@@ -5,7 +5,7 @@ order: 50
 
 # {{ $frontmatter.title }}
 
-Skills are `SKILL.md` bundles — reusable markdown instructions the agent can list, read, and reload. They reach the agent **only** through hyprpilot's own in-tree MCP server, which the launcher auto-injects into the vendor's MCP config.
+Skills are `SKILL.md` bundles — reusable markdown instructions the agent can list and read, and whose roots the sidecar watches so edits announce themselves. They reach the agent **only** through hyprpilot's own in-tree MCP server, which the launcher auto-injects into the vendor's MCP config.
 
 <!-- more -->
 
@@ -37,7 +37,7 @@ When `mcp.enabled` is `true`, `mcp.skills.enabled` is `true` (the default), **an
 - This is the one server also gated on **content**: no discovered skills means nothing is injected, since there would be nothing to serve.
 - `autoAcceptTools` / `autoRejectTools` default the approval policy for the injected server; the default `['*']` accept makes skill calls frictionless.
 
-The injected entry runs the current binary with one `--skill-dir` argument per configured root, each carrying that root's own ignore-glob list as JSON — see [the `mcp skills` reference](#hyprpilot-mcp-skills) below for the exact shape.
+The injected entry runs the current binary with one `--skill-dir` argument per configured root, each carrying that root's own ignore-glob list and watch flag as JSON — see [the `mcp skills` reference](#hyprpilot-mcp-skills) below for the exact shape.
 
 ## What the server exposes
 
@@ -63,37 +63,61 @@ A URI would also be the wrong shape. A reference's identity is its path; a `<slu
 
 And as tools:
 
-| Tool                    | Purpose                                                              |
-| ----------------------- | -------------------------------------------------------------------- |
-| `list_skills`           | Enumerate discovered skills with their metadata and reference count. |
-| `read_skill`            | Fetch a skill body by slug, plus its reference manifest.             |
-| `list_skill_references` | One skill's reference metadata, without bodies.                      |
-| `read_skill_references` | Fetch reference bodies by path.                                      |
-| `reload`                | Rescan the skill roots (picks up edits / new bundles).               |
+| Tool                    | Purpose                                                                                             |
+| ----------------------- | --------------------------------------------------------------------------------------------------- |
+| `list_skills`           | Enumerate discovered skills with their metadata and reference count.                                |
+| `read_skill`            | Fetch a skill body by slug, plus its reference manifest.                                            |
+| `list_skill_references` | One skill's reference metadata, without bodies.                                                     |
+| `read_skill_references` | Fetch reference bodies by path.                                                                     |
+| `reload`                | Force a rescan. The roots are watched, so this is the fallback for a root reported degraded or off. |
 
-### What `reload` tells connected clients
+### Watching
 
-Results carry a `ttlMs` of 24 hours — longer than a sidecar lives — so a client caches until told otherwise. `reload` earns that by **diffing** the catalogue and firing only what actually changed:
+Every configured root is watched recursively, and this is on by default. A change under one is coalesced over a 500 ms quiet window, rescanned, and announced — so an edit reaches connected clients without anyone calling a tool.
 
-| What you changed              | What fires                                                                                          |
-| ----------------------------- | --------------------------------------------------------------------------------------------------- |
-| A skill's body or frontmatter | `resources/updated` for that skill's URI and for the catalogue index, plus `resources/list_changed` |
-| Added or removed a skill      | `resources/list_changed`, plus `resources/updated` for the index                                    |
-| Nothing                       | nothing — a no-op reload never invalidates a client's cache                                         |
+Two things make watching affordable rather than noisy. The debouncer collapses an editor's write-temp-then-rename and a `git checkout` storm into one event per final path, and the **diff** decides what goes on the wire: a rescan that moved nothing announces nothing. An editor's `.swp` file therefore costs one pass over an already-current tree and nothing at all to a client.
 
-The tool result reports the same thing (`{ reloaded, membershipChanged, updated }`), so you can see what a reload actually moved.
+A root can lose coverage, and the sidecar keeps serving when it does:
+
+| Situation                                                                                                             | State      |
+| --------------------------------------------------------------------------------------------------------------------- | ---------- |
+| Normal                                                                                                                | `watching` |
+| Root does not exist, the inotify watch limit was reached, the watcher thread exited, or the backend reported an error | `degraded` |
+| `watch = false` on that root                                                                                          | `off`      |
+
+`list_skills` reports this as a `watch` object (`{ active, roots }`), and its text summary names any uncovered root. `active` is true only when there is at least one root and **every** one of them is covered. When it is not, `reload` is the way to refresh.
+
+An error the backend attributes to a path degrades only the roots that path falls under; one it cannot attribute degrades all of them, which is the only case where blaming a root that may be fine is honest.
+
+Two cases a watch cannot cover, both of which are what `reload` is for:
+
+- **A root on a filesystem that cannot deliver events** — NFS, SSHFS, most FUSE mounts accept the watch and then never fire. There is no error to detect, so set `watch = false` on that root and use `reload`.
+- **A reference file outside every configured root.** The watch covers each root recursively; a skill citing a path above its root still serves that file fresh on every fetch, but a change to it is not announced.
+
+### What a rescan tells connected clients
+
+Results carry a `ttlMs` of 24 hours — longer than a sidecar lives — so a client caches until told otherwise. Every rescan — the watcher's, or a `reload` — earns that by **diffing** the catalogue and firing only what actually changed:
+
+| What you changed                  | What fires                                                                                           |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| A skill's body or frontmatter     | `resources/updated` for that skill's URI and for the catalogue index, plus `resources/list_changed`  |
+| Added or removed a skill          | `resources/list_changed`, plus `resources/updated` for the index                                     |
+| A reference file a skill declares | `resources/updated` for every skill citing it, plus `resources/list_changed` — but **not** the index |
+| Nothing                           | nothing — a rescan that moved nothing never invalidates a client's cache                             |
+
+The index renders each skill's slug, title, description and reference **count**, never a reference's content — so a reference edit leaves it current, and firing for it would be exactly the spurious invalidation the diff exists to prevent.
+
+The `reload` result reports the same thing (`{ reloaded, membershipChanged, updated, referencesChanged, watch }`), so you can see what a rescan actually moved. `referencesChanged` carries canonical paths, the same address `read_skill_references` takes.
 
 A client on `2026-07-28` opts in with `subscriptions/listen` (`resourcesListChanged` and/or `resourceSubscriptions`), and its notifications then ride that stream, tagged with the subscription id. A client with no stream — anything on an older revision — receives them as plain unsolicited notifications, exactly as before.
 
 `resources/list_changed` fires on **any** change, not only on membership, precisely so a client that cannot subscribe still has a signal it can act on: a body edit would otherwise reach it only as a `resources/updated` it has no way to have asked for.
 
-::: warning Known gap: reference-only edits
+Reference **bodies** stay uncached — they resolve from disk on every fetch, so `modified` is always live. What the cache holds is each declared file's size and modification time, read once per rescan (one `metadata()` per unique file, however many skills cite it). A change in either is a change in **served** content, because `modified` is a field the manifest and the resource footer both report.
 
-The diff compares each skill's body and frontmatter. A skill's resource read also carries a footer listing its references' sizes and modification times, and editing only a reference file changes that footer without changing the skill — so no `resources/updated` fires for it. Resolving every declared reference on every reload would mean reading every cited file of every skill, which is the cost the manifest design exists to avoid. Fetch reference bodies with `read_skill_references`, which always resolves from disk.
+The comparison uses the raw modification time, not the seconds-truncated string it serves: displaying seconds is right for a reader, and comparing on them would make two same-length edits inside one second indistinguishable.
 
-:::
-
-Reload refreshes the **sidecar**, not anything already in an agent's context — a skill body read earlier this session stays as it was until re-read.
+A rescan refreshes the **sidecar**, not anything already in an agent's context — a skill body read earlier this session stays as it was until re-read. The notification is what tells a client to re-read; acting on it is the client's own behaviour.
 
 ## References
 
@@ -219,7 +243,7 @@ metadata:
 The subcommand that runs the server over stdio. **You don't run this by hand** — the agent vendor spawns it as a child via the auto-injected entry.
 
 ```sh
-hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[]}'
+hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[],"watch":true}'
 ```
 
 | Flag                 | Purpose                                                                              |
@@ -229,9 +253,9 @@ hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[]}'
 Each `--skill-dir` value is one self-contained JSON object:
 
 ```json
-{ "dir": "/abs/path", "ignore": ["glob1", "glob2"] }
+{ "dir": "/abs/path", "ignore": ["glob1", "glob2"], "watch": true }
 ```
 
-The launcher passes one `--skill-dir` per resolved skills root, each carrying that root's own ignore-glob list, so the sidecar rebuilds exactly the registry the launcher resolved — first-slug-wins on collision, per-root ignores applied independently.
+The launcher passes one `--skill-dir` per resolved skills root, each carrying that root's own ignore-glob list and watch flag, so the sidecar rebuilds exactly the registry the launcher resolved — first-slug-wins on collision, per-root ignores applied independently. `watch` defaults to `true`, so a hand-written catalogue entry that omits it still gets a watched root.
 
 The [global flags](./launch#global-flags) apply here too; the server owns stdin/stdout for the MCP protocol, so logs go to stderr as everywhere else.

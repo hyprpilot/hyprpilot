@@ -77,6 +77,14 @@ tokio-util = "0.7"
 # sidecars (two servers both mint `…-1`), which is harmless only while
 # the namespaces never meet — a v4 UUID is unique without coordination.
 uuid = { version = "1", features = ["v4"] }
+# Skill-root watcher for `hyprpilot mcp skills`. Pins `notify` 8.2 and
+# collapses an editor's write-temp-then-rename and a `git checkout`
+# storm into one event per final path, so the sidecar rescans once per
+# quiet window instead of once per inotify event. `notify` 9 is still a
+# release candidate; revisit it for the kernel-level `EventKindMask`
+# filtering that would drop the OPEN/CLOSE noise the relevance filter
+# discards by hand today.
+notify-debouncer-full = "0.7"
 
 [dev-dependencies]
 tempfile = "3"

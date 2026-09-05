@@ -1,9 +1,11 @@
 //! Skill loader — parses `<root>/<slug>/SKILL.md` bundles across
 //! every configured root and exposes them via `SkillsRegistry`.
-//! Reload is explicit (the MCP server's `reload` tool rescans the
-//! roots); fs-watching was dropped because edit-time noise from
-//! editors / git ops burnt through the debouncer faster than skills
-//! changed.
+//! Rescans are driven by `crate::watch` (the MCP server watches every
+//! root) and forced by its `reload` tool. Watching was once dropped
+//! because editor and git noise out-ran the debouncer; what makes it
+//! viable now is the DIFF rather than a better filter — a rescan that
+//! moved nothing announces nothing, so a temp file costs one pass over
+//! an already-current tree and nothing on the wire.
 //!
 //! Lives under `mcp/` because everything it feeds exists for the
 //! skills server, which serves these bundles as MCP resources and
@@ -270,6 +272,7 @@ mod tests {
             dir,
             ignore_patterns: vec![],
             ignore: None,
+            watch: true,
         }
     }
 
@@ -282,6 +285,7 @@ mod tests {
             dir,
             ignore_patterns: patterns.iter().map(|s| s.to_string()).collect(),
             ignore: Some(builder.build().expect("test glob set builds")),
+            watch: true,
         }
     }
 

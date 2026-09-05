@@ -87,6 +87,12 @@ Key `src/` modules:
   builds one per launch solely to gate that server's injection (skills
   is the only server also gated on content).
 - `profiles.rs` — the `profiles` subcommand.
+- `watch.rs` — general directory watching: `WatchRoot` in, debounced
+  `WatchSignal` out. Knows nothing about skills (no slugs, no
+  `CatalogueDelta`, no rmcp), so the seam is the type: the skills server
+  maps `ResolvedSkillEntry` into `WatchRoot` and owns everything
+  downstream of the signal. Crate root, not under `mcp/`, because the
+  skills sidecar is its first consumer rather than its shape.
 - `logging.rs`, `paths.rs`.
 
 ## Tasks
@@ -124,7 +130,7 @@ hyprpilot review -- --resume    # everything after `--` is forwarded verbatim
 hyprpilot profiles              # table of configured profiles
 hyprpilot profiles --json       # machine-readable
 hyprpilot mcp serve             # general tools (`open`)
-hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[]}'
+hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[],"watch":true}'
 hyprpilot mcp harness --max-sessions 64 --max-live-sessions 0
 ```
 
@@ -298,8 +304,8 @@ clobbering the layer list. This closes the footgun where a partial
 `[patches.mcp]` in a user layer silently dropped the seeded skills dir.
 
 `defaults.toml` seeds one unscoped patch pointing the skills server at
-the XDG skills dir, naming each in-tree server, and carrying the
-harness ceilings — the values that must survive layer merge, plus every
+the XDG skills dir (watched), naming each in-tree server, and carrying
+the harness ceilings — the values that must survive layer merge, plus every
 NESTED leaf the resolver never backfills.
 `enabled = true` / `autoAcceptTools = ["*"]` / `autoRejectTools = []`
 are the typed `McpConfig::default()` the resolver backfills per-leaf in
@@ -546,12 +552,18 @@ Legacy `resources/subscribe` is answered `Ok` rather than rmcp's
 `-32601`, because `resources.subscribe: true` would otherwise be a lie
 to a `2025-11-25` client that does receive the broadcasts.
 
-**Every mutable surface pairs the ttl with a signal.** `reload` DIFFS
-the catalogue (`CatalogueDelta`) rather than firing blind: any change
-emits `resources/list_changed` plus `resources/updated` per changed
-slug and for the catalogue index, and a reload that changed nothing
-emits **nothing**. Firing spuriously would make every reload cost a
-full re-fetch and teach clients to ignore us. On the harness, a turn
+**Every mutable surface pairs the ttl with a signal.** Every RESCAN —
+the watcher's on a debounced filesystem event, or `reload`'s on
+demand — DIFFS the catalogue (`CatalogueDelta`) rather than firing
+blind: any change emits `resources/list_changed` plus
+`resources/updated` per changed slug and for the catalogue index, and a
+rescan that changed nothing emits **nothing**. Firing spuriously would
+make every rescan cost a full re-fetch and teach clients to ignore us.
+A changed reference FINGERPRINT updates every citing skill but NOT the
+index, which renders a reference count and never a reference's content.
+Both callers reach the wire only through `announce()`, so the watcher
+and the tool cannot drift into announcing different things for one
+delta. On the harness, a turn
 starting emits `resources/updated` for its session; a turn ending emits
 `updated` AND `list_changed`, because the listing embeds live status;
 `spawn` emits `list_changed`, and `session_kill` emits both. The session
@@ -582,8 +594,20 @@ Skills reach the agent **only** through the skills server.
   folded via patches.
 - **Per-server blocks** each carry `enabled`, `name`,
   `autoAcceptTools`, `autoRejectTools`, plus their own fields:
-  `[mcp.skills].dirs` (`Vec<SkillEntry { dir, ignore }>`, default
-  seed `~/.config/hyprpilot/skills`) and `[mcp.harness]`'s
+  `[mcp.skills].dirs` (`Vec<SkillEntry { dir, ignore, watch }>`,
+  default seed `~/.config/hyprpilot/skills` with `watch = true`. Like
+  the harness ceilings, `watch` is SEEDED in `defaults.toml` rather than
+  left to Rust: `[mcp.skills]` is nested, so the resolver never
+  backfills its leaves, and the value a real launch reads belongs in the
+  file the captain edits. `DEFAULT_SKILL_ROOT_WATCH` covers only a
+  `Config` carrying no patches, and `defaults_seed_the_skills_watch`
+  pins the pair equal. One word, so no casing alias and no
+  duplicate-key hazard when a captain overrides the seed. A `dirs` entry
+  is keyed by `dir` in the patch engine — without that the array fell to
+  the primitive branch and a user layer naming the seeded root APPENDED
+  a second entry for the same directory instead of overriding it, so the
+  documented `watch = false` watched the root anyway and reported it
+  off) and `[mcp.harness]`'s
   `maxDepth` / `maxSessions` / `maxLiveSessions` / `notifyOnComplete` /
   `includeProfiles` / `excludeProfiles` / `mcp`.
   A per-server tool-policy glob list OVERRIDES the `[mcp]`-level one
@@ -657,8 +681,10 @@ Skills reach the agent **only** through the skills server.
   does not suppress it. **Skills is the only one also gated on
   content**: an empty registry means nothing to serve, so nothing is
   injected. Its entry spawns `hyprpilot mcp skills --skill-dir <json> …`
-  (one `--skill-dir` per root, each carrying that root's ignore list as
-  JSON).
+  (one `--skill-dir` per root, each carrying that root's ignore list and
+  `watch` flag as JSON; `watch` defaults ON when absent, so a
+  hand-written catalogue entry predating the flag still gets a watched
+  root).
 - **`hyprpilot mcp skills`** (`mcp/server/skills_server.rs`): an `rmcp` stdio
   server. Resources: `hyprpilot://skills` (the catalogue index —
   markdown; the bare form cannot collide with a slug because every slug
@@ -666,7 +692,9 @@ Skills reach the agent **only** through the skills server.
   **plus a manifest footer**). That is the WHOLE resource surface —
   there is no reference URI; see the `resources/list` bullet below.
   Tools: `list_skills`, `read_skill`, `list_skill_references`,
-  `read_skill_references`, `reload` (rescan dirs).
+  `read_skill_references`, `reload` (force a rescan — the FALLBACK for
+  a root the watcher reports degraded or off, and for a reference file
+  outside every root).
 - **A reference is addressed by its canonical PATH**, not a slug or a
   name. A path is what the citation IS; a slug-and-name is one of many
   addresses for one shared file, which is exactly what makes double
@@ -676,8 +704,9 @@ Skills reach the agent **only** through the skills server.
   unique by construction, so two references sharing a LABEL inside one
   skill are both fully addressable. There is no shadowing.
 - **A caller-supplied path is CHECKED, never joined.** `SkillsCache
-  .declared` holds every canonical path some skill declares, built once
-  per `reload` because it is structural; a load request is validated
+  .declared` maps every canonical path some skill declares to its
+  CITERS and its `FileStat` fingerprint, built once per rescan because
+  it is structural; a load request is validated
   against it, so the surface reaches exactly the files the skills
   already reference. The DECLARED spelling
   (`../references/output-diff.md`) never reaches the wire — it is
@@ -742,19 +771,53 @@ Skills reach the agent **only** through the skills server.
   is the filesystem birth time and is OMITTED where unsupported rather
   than back-filled from `modified`, which would answer a different
   question than the key names.
-- Reference bodies and manifests are resolved per call, not cached with
+- Reference BODIES and manifests are resolved per call, not cached with
   the skill — a reference changes far more often than its declaring
   skill, and caching would serve a stale convention (and a stale mtime,
   the one thing these fields exist to report) until an unrelated
-  `reload`. Only the declared-path allow-list is cached, because it is
-  structural.
+  rescan. Cached are the declared-path allow-list and each declared
+  file's size + mtime FINGERPRINT: the fingerprint is what lets a
+  rescan tell a reference edit from silence, and because `modified` is
+  a served manifest field a fingerprint change IS a served-content
+  change. The comparison is on the RAW mtime, not the served string:
+  `modified` is truncated to seconds for readability, and comparing on
+  that made two same-length edits inside one second identical — a rescan
+  that diffed to nothing while every citer went stale for the full ttl.
+  Display basis and comparison basis are deliberately different.
+  `between` likewise compares `title` / `description` / `refs` DIRECTLY,
+  because `skill_block` strips all three, so a frontmatter-only edit
+  otherwise rode on that same second-granularity stat. One `metadata()`
+  per unique declared file per rescan, so a file 60 skills share costs
+  one stat.
 - Bundles delimit each file with a `reference:` YAML block carrying its
   full manifest row, under a `skill_references:` banner naming the skill
   and count, so an appended bundle can never be mistaken for more skill
   body.
 - Skills are discovered by directory scan — the same
-  `SkillsRegistry` discovery the launcher uses — so editing a skill
-  and calling `reload` refreshes without restarting the session.
+  `SkillsRegistry` discovery the launcher uses — and every root is
+  WATCHED, so an edit is rescanned and announced without a tool call.
+  **The watcher contract:** armed BEFORE the startup scan (so an edit
+  between the scan and the first drain is queued, not lost); the relay
+  is spawned AFTER `serve_from_first_byte` with
+  `running.peer().clone()`, mirroring the harness exit hook, and is
+  never an opener and never on a request path — so it cannot
+  reintroduce the pre-loop deadlock. Rescans are serialised by a
+  `reload_gate` mutex (two concurrent `reload` calls could already
+  interleave scan/swap and regress the cache). Posture is
+  warn-and-DEGRADE, never fatal: unlike `--delegate-mcp`, losing the
+  watcher widens nothing and leaves the catalogue exactly as stale as
+  before one existed, so `ENOSPC`, a missing root or a dead watcher
+  thread mark the affected root degraded and keep serving. A
+  `WatchSignal::Degraded` carries the dirs the backend attributed the
+  error to; an EMPTY list means every root, and that is the only honest
+  reason to blame roots that may be fine — otherwise one root's
+  mid-session failure reported every other one unwatched, permanently. Coverage is reported
+  in `list_skills` (`watch: { active, roots }`) AND appended to its text
+  summary when partial, so an opencode-style text-only client learns it
+  needs the fallback. Two cases a watch cannot cover, which is why
+  `reload` stays: a root on a filesystem that never fires (NFS/SSHFS/
+  FUSE accept the watch silently — no error to degrade on, hence
+  per-root `watch = false`), and a reference declared ABOVE every root.
   **Every tool result carries BOTH a `content` text block AND
   `structured_content`** (`serve::structured_with_text` overwrites
   `CallToolResult::structured`'s `.content` with an explicit readable
@@ -1018,7 +1081,7 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   `slug`/`title`/`description`/`uri` scan view alongside the single
   `metadata` block. Built ONCE per skill into `LoadedSkill.meta_block`,
   not per request — except the timestamps, which are stat'd there and so
-  refresh on `reload`.
+  refresh on every rescan.
 
 ## Launch / exec (`spawn`)
 
@@ -1258,6 +1321,13 @@ Baseline smokes:
 - Each `mcp` subcommand answers `initialize` + `tools/list` over stdio
   and reports the right `serverInfo.name` (`hyprpilot` /
   `hyprpilot-skills` / `hyprpilot-harness`) and tool set.
+- `mcp skills` over a `subscriptions/listen` stream announces a disk
+  edit with no `reload`: editing a `SKILL.md` fires
+  `resources/updated` for that slug plus `resources/list_changed`;
+  editing a declared reference fires `updated` for every CITING slug
+  and NOT for the catalogue index; an editor temp file fires nothing.
+  A root pointed at a missing directory reports `watch.active: false`
+  with `state: degraded` and still answers `tools/list`.
 - `hyprpilot profiles` lists configured profiles (empty config →
   validation error naming the empty `[[profiles]]` list).
 - A deliberately broken `config.toml` aborts with a readable garde

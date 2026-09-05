@@ -5,6 +5,7 @@ mod paths;
 mod profiles;
 mod resolve;
 mod spawn;
+mod watch;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
