@@ -436,7 +436,11 @@ impl ServerHandler for HarnessServer {
                     Ok(launch) => launch,
                     Err(msg) => return Ok(tool_error(msg)),
                 };
-                match harness.session_send(&session, launch).await {
+                let steer = match optional_bool(&args, "steer") {
+                    Ok(steer) => steer.unwrap_or(false),
+                    Err(err) => return Ok(tool_error(err.to_string())),
+                };
+                match harness.session_send(&session, launch, steer).await {
                     Ok(payload) => {
                         // The turn STARTING flips the session back to
                         // `running`, so a subscriber holding the
@@ -734,6 +738,10 @@ fn session_send_props() -> serde_json::Value {
             "type": "integer",
             "description": "Seconds to wait when `wait` is true (default 300). Ignored otherwise. On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_status`, do not send again.",
         },
+        "steer": {
+            "type": "boolean",
+            "description": "Interrupt the turn in flight and make THIS prompt the next turn (default false). Without it, sending to a session that is still working is refused. With it, the running turn is terminated, its transcript kept and its record marked `steered`, and the conversation continues from the vendor's own session store — the handle does not change and the result reports `delivery: steered` with the interrupted turn number. Whatever that turn had not finished is lost, so use it to redirect an agent, not to queue work behind one. Inert on a session that has already exited.",
+        },
     })
 }
 
@@ -784,9 +792,11 @@ fn harness_tools() -> Vec<Tool> {
                  `delivery` field says what happened. The handle does NOT change — it stays valid for the whole \
                  conversation, however many turns you send, and the transcript keeps accumulating under it. \
                  Like `spawn`, it returns as soon as the turn starts unless you pass `wait: true`. \
-                 The session must have finished its previous turn: sending to a `running` session is refused, \
-                 because no vendor supports two concurrent turns on one conversation — poll `session_status` or \
-                 `session_kill` it first. The whole launch — profile, working directory, arguments, config \
+                 By default the session must have finished its previous turn: sending to a `running` session is \
+                 refused, because no vendor supports two concurrent turns on one conversation. Pass \
+                 `steer: true` to interrupt the turn in flight and take the conversation this way instead — \
+                 that is how you redirect an agent that is working on the wrong thing, and it keeps the handle, \
+                 the transcript and the loaded context. The whole launch — profile, working directory, arguments, config \
                  overlays — is inherited from the `spawn` and cannot be changed here; only the prompt, the \
                  `mode`, and how long you wait are per-turn."
                     .into(),
@@ -1050,8 +1060,18 @@ pub(super) fn launch_summary(payload: &serde_json::Value) -> String {
     // Which path was taken comes first: "resumed a finished conversation"
     // and "the agent was already going" are different situations, and a
     // caller deciding what to do next needs to know which it got.
-    if payload.get("delivery").and_then(serde_json::Value::as_str) == Some("resumed") {
-        out.push_str(&format!("Resumed session {handle} and sent.\n\n"));
+    match payload.get("delivery").and_then(serde_json::Value::as_str) {
+        Some("resumed") => out.push_str(&format!("Resumed session {handle} and sent.\n\n")),
+        Some("steered") => {
+            let turn = payload
+                .get("interruptedTurn")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "Interrupted turn {turn} of session {handle} and steered it.\n\n"
+            ));
+        }
+        _ => {}
     }
     if !body.is_empty() {
         out.push_str(body);
@@ -1368,6 +1388,23 @@ mod tests {
                 "the schema must state the default a caller gets: {described}"
             );
         }
+    }
+
+    /// `steer` cancels work, so a caller must be able to learn from the
+    /// schema alone that it is off unless asked for — and that it is a
+    /// `session_send` knob, since `spawn` has no turn to interrupt.
+    #[test]
+    fn steering_is_documented_on_session_send_alone_and_defaults_off() {
+        let props = session_send_props();
+        let described = props["steer"]["description"].as_str().expect("steer is documented");
+        assert!(
+            described.contains("default false"),
+            "the schema must state the default a caller gets: {described}"
+        );
+        assert!(
+            launch_props(&[]).get("steer").is_none(),
+            "`spawn` starts a conversation — there is no turn in flight for it to interrupt"
+        );
     }
 
     /// A description that names a tool which no longer exists sends the

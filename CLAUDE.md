@@ -885,8 +885,8 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   spawn's `cwd` / `mode` / `with_config` / `args` forward (recorded as
   `sessions::LaunchShape`) and its tool schema does NOT accept
   `cwd`/`args`/`with_config` — passing one is an error, not a silent
-  drop. Only `prompt`/`file`, `mode`, `wait`, `timeout_seconds` are
-  per-turn. How a conversation was launched is part of its IDENTITY:
+  drop. Only `prompt`/`file`, `mode`, `wait`, `timeout_seconds` and
+  `steer` are per-turn. How a conversation was launched is part of its IDENTITY:
   claude keys its conversation store by project directory, so a resume
   from a different cwd failed with a bare "No conversation found with
   session ID" for a healthy session.
@@ -935,6 +935,23 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   table entry, not N. Its check-and-spawn happens under the table lock —
   `Command::spawn` is synchronous, so "one turn at a time" is an
   invariant, not a racy check.
+- **`session_send { steer: true }` INTERRUPTS the turn in flight** rather
+  than being refused by it: terminate (`SessionTable::interrupt`), stamp
+  the dying turn `TurnOutcome::Steered`, then resume with the new prompt
+  as an ordinary next turn. `Steered` is a separate outcome from `Killed`
+  because the conversation did not end — a task-mode caller reading
+  `cancelled` for a superseded turn learns the wrong thing, and
+  `seal_turn` must not overwrite either stamp. Opt-in, because it
+  DISCARDS whatever the vendor had not persisted; a caller that merely
+  raced a running turn wants the refusal. Three things make it safe:
+  the resume-token check runs BEFORE the interrupt, so a steer that
+  could not resume kills nothing; `terminate` returns only once the child
+  is REAPED, since `respawn` refuses a session whose `done` watch is
+  still empty; and a `steering` claim (released by `SteerGuard` on drop,
+  so a failed relaunch cannot wedge the session) keeps a second steer
+  from terminating the turn the first just started — the interrupt and
+  the respawn are two operations with an await between them, which the
+  respawn lock alone cannot cover.
 - **`done.json` is the vendor-neutral completion signal.** The waiter
   task writes it beside `turns.jsonl` after `child.wait()` returns, and
   `launch_child` DELETES it before every turn — `session_send` reuses

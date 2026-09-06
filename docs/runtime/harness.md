@@ -101,15 +101,15 @@ One corollary worth stating: a scoped-out id that **is** configured refuses diff
 
 ## The tools
 
-| Tool             | Purpose                                                                                   |
-| ---------------- | ----------------------------------------------------------------------------------------- |
-| `list_profiles`  | Discover the profiles you can launch — vendor, model, effort, mode, cwd. Start here.      |
-| `spawn`          | Start a new session from a profile and send it a prompt.                                  |
-| `session_send`   | Send another message to an existing session, resuming it first if it's finished.          |
-| `session_list`   | List this server's sessions — handle, profile, status, exit code, timestamps.             |
-| `session_status` | One session's state without its transcript — the cheap poll.                              |
-| `session_read`   | Read, and optionally follow live, a session's transcript.                                 |
-| `session_kill`   | Stop a running session and everything it started — or reap one that has already finished. |
+| Tool             | Purpose                                                                                                                        |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `list_profiles`  | Discover the profiles you can launch — vendor, model, effort, mode, cwd. Start here.                                           |
+| `spawn`          | Start a new session from a profile and send it a prompt.                                                                       |
+| `session_send`   | Send another message to an existing session — resuming it if it's finished, or, with `steer`, interrupting the turn in flight. |
+| `session_list`   | List this server's sessions — handle, profile, status, exit code, timestamps.                                                  |
+| `session_status` | One session's state without its transcript — the cheap poll.                                                                   |
+| `session_read`   | Read, and optionally follow live, a session's transcript.                                                                      |
+| `session_kill`   | Stop a running session and everything it started — or reap one that has already finished.                                      |
 
 ### Workflow
 
@@ -117,7 +117,7 @@ One corollary worth stating: a scoped-out id that **is** configured refuses diff
 2. **`spawn { profile, prompt }`** to start a session. It returns a `session` handle straight away and the agent keeps working — that handle is the session's identity for every later call. Pass `wait: true` to block instead, worth it only for a turn you expect to be short: past `timeout_seconds` the result comes back with status `running`, a `nextCursor` to resume reading from, and the agent still working.
 3. **`session_status { session }`** until it reports `exited` — do **not** call `spawn` again for the same conversation. It reads no transcript, and its `transcriptBytes` tells you whether a running agent is progressing or wedged, which `status` alone cannot. To watch the output as it arrives instead, follow with `session_read { session, wait: true }`.
 4. **`session_read { session }`** for the transcript once it has finished.
-5. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one.
+5. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one. Add `steer: true` to interrupt a turn that is still running and take the conversation somewhere else instead.
 6. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports a `max_live_sessions` ceiling. It is state-aware, like `session_send`: on a **running** session it terminates the agent and keeps the transcript, so you can still read why; on an **already-finished** one it reaps the session and its transcript. Calling it twice is the natural stop-then-clean-up, and the result's `action` says which happened.
 7. **`session_list`** any time you need to recover a handle you lost.
 
@@ -352,10 +352,11 @@ The two tools share one parameter set:
 | `args`            | string[]         | `[]`          | Extra arguments forwarded verbatim to the vendor CLI — the tool equivalent of the CLI's trailing `-- <args>`. |
 | `wait`            | bool             | `false`       | Block until the turn finishes. Left off, the call returns as soon as the turn starts — poll `session_status`. |
 | `timeout_seconds` | integer          | `300`         | Seconds to wait when `wait` is true. On timeout the agent keeps running; the result reports status `running`. |
+| `steer`           | bool             | `false`       | **`session_send` only.** Interrupt the turn in flight and make this prompt the next turn — see below.         |
 
 Exactly one of `prompt` / `file` is required on both — the same mutual exclusion the CLI's `-p`/`-f` enforce. `spawn` additionally requires `profile` (an id from `list_profiles`). `session_send` additionally requires `session` (a handle from `spawn` or `session_list`) and has **no** `profile` parameter — the profile is inherited from the original spawn, so a conversation can't switch profiles mid-stream.
 
-`session_send` **replays the original launch** and does not let you change it. Only `prompt` / `file`, `mode`, `wait` and `timeout_seconds` are per-turn; `cwd`, `args` and `with_config` are inherited from the `spawn` and are **rejected** if passed — start a new session to launch differently.
+`session_send` **replays the original launch** and does not let you change it. Only `prompt` / `file`, `mode`, `wait`, `timeout_seconds` and `steer` are per-turn; `cwd`, `args` and `with_config` are inherited from the `spawn` and are **rejected** if passed — start a new session to launch differently.
 
 `mode` is the exception because a per-turn permission change is a real workflow (`mode: plan` for a read-only follow-up) and it does not affect how the vendor looks the conversation up.
 
@@ -385,9 +386,30 @@ A follow streams each new chunk as an MCP `notifications/progress` message when 
 
 `session_send` doesn't require the target session to still be alive — it inspects the handle's status and does whatever's needed:
 
-- **Refused** if the session is still `running` — no vendor supports two concurrent turns on one conversation. Wait for it (poll `session_status`) or `session_kill` it first.
-- **Refused** if it cannot be resumed, because the vendor never reported a session id for it — its first turn likely failed before the agent even started; check `session_read`.
+- **Refused** if the session is still `running` and `steer` was not set — no vendor supports two concurrent turns on one conversation. Poll `session_status` and send once it reports `exited`, or send again with `steer: true` to take the turn away from it.
+- **Refused** if it cannot be resumed, because the vendor has not reported a session id for it — its first turn either failed before the agent started or is still too young to have emitted one; check `session_read`.
+- **Steers**, when `steer: true` meets a running session: the turn in flight is interrupted and this prompt becomes the next turn. See below.
 - Otherwise it **resumes**: the vendor's own session store continues the conversation in a new process, and the result's `delivery` field reports `"resumed"`. **The handle does not change.** It stays valid for the whole conversation however many turns you send, and each turn writes its own files — so an N-turn conversation costs one session, not N, and every turn's output stays separately addressable. A `session_read` cursor names its turn, so a resume reads the file it was taken from.
+
+### Steering a turn in flight
+
+`session_send { session, prompt, steer: true }` is how you redirect an agent that is working on the wrong thing. It:
+
+1. terminates the turn in flight (`SIGTERM`, grace, then `SIGKILL`) and waits for the child to be reaped,
+2. marks that turn's record `steered` — not `killed`, because the conversation did not end,
+3. starts the next turn against the vendor's own session store with your prompt.
+
+The handle does not change, the transcript keeps accumulating, and the new turn is an ordinary turn with its own `turns/<n>` directory and its own `done.json` — so a watcher armed on it works exactly as it does after a `spawn`. The result reports `delivery: "steered"` and the number of the turn it interrupted.
+
+**It is opt-in because it discards work.** The interrupted agent keeps only what its vendor had already persisted; anything that turn had not finished is gone. A caller that merely raced a running turn wants the refusal, not a cancellation it did not ask for — which is why the default is to refuse.
+
+**A steer against a turn whose vendor id has not landed yet is refused whole, and kills nothing.** The refusal is checked before the interrupt precisely so the agent is not terminated with nothing left to resume against.
+
+`steer` is inert on a session that has already exited: there is no turn to interrupt, and the send is an ordinary resume.
+
+Two concurrent steers do not both fire. The first claims the session from its interrupt until its replacement turn starts; the second is refused rather than terminating the turn the first just launched.
+
+**`session_kill` is not the way to redirect an agent.** It stops a session whose work you do not want at all, and reaps a finished one — steering keeps the conversation, its transcript, and the context the agent has already loaded.
 
 ## Session lifetime
 
