@@ -483,7 +483,12 @@ impl SessionTable {
         session.turns.push(TurnRecord {
             turn: session.turn,
             outcome: TurnOutcome::Running,
-            provenance: session.provenance.clone(),
+            // THIS turn's launch, not the session's — the session still
+            // carries the outgoing turn's until the assignment below.
+            // Reading it here made every resumed turn report the
+            // previous turn's argv, model and prompt size, which is the
+            // one thing a per-turn record exists to prevent.
+            provenance: provenance.clone(),
             task_minted: false,
             started_at: rmcp::task_manager::current_timestamp(),
             started_at_wall: now,
@@ -1569,6 +1574,40 @@ mod tests {
         );
         assert_eq!(second.pid, live_pid, "turn 2 reports the process now running");
         assert_ne!(first.pid, second.pid, "the two turns ran as different processes");
+    }
+
+    /// A resumed turn is launched differently from the one before it —
+    /// it carries the vendor's resume flag, and may carry a different
+    /// model or mode. Recording the session's provenance instead of the
+    /// incoming one made every turn after the first report its
+    /// predecessor's argv, which is exactly what the per-turn record
+    /// exists to prevent.
+    #[tokio::test]
+    async fn a_resumed_turn_records_the_launch_that_started_it() {
+        let table = table();
+        let handle = spawn(&table, sleeper("0"));
+
+        let mut done = table.with(&handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+
+        let resumed = Provenance {
+            argv: vec!["--resume".into(), "vendor-session-id".into()],
+            ..provenance()
+        };
+        table.respawn(&handle, sleeper("0"), resumed).expect("respawn");
+
+        let second = table
+            .with(&handle, |s| s.turn_record(2))
+            .flatten()
+            .expect("turn 2")
+            .provenance;
+        assert_eq!(
+            second.argv,
+            vec!["--resume".to_string(), "vendor-session-id".to_string()],
+            "turn 2 must report the argv that launched turn 2"
+        );
     }
 
     #[tokio::test]
