@@ -174,6 +174,15 @@ pub(crate) struct Session {
     /// plain field so `wait: true` can await completion without holding
     /// the table lock across an await.
     done: watch::Receiver<Option<i32>>,
+    /// Set while a steer holds this session between interrupting the
+    /// turn in flight and starting its replacement.
+    ///
+    /// `respawn`'s lock makes "one turn at a time" an invariant, but a
+    /// steer is two operations with an await between them — so two
+    /// concurrent steers would both pass the running check, and the
+    /// second would terminate the turn the first had just started.
+    /// The flag closes that window; [`SteerGuard`] clears it.
+    steering: bool,
 }
 
 /// How one turn ended.
@@ -190,6 +199,14 @@ pub(crate) enum TurnOutcome {
     Exited(i32),
     /// We terminated it — `session_kill`, or a task cancellation.
     Killed,
+    /// We interrupted it to steer the conversation —
+    /// `session_send { steer: true }`. Distinct from [`Killed`] because
+    /// the conversation did not end: the next turn resumes it, so a
+    /// reader asking why a turn stopped needs "superseded" rather than
+    /// "cancelled".
+    ///
+    /// [`Killed`]: TurnOutcome::Killed
+    Steered,
 }
 
 /// What one turn did, retained after the next turn overwrites the live
@@ -325,6 +342,20 @@ impl Session {
     pub(crate) fn completion(&self) -> watch::Receiver<Option<i32>> {
         self.done.clone()
     }
+}
+
+/// Wait for the child to be reaped, bounded by [`KILL_GRACE`]. `Err` is
+/// the bound elapsing, which is a signal to escalate rather than proof
+/// the process survived.
+async fn await_exit(done: &mut watch::Receiver<Option<i32>>) -> std::result::Result<(), tokio::time::error::Elapsed> {
+    tokio::time::timeout(KILL_GRACE, async {
+        while done.borrow().is_none() {
+            if done.changed().await.is_err() {
+                break;
+            }
+        }
+    })
+    .await
 }
 
 /// Best-effort signal to a whole process group. Every failure is logged
@@ -572,7 +603,7 @@ impl SessionTable {
     pub(crate) fn seal_turn(&self, handle: &str, turn: u32, code: i32) {
         self.with_mut(handle, |session| {
             if let Some(record) = session.turns.iter_mut().find(|r| r.turn == turn) {
-                if record.outcome != TurnOutcome::Killed {
+                if !matches!(record.outcome, TurnOutcome::Killed | TurnOutcome::Steered) {
                     record.outcome = TurnOutcome::Exited(code);
                 }
                 if record.finished_at.is_none() {
@@ -586,7 +617,25 @@ impl SessionTable {
     /// unknown handle, `Some(was_running)` otherwise — killing an
     /// already-exited session is a no-op, not an error.
     pub(crate) async fn kill(&self, handle: &str) -> Option<bool> {
-        // Clone the bits we need and drop the lock: `terminate` awaits.
+        self.terminate(handle, TurnOutcome::Killed).await
+    }
+
+    /// The body both [`kill`] and [`interrupt`] run, differing only in
+    /// the stamp the dying turn carries. A steer must not report
+    /// `killed`: the conversation continues, and a task-mode caller
+    /// reading `cancelled` for a turn that was superseded learns the
+    /// wrong thing.
+    ///
+    /// Returns once the child is REAPED, not once the signal is sent.
+    /// A steer respawns immediately afterwards, and `respawn` refuses a
+    /// session whose `done` watch is still empty — so returning early
+    /// would make the steer fail against a process that is already
+    /// dying.
+    ///
+    /// [`kill`]: SessionTable::kill
+    /// [`interrupt`]: SessionTable::interrupt
+    async fn terminate(&self, handle: &str, stamp: TurnOutcome) -> Option<bool> {
+        // Clone the bits we need and drop the lock: this awaits.
         let target = self.with(handle, |s| (s.pgid, s.completion(), s.handle.clone()))?;
         let (pgid, mut done, handle) = target;
         if done.borrow().is_some() {
@@ -602,26 +651,62 @@ impl SessionTable {
             let current = session.turn;
             if let Some(record) = session.turns.iter_mut().find(|r| r.turn == current) {
                 if record.outcome == TurnOutcome::Running && session.done.borrow().is_none() {
-                    record.outcome = TurnOutcome::Killed;
+                    record.outcome = stamp;
                     record.finished_at = Some(rmcp::task_manager::current_timestamp());
                 }
             }
         });
         signal_group(pgid, nix::sys::signal::Signal::SIGTERM);
-        let graceful = tokio::time::timeout(KILL_GRACE, async {
-            while done.borrow().is_none() {
-                if done.changed().await.is_err() {
-                    break;
-                }
-            }
-        })
-        .await;
-        if graceful.is_err() {
+        if await_exit(&mut done).await.is_err() {
             tracing::warn!(%handle, pgid, "mcp harness: session ignored SIGTERM; escalating to SIGKILL");
             signal_group(pgid, nix::sys::signal::Signal::SIGKILL);
+            if await_exit(&mut done).await.is_err() {
+                tracing::warn!(%handle, pgid, "mcp harness: session outlived SIGKILL");
+            }
         }
 
         Some(true)
+    }
+
+    /// Interrupt the turn in flight so the caller can start a
+    /// replacement — the engine under `session_send { steer: true }`.
+    ///
+    /// Returns the interrupted turn's number, or `None` when the session
+    /// had nothing running (a steer against an idle session is an
+    /// ordinary send, not an error). The returned guard holds the steer
+    /// open: it must live until the replacement turn has been started or
+    /// abandoned, because it is what keeps a second steer from killing
+    /// this one's turn.
+    pub(crate) async fn interrupt(self: &Arc<Self>, handle: &str) -> Result<(Option<u32>, SteerGuard), InterruptError> {
+        // Claim the session and read its state in ONE lock acquisition:
+        // a check released before the claim is a window a second steer
+        // fits through.
+        let claim = {
+            let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            let session = guard.get_mut(handle).ok_or(InterruptError::Unknown)?;
+            if session.steering {
+                return Err(InterruptError::Steering);
+            }
+            if session.status() != SessionStatus::Running {
+                return Ok((None, SteerGuard::inert()));
+            }
+            session.steering = true;
+            session.turn
+        };
+
+        let guard = SteerGuard {
+            table: Some(Arc::clone(self)),
+            handle: handle.to_string(),
+        };
+        self.terminate(handle, TurnOutcome::Steered).await;
+
+        Ok((Some(claim), guard))
+    }
+
+    /// Release a steer claim. Idempotent — [`SteerGuard`] calls it on
+    /// drop, so an early return anywhere in the steer path clears it.
+    fn end_steer(&self, handle: &str) {
+        self.with_mut(handle, |session| session.steering = false);
     }
 
     /// Kill every live session and drop the table, removing every
@@ -689,6 +774,7 @@ impl SessionTable {
             pid,
             pgid,
             done,
+            steering: false,
         };
         self.inner
             .lock()
@@ -708,6 +794,45 @@ pub(crate) enum RespawnError {
     /// the race is told rather than quietly starting a second one.
     Busy,
     Spawn(anyhow::Error),
+}
+
+/// Why a [`SessionTable::interrupt`] could not claim a session.
+#[derive(Debug)]
+pub(crate) enum InterruptError {
+    Unknown,
+    /// Another steer holds this session between its interrupt and its
+    /// replacement turn. The loser is told rather than terminating the
+    /// turn the winner just started.
+    Steering,
+}
+
+/// A steer's claim on a session, from the interrupt until the
+/// replacement turn has started or been abandoned.
+///
+/// Clearing on drop is the point: a steer whose relaunch fails must not
+/// leave the session permanently unsteerable.
+pub(crate) struct SteerGuard {
+    table: Option<Arc<SessionTable>>,
+    handle: String,
+}
+
+impl SteerGuard {
+    /// A guard over nothing — for a steer that found no turn in flight
+    /// and therefore claimed nothing.
+    fn inert() -> Self {
+        Self {
+            table: None,
+            handle: String::new(),
+        }
+    }
+}
+
+impl Drop for SteerGuard {
+    fn drop(&mut self) {
+        if let Some(table) = self.table.take() {
+            table.end_steer(&self.handle);
+        }
+    }
 }
 
 struct Launched {
@@ -1624,6 +1749,57 @@ mod tests {
             table.respawn("nope", sleeper("1"), provenance()),
             Err(RespawnError::Unknown)
         ));
+
+        table.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn an_interrupt_stamps_the_turn_steered_and_frees_the_session() {
+        let table = table();
+        let handle = spawn(&table, sleeper("30"));
+
+        let (turn, guard) = table.interrupt(&handle).await.expect("interrupt");
+        assert_eq!(turn, Some(1), "the interrupted turn is reported by number");
+        assert_eq!(
+            table.with(&handle, |s| s.turn_record(1).unwrap().outcome).unwrap(),
+            TurnOutcome::Steered,
+            "a steered turn must not read as killed — the conversation continues"
+        );
+
+        // `terminate` returns once the child is reaped, which is the
+        // whole reason the replacement turn can start immediately.
+        table.respawn(&handle, sleeper("30"), provenance()).expect("respawn");
+        assert_eq!(
+            table.with(&handle, |s| s.turn_record(1).unwrap().outcome).unwrap(),
+            TurnOutcome::Steered,
+            "sealing the outgoing turn must not overwrite the steer stamp"
+        );
+
+        drop(guard);
+        table.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_steer_claim_refuses_a_second_one_until_it_is_released() {
+        let table = table();
+        let handle = spawn(&table, sleeper("30"));
+
+        let (_, guard) = table.interrupt(&handle).await.expect("interrupt");
+        let Err(err) = table.interrupt(&handle).await else {
+            panic!("a claimed session must refuse a second steer");
+        };
+        assert!(
+            matches!(err, InterruptError::Steering),
+            "expected Steering, got {err:?}"
+        );
+
+        // Without this the second steer would terminate the turn the
+        // first one is about to start.
+        drop(guard);
+        let (turn, _guard) = table.interrupt(&handle).await.expect("interrupt after release");
+        assert_eq!(turn, None, "nothing was running, so nothing was interrupted");
+
+        assert!(matches!(table.interrupt("nope").await, Err(InterruptError::Unknown)));
 
         table.shutdown().await;
     }

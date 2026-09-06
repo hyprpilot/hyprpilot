@@ -471,9 +471,10 @@ impl Harness {
                             format!("unknown session `{handle}`. Call `session_list` for live handles.")
                         }
                         super::sessions::RespawnError::Busy => format!(
-                            "session `{handle}` already has a turn in flight. Wait for it (poll \
-                             `session_read`) or `session_kill` it — no vendor supports two \
-                             concurrent turns on one conversation."
+                            "session `{handle}` already has a turn in flight — no vendor supports two \
+                             concurrent turns on one conversation. Send again with `steer: true` to \
+                             interrupt that turn and take the conversation this way instead, or poll \
+                             `session_status` and send once it reports `exited`."
                         ),
                         super::sessions::RespawnError::Spawn(err) => {
                             format!("could not start the next turn: {err:#}")
@@ -901,6 +902,10 @@ impl Harness {
                             // which says nothing — the stamp is the
                             // fact worth reporting.
                             super::sessions::TurnOutcome::Killed => ("killed", None),
+                            // Superseded, not cancelled — a later turn
+                            // of this same conversation carries on from
+                            // whatever it had written.
+                            super::sessions::TurnOutcome::Steered => ("steered", None),
                         };
                         let mut row = json!({
                             "turn": record.turn,
@@ -930,7 +935,14 @@ impl Harness {
     /// The result says which path was taken, because "resumed a finished
     /// conversation" and "the agent was still going" are materially
     /// different things to a caller deciding what to do next.
-    pub(crate) async fn session_send(&self, handle: &str, args: LaunchToolArgs) -> Result<Value, String> {
+    ///
+    /// `steer` decides what happens when a turn IS in flight: without
+    /// it the send is refused, with it the turn in flight is interrupted
+    /// and this prompt becomes the next turn of the same conversation.
+    /// It is opt-in because interrupting discards whatever the agent had
+    /// not yet finished — a caller that merely raced a running turn
+    /// wants the refusal, not a cancellation it did not ask for.
+    pub(crate) async fn session_send(&self, handle: &str, args: LaunchToolArgs, steer: bool) -> Result<Value, String> {
         // Harvest lazily. A detached launch — now the default — returns
         // before the waiting path ever runs, so its session has no resume
         // token yet; without this it could never be resumed, and the
@@ -953,12 +965,41 @@ impl Harness {
             })
             .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))?;
 
+        // Checked BEFORE any interrupt. A steer against a turn whose
+        // vendor id has not landed yet would terminate the agent and
+        // then have nothing to resume against — so the refusal has to
+        // come while the turn is still alive.
         if !target.has_resume_token {
             return Err(format!(
-                "session `{handle}` cannot be resumed — the vendor never reported a session id for it. \
-                 Its first turn probably failed before the agent started — check `session_read`."
+                "session `{handle}` cannot be resumed — the vendor has not reported a session id for it. \
+                 Either its first turn failed before the agent started, or that turn is still too young to \
+                 have emitted one — check `session_read`."
             ));
         }
+
+        // Interrupt before resolving anything else: the replacement turn
+        // is an ordinary resume, and everything below it is the same
+        // code an idle session takes.
+        let interrupted = if steer {
+            let (turn, guard) = self.sessions.interrupt(handle).await.map_err(|err| match err {
+                super::sessions::InterruptError::Unknown => {
+                    format!("unknown session `{handle}`. Call `session_list` for live handles.")
+                }
+                super::sessions::InterruptError::Steering => format!(
+                    "session `{handle}` is already being steered — another `session_send` is interrupting its \
+                     turn right now. Wait for that one to land, then send again."
+                ),
+            })?;
+            if let Some(turn) = turn {
+                tracing::info!(%handle, turn, "mcp harness: turn interrupted to steer");
+            }
+            // The guard rides the rest of this call: it is released when
+            // the replacement turn has started, or when an error below
+            // abandons it.
+            Some((turn, guard))
+        } else {
+            None
+        };
 
         // The "still running" refusal lives in `SessionTable::respawn`,
         // under the table lock. Checking it here as well would only be a
@@ -989,7 +1030,13 @@ impl Harness {
             ..args
         };
         let mut out = self.launch(args, Some(target)).await?;
-        out["delivery"] = json!("resumed");
+        match interrupted.as_ref().and_then(|(turn, _)| *turn) {
+            Some(turn) => {
+                out["delivery"] = json!("steered");
+                out["interruptedTurn"] = json!(turn);
+            }
+            None => out["delivery"] = json!("resumed"),
+        }
 
         Ok(out)
     }
@@ -2669,7 +2716,11 @@ impl Harness {
 
         let payload = match record.outcome {
             TurnOutcome::Running => TaskPayload::Working,
-            TurnOutcome::Killed => TaskPayload::Cancelled,
+            // A steered turn is `cancelled` too: SEP-2663 has no
+            // "superseded", and the turn genuinely stopped short. The
+            // conversation continuing is the NEXT turn's task, which
+            // mints its own id.
+            TurnOutcome::Killed | TurnOutcome::Steered => TaskPayload::Cancelled,
             // EVERY exit is `Completed`, including a non-zero one.
             //
             // SEP-2663 reserves `failed` for "a JSON-RPC error occurred
