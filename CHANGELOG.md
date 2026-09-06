@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.18.0](https://github.com/hyprpilot/hyprpilot/compare/v3.17.0...v3.18.0) (2026-09-06)
+
+
+### Features
+
+* **harness:** steer a turn in flight from session_send ([#255](https://github.com/hyprpilot/hyprpilot/issues/255)) ([b5bd676](https://github.com/hyprpilot/hyprpilot/commit/b5bd6763fca6fe14be64cd41ce5aabbfc252ea9f))
+
 ## [3.17.0](https://github.com/hyprpilot/hyprpilot/compare/v3.16.0...v3.17.0) (2026-09-05)
 
 
