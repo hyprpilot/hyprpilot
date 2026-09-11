@@ -26,7 +26,7 @@ The skills catalogue is configured under the [`mcp` block](../config/mcp#the-mcp
     └── SKILL.md
 ```
 
-Per-root `ignore` globs skip matching slugs at load. On a slug collision across roots, the first root wins. Missing roots warn and are skipped.
+Per-root `include` globs keep only matching slugs and per-root `ignore` globs skip matching slugs; a slug matching both is skipped. Filtering is by slug only — a loaded skill still serves every reference it declares. On a slug collision across roots, the first root wins. Missing roots warn and are skipped.
 
 The compiled defaults seed the XDG skills root `~/.config/hyprpilot/skills` (via a root [`patches`](../config/patches) entry), and the built-in `mcp` defaults (`enabled: true`, `autoAcceptTools: ['*']`) fill in the rest — so skills work out of the box once you drop a `SKILL.md` in. A profile's own `mcp` block wholesale-replaces the global one — point a profile at a different skills root, or disable the server entirely.
 
@@ -39,7 +39,7 @@ When `mcp.enabled` is `true`, `mcp.skills.enabled` is `true` (the default), **an
 - This is the one server also gated on **content**: no discovered skills means nothing is injected, since there would be nothing to serve.
 - `autoAcceptTools` / `autoRejectTools` default the approval policy for the injected server; the default `['*']` accept makes skill calls frictionless.
 
-The injected entry runs the current binary with one `--skill-dir` argument per configured root, each carrying that root's own ignore-glob list and watch flag as JSON — see [the `mcp skills` reference](#hyprpilot-mcp-skills) below for the exact shape.
+The injected entry runs the current binary with one `--skill-dir` argument per configured root, each carrying that root's own include and ignore glob lists and watch flag as JSON — see [the `mcp skills` reference](#hyprpilot-mcp-skills) below for the exact shape.
 
 ## What the server exposes
 
@@ -255,9 +255,9 @@ hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[],"watch":true}'
 Each `--skill-dir` value is one self-contained JSON object:
 
 ```json
-{ "dir": "/abs/path", "ignore": ["glob1", "glob2"], "watch": true }
+{ "dir": "/abs/path", "include": ["glob1"], "ignore": ["glob2"], "watch": true }
 ```
 
-The launcher passes one `--skill-dir` per resolved skills root, each carrying that root's own ignore-glob list and watch flag, so the sidecar rebuilds exactly the registry the launcher resolved — first-slug-wins on collision, per-root ignores applied independently. `watch` defaults to `true`, so a hand-written catalogue entry that omits it still gets a watched root.
+The launcher passes one `--skill-dir` per resolved skills root, each carrying that root's own include and ignore glob lists and watch flag, so the sidecar rebuilds exactly the registry the launcher resolved — first-slug-wins on collision, per-root filters applied independently. An absent or empty `include` means no allow-list, never "allow nothing". `watch` defaults to `true`, so a hand-written catalogue entry that omits it still gets a watched root.
 
 The [global flags](./launch#global-flags) apply here too; the server owns stdin/stdout for the MCP protocol, so logs go to stderr as everywhere else.

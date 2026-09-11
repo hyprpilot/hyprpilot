@@ -166,6 +166,19 @@ impl SkillsRegistry {
             }
             let loaded = loader::load_skills(&entry.dir)?;
             for skill in loaded {
+                // debug, not warn: an allow-list naming three slugs
+                // excludes every other one, and a warning per exclusion
+                // would bury the log it shares with the ignore path.
+                if let Some(glob) = &entry.include {
+                    if !glob.is_match(skill.slug.as_str()) {
+                        debug!(
+                            slug = %skill.slug,
+                            dir = %entry.dir.display(),
+                            "skills registry: slug outside include glob — skipping",
+                        );
+                        continue;
+                    }
+                }
                 if let Some(glob) = &entry.ignore {
                     if glob.is_match(skill.slug.as_str()) {
                         warn!(
@@ -272,6 +285,8 @@ mod tests {
             dir,
             ignore_patterns: vec![],
             ignore: None,
+            include_patterns: vec![],
+            include: None,
             watch: true,
         }
     }
@@ -285,6 +300,23 @@ mod tests {
             dir,
             ignore_patterns: patterns.iter().map(|s| s.to_string()).collect(),
             ignore: Some(builder.build().expect("test glob set builds")),
+            include_patterns: vec![],
+            include: None,
+            watch: true,
+        }
+    }
+
+    fn entry_with_include(dir: PathBuf, patterns: &[&str]) -> crate::config::ResolvedSkillEntry {
+        let mut builder = globset::GlobSetBuilder::new();
+        for p in patterns {
+            builder.add(globset::Glob::new(p).expect("test glob compiles"));
+        }
+        crate::config::ResolvedSkillEntry {
+            dir,
+            ignore_patterns: vec![],
+            ignore: None,
+            include_patterns: patterns.iter().map(|s| s.to_string()).collect(),
+            include: Some(builder.build().expect("test glob set builds")),
             watch: true,
         }
     }
@@ -369,6 +401,47 @@ mod tests {
         reg.reload().unwrap();
         assert_eq!(reg.count(), 1);
         assert!(reg.get(&SkillSlug::parse("alpha").unwrap()).is_some());
+    }
+
+    #[test]
+    fn include_glob_keeps_only_matching_slugs() {
+        let tmp = TempDir::new().unwrap();
+        seed_skill(tmp.path(), "gitlab-mr-create", "gitlab", "body");
+        seed_skill(tmp.path(), "git-commit", "git", "body");
+        seed_skill(tmp.path(), "linear-triage", "linear", "body");
+        let reg = SkillsRegistry::new(vec![entry_with_include(
+            tmp.path().to_path_buf(),
+            &["gitlab-*", "git-commit"],
+        )]);
+        reg.reload().unwrap();
+        assert_eq!(reg.count(), 2);
+        assert!(reg.get(&SkillSlug::parse("gitlab-mr-create").unwrap()).is_some());
+        assert!(reg.get(&SkillSlug::parse("git-commit").unwrap()).is_some());
+        assert!(reg.get(&SkillSlug::parse("linear-triage").unwrap()).is_none());
+    }
+
+    /// Deny beats allow, the same way it does for `[[mcps]]`.
+    #[test]
+    fn skill_ignore_beats_include_on_overlap() {
+        let tmp = TempDir::new().unwrap();
+        seed_skill(tmp.path(), "gitlab-mr-create", "gitlab", "body");
+        seed_skill(tmp.path(), "gitlab-mr-review", "gitlab", "body");
+        let mut include = globset::GlobSetBuilder::new();
+        include.add(globset::Glob::new("gitlab-*").unwrap());
+        let mut ignore = globset::GlobSetBuilder::new();
+        ignore.add(globset::Glob::new("*-review").unwrap());
+        let entry = crate::config::ResolvedSkillEntry {
+            dir: tmp.path().to_path_buf(),
+            ignore_patterns: vec!["*-review".into()],
+            ignore: Some(ignore.build().unwrap()),
+            include_patterns: vec!["gitlab-*".into()],
+            include: Some(include.build().unwrap()),
+            watch: true,
+        };
+        let reg = SkillsRegistry::new(vec![entry]);
+        reg.reload().unwrap();
+        assert_eq!(reg.count(), 1);
+        assert!(reg.get(&SkillSlug::parse("gitlab-mr-create").unwrap()).is_some());
     }
 
     #[test]

@@ -630,7 +630,7 @@ Skills reach the agent **only** through the skills server.
   folded via patches.
 - **Per-server blocks** each carry `enabled`, `name`,
   `autoAcceptTools`, `autoRejectTools`, plus their own fields:
-  `[mcp.skills].dirs` (`Vec<SkillEntry { dir, ignore, watch }>`,
+  `[mcp.skills].dirs` (`Vec<SkillEntry { dir, include, ignore, watch }>`,
   default seed `~/.config/hyprpilot/skills` with `watch = true`. Like
   the harness ceilings, `watch` is SEEDED in `defaults.toml` rather than
   left to Rust: `[mcp.skills]` is nested, so the resolver never
@@ -707,7 +707,10 @@ Skills reach the agent **only** through the skills server.
   no patches, and `defaults_seed_the_harness_ceilings` pins the pair
   equal so they cannot drift.
 - Each skill root is a flat directory of `<slug>/SKILL.md` bundles
-  plus an optional per-root `ignore` glob list. `SkillsRegistry`
+  plus optional per-root `include` (allow-list) and `ignore` glob
+  lists, the same pair `[[mcps]]` entries carry — ignore beats include,
+  and an empty or absent `include` means no allow-list rather than
+  "allow nothing". `SkillsRegistry`
   scans + first-slug-wins on collision; missing roots warn + skip.
 - **Auto-inject** (`resolve::build_mcp_registry_with` +
   `mcp::auto_inject`, one `build_*_definition` per server): under the
@@ -717,8 +720,8 @@ Skills reach the agent **only** through the skills server.
   does not suppress it. **Skills is the only one also gated on
   content**: an empty registry means nothing to serve, so nothing is
   injected. Its entry spawns `hyprpilot mcp skills --skill-dir <json> …`
-  (one `--skill-dir` per root, each carrying that root's ignore list and
-  `watch` flag as JSON; `watch` defaults ON when absent, so a
+  (one `--skill-dir` per root, each carrying that root's include and ignore
+  lists and `watch` flag as JSON; `watch` defaults ON when absent, so a
   hand-written catalogue entry predating the flag still gets a watched
   root).
 - **`hyprpilot mcp skills`** (`mcp/server/skills_server.rs`): an `rmcp` stdio
