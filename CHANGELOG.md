@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.19.0](https://github.com/hyprpilot/hyprpilot/compare/v3.18.0...v3.19.0) (2026-09-11)
+
+
+### Features
+
+* **mcp:** add an include allow-list to catalog entries ([#257](https://github.com/hyprpilot/hyprpilot/issues/257)) ([0cce3de](https://github.com/hyprpilot/hyprpilot/commit/0cce3de8b4f95f4a0efc3383f2092ece703c0233))
+
 ## [3.18.0](https://github.com/hyprpilot/hyprpilot/compare/v3.17.0...v3.18.0) (2026-09-06)
 
 
