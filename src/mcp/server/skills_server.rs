@@ -136,6 +136,10 @@ pub struct SkillDirEntry {
     pub dir: PathBuf,
     #[serde(default)]
     pub ignore: Vec<String>,
+    /// Allow-list globs. Absent (the pre-include JSON shape) decodes
+    /// as empty, which means "no allow-list" — never "allow nothing".
+    #[serde(default)]
+    pub include: Vec<String>,
     /// Defaults ON, so a hand-written MCP catalogue entry carrying the
     /// pre-watcher JSON shape still gets a watched root.
     #[serde(default = "watch_default")]
@@ -146,9 +150,39 @@ fn watch_default() -> bool {
     true
 }
 
+/// Compile one `--skill-dir` glob list. An empty list is `None` — no
+/// filter at all, which for `include` is the difference between "allow
+/// everything" and "allow nothing". A bad glob is logged and skipped
+/// rather than aborting startup (graceful degradation).
+fn compile_arg_globs(patterns: &[String], dir: &std::path::Path, kind: &str) -> Option<globset::GlobSet> {
+    if patterns.is_empty() {
+        return None;
+    }
+    let mut builder = globset::GlobSetBuilder::new();
+    for pat in patterns {
+        match globset::Glob::new(pat) {
+            Ok(g) => {
+                builder.add(g);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    pattern = %pat,
+                    dir = %dir.display(),
+                    kind,
+                    "mcp::server: bad skill glob — skipping"
+                );
+            }
+        }
+    }
+    builder.build().ok()
+}
+
 fn parse_skill_dir_arg(raw: &str) -> Result<SkillDirEntry, String> {
     serde_json::from_str::<SkillDirEntry>(raw)
-        .map_err(|e| format!("--skill-dir must be a JSON object `{{\"dir\":\"...\",\"ignore\":[...]}}`: {e}"))
+        .map_err(|e| {
+            format!("--skill-dir must be a JSON object `{{\"dir\":\"...\",\"include\":[...],\"ignore\":[...]}}`: {e}")
+        })
 }
 
 /// Run the rmcp stdio server in the foreground. Returns when the
@@ -305,27 +339,8 @@ impl SkillsServer {
             .skill_dirs
             .into_iter()
             .map(|entry| {
-                let ignore = if entry.ignore.is_empty() {
-                    None
-                } else {
-                    let mut builder = globset::GlobSetBuilder::new();
-                    for pat in &entry.ignore {
-                        match globset::Glob::new(pat) {
-                            Ok(g) => {
-                                builder.add(g);
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    %err,
-                                    pattern = %pat,
-                                    dir = %entry.dir.display(),
-                                    "mcp::server: bad skill ignore glob — skipping"
-                                );
-                            }
-                        }
-                    }
-                    builder.build().ok()
-                };
+                let ignore = compile_arg_globs(&entry.ignore, &entry.dir, "ignore");
+                let include = compile_arg_globs(&entry.include, &entry.dir, "include");
                 ResolvedSkillEntry {
                     // Absolutized here because notify joins a relative
                     // watch path onto the process cwd while we would
@@ -339,6 +354,8 @@ impl SkillsServer {
                     dir: crate::paths::resolve_user(&entry.dir.to_string_lossy()),
                     ignore_patterns: entry.ignore,
                     ignore,
+                    include_patterns: entry.include,
+                    include,
                     watch: entry.watch,
                 }
             })
@@ -1613,6 +1630,7 @@ mod tests {
                 skill_dirs: vec![SkillDirEntry {
                     dir: std::path::PathBuf::from("./relative-skills"),
                     ignore: Vec::new(),
+                    include: Vec::new(),
                     watch: true,
                 }],
             },
@@ -2204,6 +2222,7 @@ mod watch_tests {
                 skill_dirs: vec![SkillDirEntry {
                     dir: root.to_path_buf(),
                     ignore: Vec::new(),
+                    include: Vec::new(),
                     watch: true,
                 }],
             },

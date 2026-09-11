@@ -502,6 +502,8 @@ impl McpConfig {
                 dir: crate::paths::resolve_user(&e.dir.to_string_lossy()),
                 ignore_patterns: e.ignore.as_deref().map(<[String]>::to_vec).unwrap_or_default(),
                 ignore: e.compile_ignore(),
+                include_patterns: e.include.as_deref().map(<[String]>::to_vec).unwrap_or_default(),
+                include: e.compile_include(),
                 watch: e.watches(),
             })
             .collect()
@@ -566,6 +568,7 @@ mod tests {
             skills: Some(SkillsServerConfig {
                 dirs: Some(vec![SkillEntry {
                     dir: std::path::PathBuf::from("/skills"),
+                    include: None,
                     ignore: None,
                     watch: None,
                 }]),

@@ -141,6 +141,11 @@ pub struct ResolvedSkillEntry {
     /// CLI arg. Mirrors `SkillEntry.ignore` from the TOML shape.
     pub ignore_patterns: Vec<String>,
     pub ignore: Option<globset::GlobSet>,
+    /// Raw allow-list globs, preserved alongside the compiled matcher
+    /// for the same `--skill-dir` round-trip as `ignore_patterns`.
+    /// Mirrors `SkillEntry.include` from the TOML shape.
+    pub include_patterns: Vec<String>,
+    pub include: Option<globset::GlobSet>,
     /// Whether the sidecar watches this root. Rides `--skill-dir`
     /// alongside the ignore list, so the sidecar reconstructs the same
     /// entry the launcher resolved.

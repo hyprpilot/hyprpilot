@@ -109,6 +109,12 @@ pub struct SkillEntry {
     /// load time; no garde-level check needed.
     #[garde(skip)]
     pub dir: PathBuf,
+    /// Optional glob array. When set, ONLY skill slugs matching a
+    /// pattern survive; `None` means no allow-list at all. `ignore`
+    /// beats `include` on overlap, as it does for `[[mcps]]`.
+    #[garde(custom(validate_globs))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
     /// Optional glob array. Skill slugs matching ANY pattern are
     /// dropped from the loaded set.
     #[garde(custom(validate_globs))]
@@ -127,6 +133,10 @@ pub struct SkillEntry {
 }
 
 impl SkillEntry {
+    pub fn compile_include(&self) -> Option<GlobSet> {
+        compile_globs(self.include.as_deref())
+    }
+
     pub fn compile_ignore(&self) -> Option<GlobSet> {
         compile_globs(self.ignore.as_deref())
     }
@@ -300,6 +310,7 @@ mod tests {
     fn skill_entry_uses_same_matcher() {
         let s = SkillEntry {
             dir: "/tmp/skills".into(),
+            include: None,
             ignore: Some(vec!["work-*".into()]),
             watch: None,
         };

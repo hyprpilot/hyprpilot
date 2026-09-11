@@ -240,6 +240,7 @@ pub fn build_skills_definition(
         let json = serde_json::json!({
             "dir": entry.dir.display().to_string(),
             "ignore": entry.ignore_patterns,
+            "include": entry.include_patterns,
             // Always emitted. A bool has no "unset" to confuse with
             // false, so unlike `--include-profile` there is no empty
             // list that could decay into its opposite.
@@ -305,6 +306,8 @@ mod tests {
                 dir: dir.path().to_path_buf(),
                 ignore_patterns: Vec::new(),
                 ignore: None,
+                include_patterns: Vec::new(),
+                include: None,
                 watch,
             }]));
             registry.reload().unwrap();
