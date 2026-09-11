@@ -29,8 +29,9 @@ const INLINE_SOURCE_LABEL: &str = "<inline>";
 /// Load + merge every entry in `entries`. Returns the resolved,
 /// collision-free `MCPDefinition` list the spawn path projects onto
 /// the vendor CLI (via `resolve::build_mcp_registry_with`). Per-entry
-/// `ignore` glob (when present) filters the loaded servers by name
-/// before merging. Errors are per-entry: a single bad file logs and
+/// `include` / `ignore` globs (when present) filter the loaded
+/// servers by name before merging — `include` is an allow-list,
+/// `ignore` a deny-list, and deny wins on overlap. Errors are per-entry: a single bad file logs and
 /// is skipped; the others still load. Inline entries skip the fs
 /// round-trip. Empty input returns an empty Vec.
 pub fn load_files(entries: &[ResolvedMcpFile]) -> Vec<MCPDefinition> {
@@ -49,23 +50,32 @@ pub fn load_files(entries: &[ResolvedMcpFile]) -> Vec<MCPDefinition> {
                 (extract_servers(map.clone(), &label), INLINE_SOURCE_LABEL.to_string())
             }
         };
-        let kept: Vec<MCPDefinition> = match &entry.ignore {
-            Some(glob) => loaded
-                .into_iter()
-                .filter(|d| {
-                    let drop = glob.is_match(&d.name);
-                    if drop {
+        let kept: Vec<MCPDefinition> = loaded
+            .into_iter()
+            .filter(|d| {
+                if let Some(glob) = &entry.include {
+                    if !glob.is_match(&d.name) {
+                        debug!(
+                            source = %source_label,
+                            server = %d.name,
+                            "mcp loader: server name outside include glob — skipping"
+                        );
+                        return false;
+                    }
+                }
+                if let Some(glob) = &entry.ignore {
+                    if glob.is_match(&d.name) {
                         debug!(
                             source = %source_label,
                             server = %d.name,
                             "mcp loader: server name matches ignore glob — skipping"
                         );
+                        return false;
                     }
-                    !drop
-                })
-                .collect(),
-            None => loaded,
-        };
+                }
+                true
+            })
+            .collect();
         debug!(source = %source_label, count = kept.len(), "mcp loader: entry loaded");
         for def in kept {
             // Later-wins: drop any prior definition with the same name
@@ -148,6 +158,7 @@ mod tests {
     fn entry(file: PathBuf) -> ResolvedMcpFile {
         ResolvedMcpFile {
             source: ResolvedMcpSource::File(file),
+            include: None,
             ignore: None,
         }
     }
@@ -155,7 +166,16 @@ mod tests {
     fn entry_with_ignore(file: PathBuf, patterns: &[&str]) -> ResolvedMcpFile {
         ResolvedMcpFile {
             source: ResolvedMcpSource::File(file),
+            include: None,
             ignore: Some(compile_globs(patterns)),
+        }
+    }
+
+    fn entry_with_include(file: PathBuf, patterns: &[&str]) -> ResolvedMcpFile {
+        ResolvedMcpFile {
+            source: ResolvedMcpSource::File(file),
+            include: Some(compile_globs(patterns)),
+            ignore: None,
         }
     }
 
@@ -171,6 +191,7 @@ mod tests {
             .expect("test fixture has mcpServers object");
         ResolvedMcpFile {
             source: ResolvedMcpSource::Inline(map),
+            include: None,
             ignore: ignore.map(compile_globs),
         }
     }
@@ -302,6 +323,50 @@ mod tests {
         let defs = load_files(&[entry_with_ignore(path, &["*-work", "scratch-*"])]);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, vec!["github"]);
+    }
+
+    #[test]
+    fn include_glob_keeps_only_matching_servers() {
+        let dir = TempDir::new().unwrap();
+        let path = write(
+            &dir,
+            "team.json",
+            r#"{
+                "mcpServers": {
+                    "github": { "command": "echo" },
+                    "gitlab": { "command": "echo" },
+                    "linear-kilic": { "command": "echo" }
+                }
+            }"#,
+        );
+        let defs = load_files(&[entry_with_include(path, &["git*"])]);
+        let mut names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["github", "gitlab"]);
+    }
+
+    /// Deny beats allow, mirroring `excludeTools` over `includeTools`.
+    #[test]
+    fn ignore_beats_include_on_overlap() {
+        let dir = TempDir::new().unwrap();
+        let path = write(
+            &dir,
+            "team.json",
+            r#"{
+                "mcpServers": {
+                    "github": { "command": "echo" },
+                    "gitlab": { "command": "echo" }
+                }
+            }"#,
+        );
+        let entry = ResolvedMcpFile {
+            source: ResolvedMcpSource::File(path),
+            include: Some(compile_globs(&["git*"])),
+            ignore: Some(compile_globs(&["github"])),
+        };
+        let defs = load_files(&[entry]);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["gitlab"]);
     }
 
     #[test]

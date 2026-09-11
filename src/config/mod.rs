@@ -154,6 +154,7 @@ pub struct ResolvedSkillEntry {
 #[derive(Debug, Clone)]
 pub struct ResolvedMcpFile {
     pub source: ResolvedMcpSource,
+    pub include: Option<globset::GlobSet>,
     pub ignore: Option<globset::GlobSet>,
 }
 
@@ -179,6 +180,7 @@ impl ResolvedMcpFile {
         };
         Self {
             source,
+            include: entry.compile_include(),
             ignore: entry.compile_ignore(),
         }
     }

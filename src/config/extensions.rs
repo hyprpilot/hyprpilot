@@ -55,6 +55,14 @@ pub struct McpFile {
     #[garde(custom(validate_mcp_source(&self.file)))]
     #[serde(default, alias = "mcpServers", skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<serde_json::Map<String, Value>>,
+    /// Optional glob array. When set, ONLY server names matching a
+    /// pattern survive; `None` means no allow-list at all. `ignore`
+    /// beats `include` on overlap, mirroring how `excludeTools` beats
+    /// `includeTools` one level down. Applies uniformly to both file
+    /// and inline entries.
+    #[garde(custom(validate_globs))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
     /// Optional glob array. Server names matching ANY pattern are
     /// dropped from the loaded set. Applies uniformly to both file
     /// and inline entries.
@@ -64,8 +72,12 @@ pub struct McpFile {
 }
 
 impl McpFile {
+    pub fn compile_include(&self) -> Option<GlobSet> {
+        compile_globs(self.include.as_deref())
+    }
+
     pub fn compile_ignore(&self) -> Option<GlobSet> {
-        compile_ignore(self.ignore.as_deref())
+        compile_globs(self.ignore.as_deref())
     }
 }
 
@@ -116,7 +128,7 @@ pub struct SkillEntry {
 
 impl SkillEntry {
     pub fn compile_ignore(&self) -> Option<GlobSet> {
-        compile_ignore(self.ignore.as_deref())
+        compile_globs(self.ignore.as_deref())
     }
 
     /// One word, so camelCase and snake_case are the same string and no
@@ -132,7 +144,7 @@ impl SkillEntry {
     }
 }
 
-fn compile_ignore(patterns: Option<&[String]>) -> Option<GlobSet> {
+fn compile_globs(patterns: Option<&[String]>) -> Option<GlobSet> {
     let patterns = patterns?;
     if patterns.is_empty() {
         return None;
@@ -147,7 +159,8 @@ fn compile_ignore(patterns: Option<&[String]>) -> Option<GlobSet> {
 }
 
 /// Reject any pattern that isn't a valid `globset::Glob`. Shared by
-/// the `[[mcps]]` / `[[mcp.skills.dirs]]` `ignore` arrays and the `[mcp]`
+/// the `[[mcps]]` `include` / `ignore` and `[[mcp.skills.dirs]]` `ignore`
+/// arrays and the `[mcp]`
 /// `autoAcceptTools` / `autoRejectTools` tool-name glob arrays so a
 /// malformed glob fails at config-load, not at match time.
 pub(crate) fn validate_globs(patterns: &Option<Vec<String>>, _: &()) -> garde::Result {
@@ -157,7 +170,7 @@ pub(crate) fn validate_globs(patterns: &Option<Vec<String>>, _: &()) -> garde::R
     for p in patterns {
         if let Err(err) = Glob::new(p) {
             return Err(garde::Error::new(format!(
-                "ignore glob '{p}' is not a valid glob pattern: {err}"
+                "glob '{p}' is not a valid glob pattern: {err}"
             )));
         }
     }
@@ -172,6 +185,7 @@ mod tests {
         McpFile {
             file: Some(path.into()),
             mcp_servers: None,
+            include: None,
             ignore,
         }
     }
@@ -180,6 +194,7 @@ mod tests {
         McpFile {
             file: None,
             mcp_servers: Some(servers),
+            include: None,
             ignore,
         }
     }
@@ -249,6 +264,7 @@ mod tests {
         let f = McpFile {
             file: Some("/tmp/x.json".into()),
             mcp_servers: Some(servers),
+            include: None,
             ignore: None,
         };
         let err = f.validate().expect_err("both fields set must reject");
