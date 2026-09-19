@@ -23,6 +23,8 @@ A launch is one straight line:
 
 There is **no background daemon, no unix socket, and no window or desktop UI** anywhere in hyprpilot. Once the vendor CLI is running, hyprpilot is gone — it inherits your shell environment, hands over the terminal, and its exit code is the vendor's.
 
+The one thing that listens is one you start yourself: an MCP server run with [`--transport http`](./mcp-http). The launcher never starts it and never points a launch at it.
+
 :::
 
 ## The one long-lived thing

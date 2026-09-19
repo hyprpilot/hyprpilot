@@ -17,6 +17,14 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 
+[features]
+# `--transport http` on the `mcp` subcommands. ON by default so the flag
+# exists in the shipped binary; `--no-default-features` is the lean build
+# and the transport arm then errors instead of vanishing, so the flag
+# still parses and says why it cannot run.
+default = ["http"]
+http = ["rmcp/transport-streamable-http-server", "dep:axum"]
+
 [dependencies]
 anyhow = "1"
 bytesize = "2.4.2"
@@ -53,7 +61,16 @@ path-absolutize = "4.0.1"
 merge = { version = "0.2.0", features = ["derive"] }
 # Skills MCP server. `transport-io` adds the stdio transport on top of the
 # default `server` + `macros` + `base64`. Used by `hyprpilot mcp serve`.
+# The `http` feature adds `transport-streamable-http-server` on top.
 rmcp = { version = "3", features = ["transport-io"] }
+# `--transport http` only. rmcp ships the protocol half as a
+# `tower_service::Service` and binds no socket of its own - every
+# `TcpListener` in its source is test code and its only axum dependency
+# is a dev-dependency - so the HTTP server under it is ours to supply.
+# axum rather than bare hyper because it is the integration rmcp itself
+# documents and tests against, and it owns the accept loop, the graceful
+# shutdown and the middleware seam the token check sits in.
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1", "http2"], optional = true }
 # Cross-platform OS-level URL / path opener for the `open_url` MCP tool.
 # The MCP server runs as a stdio sidecar — this crate wraps `xdg-open`
 # on Linux, `open` on macOS, `start` on Windows.

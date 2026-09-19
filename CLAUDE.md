@@ -22,6 +22,13 @@ catalogue), `mcp harness` (agent sessions). One subcommand, one
 process, one catalogue entry each. The vendor spawns and owns those
 sidecars' lifetimes.
 
+**One deliberate exception to "no daemon":** any of the three can be
+run with `--transport http --listen <addr>` as a server the CAPTAIN
+starts and owns — for clients that are not the vendor hyprpilot
+launched. The launcher never starts one, never injects a url (auto-
+inject still emits stdio entries only) and never points a launch at
+one, so fire-and-exec is unchanged. See "Serving over HTTP".
+
 **One deliberate exception to "no in-process bridge":** the opt-in
 `mcp harness` sidecar owns agent sessions it
 spawned, in an in-process table (see "The agent harness"). That is not
@@ -75,7 +82,13 @@ Key `src/` modules:
   one `ServerHandler` each: `tools.rs` (`mcp serve` — `open`;
   stateless), `skills_server.rs` (`mcp skills` — protocol + tools),
   `rpc.rs` (the JSON-RPC plumbing all three share — schema builders,
-  result wrappers, argument decoders), `harness_server.rs`
+  result wrappers, argument decoders), `serve_args.rs` (the
+  `--transport` / `--listen` / `--token-file` / `--allow-remote` flags
+  all three flatten, plus the `Transport` enum whose `result_ttl_ms`
+  every cacheable result reads), `http.rs` (the axum glue under
+  rmcp's `StreamableHttpService`, `#[cfg(feature = "http")]` with a
+  bail-with-a-sentence stub in `mod.rs` when it is off),
+  `harness_server.rs`
   (`mcp harness` — protocol + tool dispatch) over `harness.rs` (the
   session-driving logic) and `sessions/` (the owned-session store).
   `skills/` = `SkillsRegistry` + the `SKILL.md` loader, plus
@@ -132,6 +145,10 @@ hyprpilot profiles --json       # machine-readable
 hyprpilot mcp serve             # general tools (`open`)
 hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[],"watch":true}'
 hyprpilot mcp harness --max-sessions 64 --max-live-sessions 0
+
+# Any of the three over HTTP instead of stdio (a server YOU run)
+hyprpilot mcp skills --transport http --listen 127.0.0.1:7777 --skill-dir '{...}'
+hyprpilot mcp harness --transport http --listen 127.0.0.1:7779 --token-file ~/.config/hyprpilot/mcp-token
 ```
 
 - **Bare launch** picks the profile via the optional positional
@@ -515,9 +532,12 @@ unaffected (codex negotiates 2025-06-18) and one asking higher
 negotiates down.
 
 **Every cacheable result MUST carry `ttlMs` + `cacheScope`**
-(`rpc::RESULT_TTL_MS` / `RESULT_CACHE_SCOPE`, stamped at all seven
-sites: `tools/list` on each server, plus `resources/list`,
-`resources/templates/list` and both `resources/read` arms on skills).
+(`Transport::result_ttl_ms` / `rpc::RESULT_CACHE_SCOPE`, stamped at
+all TWELVE `with_ttl_ms` sites: `tools/list` on each server, plus
+`resources/list`, `resources/templates/list` and both `resources/read`
+arms on skills, plus the harness's two indexes and its session views —
+nine of which take the transport's ttl and three of which are already
+`0` or computed).
 `2026-07-28` makes them REQUIRED — `ListToolsResult extends
 PaginatedResult, CacheableResult`, and `CacheableResult` declares both
 without `?` — while rmcp models them `Option` for back-compat and
@@ -842,6 +862,69 @@ Skills reach the agent **only** through the skills server.
   text instead of "Unknown"; structured-aware clients (Claude Code)
   still get the JSON. A structured-only result renders as "Unknown" in
   opencode — never return one.
+
+## Serving over HTTP (`--transport http`)
+
+Every server speaks **stdio by default and that path is untouched** —
+same argv, same auto-injected catalogue entries, same tests. `http` is
+a cargo feature, **on by default**, and the `Transport::Http` arm stays
+compiled in either way: with the feature off it bails with a sentence
+naming the rebuild, because gating the ENUM VARIANT makes the dispatch
+`match` non-exhaustive and leaves the flags dead under `-D warnings`.
+CI builds the DEFAULT feature set only, so that arm is compiled but not
+verified — check it by hand when you touch it.
+
+- **rmcp binds nothing.** `StreamableHttpService` is a
+  `tower_service::Service`; every `TcpListener` in rmcp's source is
+  test code and its only axum dependency is a DEV one. `http.rs`
+  supplies the server — axum because it is the integration rmcp itself
+  documents and tests against, and because a bare-hyper version needs
+  `TowerToHyperService` plus hand-rolled drain and accept loops for the
+  same three lines of value.
+- **The handler is built ONCE and cloned per request.** rmcp calls the
+  service factory for every stateless request, so a factory that
+  CONSTRUCTED one would rescan every skill root per call. All three
+  handlers' state is already `Arc`-backed; only `ToolsServer` (a unit
+  struct) had to gain `Clone`.
+- **A stateless request's peer dies with its response**, so the two
+  out-of-band notifiers — the skills watcher relay and the harness exit
+  hook — hold `Option<Peer>` and get `None` here. Consequences, in
+  order of how easy they are to miss: `resources/updated` still reaches
+  every open `subscriptions/listen` stream (the sinks carry their own
+  peer and the registry is shared by every clone); the BROADCAST
+  fallback is gone; `notifications/claude/channel` and
+  `notifications/tasks` are gone; and SEP-2663 tasks are minted only
+  for a client that attaches `clientCapabilities` per request, since
+  `peer_info_for_stateless_request` synthesizes an empty set.
+- **So `ttlMs` is `0` over HTTP** (`Transport::result_ttl_ms`). The 24h
+  stdio value is honest only because every mutable surface fires an
+  invalidation the client receives; a non-subscribing HTTP client
+  receives none.
+- **Auth is OPTIONAL and there is no config key for it.** Token from
+  `--token-file` or `HYPRPILOT_MCP_TOKEN`, checked in an axum layer in
+  front of rmcp so it covers the methods rmcp answers itself. No config
+  key, because the `mcp` branch deliberately never loads config and
+  `[profiles.mcp]` would make a token profile-scoped; no bare `--token`
+  either, because argv is world-readable via `/proc`. A missing token
+  logs at `warn` and serves.
+- **`Origin` validation is ARMED, and rmcp leaves it off by default** —
+  an EMPTY `allowed_origins` disables the check entirely. `allowed_hosts`
+  does not substitute: a `Host` check does not stop a cross-origin
+  `fetch()` from a page the captain has open, which against an
+  unauthenticated harness is code execution from a browser tab. The
+  allow-list is the server's own origin, so it is non-empty (the check
+  runs) and matches nothing but itself. `--allow-remote` widens
+  `allowed_hosts` AND the bind, because a reachable bind that refuses
+  every request reads as a bug.
+- **Auto-inject is unchanged.** It emits stdio entries only, and the
+  reserved-name rule still applies: `resolve::prepend_auto_mcp_definition`
+  DROPS a configured server whose name matches an auto-injected one, so
+  a captain wiring a hyprpilot-launched vendor to the HTTP server needs
+  a non-reserved catalogue key or `[mcp.<server>].enabled = false`.
+- **An HTTP harness is shared by every client that reaches the port** —
+  one session table, one set of ceilings, and any client can
+  `session_send`, steer or kill another's conversation. Sessions still
+  die with the process.
 
 ## The agent harness (`mcp harness`)
 

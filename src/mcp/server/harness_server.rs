@@ -26,7 +26,6 @@ use super::harness::{DelegatePolicy, Harness};
 use super::rpc::{
     empty_object_schema, object_schema, optional_bool, optional_string, optional_string_array, optional_u64,
     optional_usize, require_string, structured_with_text, tool_error, wait_for_shutdown, RESULT_CACHE_SCOPE,
-    RESULT_TTL_MS,
 };
 use crate::config::mcp::DEFAULT_HARNESS_SERVER_NAME;
 
@@ -35,6 +34,9 @@ pub struct HarnessServer {
     harness: Arc<Harness>,
     /// The client's `subscriptions/listen` stream, when it opened one.
     subscriptions: super::rpc::Subscriptions,
+    /// How this process is served, which decides how long a client may
+    /// cache what it reads — see [`super::serve_args::Transport::result_ttl_ms`].
+    transport: super::serve_args::Transport,
 }
 
 impl HarnessServer {
@@ -45,6 +47,7 @@ impl HarnessServer {
         max_depth: usize,
         delegates: DelegatePolicy,
         delegate_mcp: Option<crate::config::McpConfig>,
+        transport: super::serve_args::Transport,
     ) -> Self {
         Self {
             harness: Arc::new(Harness::new(
@@ -56,6 +59,7 @@ impl HarnessServer {
                 delegate_mcp,
             )),
             subscriptions: super::rpc::Subscriptions::default(),
+            transport,
         }
     }
 }
@@ -124,7 +128,7 @@ impl ServerHandler for HarnessServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, rmcp::ErrorData> {
         Ok(ListToolsResult::with_all_items(harness_tools())
-            .with_ttl_ms(RESULT_TTL_MS)
+            .with_ttl_ms(self.transport.result_ttl_ms())
             .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
@@ -226,7 +230,7 @@ impl ServerHandler for HarnessServer {
         );
 
         Ok(rmcp::model::ListResourcesResult::with_all_items(resources)
-            .with_ttl_ms(RESULT_TTL_MS)
+            .with_ttl_ms(self.transport.result_ttl_ms())
             .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
@@ -251,7 +255,7 @@ impl ServerHandler for HarnessServer {
             ];
 
         Ok(rmcp::model::ListResourceTemplatesResult::with_all_items(templates)
-            .with_ttl_ms(RESULT_TTL_MS)
+            .with_ttl_ms(self.transport.result_ttl_ms())
             .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
@@ -323,7 +327,7 @@ impl ServerHandler for HarnessServer {
         // ttl is only honest once the turn has ended. `0` until then —
         // the notification that fires at turn end cannot retroactively
         // correct a day-long cache taken a second before it.
-        let ttl = if finished { RESULT_TTL_MS } else { 0 };
+        let ttl = if finished { self.transport.result_ttl_ms() } else { 0 };
         let mime = match view {
             SessionView::Status => "application/json",
             SessionView::Result => "text/plain",
@@ -431,7 +435,7 @@ impl ServerHandler for HarnessServer {
                         // Without this the list is cached for the full
                         // `ttlMs` — the surface would mutate with no
                         // signal, which is exactly what that ttl forbids.
-                        self.subscriptions.resource_list_changed(&context.peer).await;
+                        self.subscriptions.resource_list_changed(Some(&context.peer)).await;
                         Ok(as_task_or_result(harness, context, payload))
                     }
                     Err(msg) => Ok(tool_error(msg)),
@@ -457,7 +461,7 @@ impl ServerHandler for HarnessServer {
                         // from here until the exit hook fires again.
                         self.subscriptions
                             .resources_updated(
-                                &context.peer,
+                                Some(&context.peer),
                                 crate::mcp::server::harness::SessionView::ALL
                                     .into_iter()
                                     .map(|view| crate::mcp::server::harness::session_view_uri(&session, view))
@@ -538,14 +542,14 @@ impl ServerHandler for HarnessServer {
                         // cached read, so both are announced.
                         self.subscriptions
                             .resources_updated(
-                                &context.peer,
+                                Some(&context.peer),
                                 crate::mcp::server::harness::SessionView::ALL
                                     .into_iter()
                                     .map(|view| crate::mcp::server::harness::session_view_uri(session, view))
                                     .collect(),
                             )
                             .await;
-                        self.subscriptions.resource_list_changed(&context.peer).await;
+                        self.subscriptions.resource_list_changed(Some(&context.peer)).await;
                         let summary = match payload.get("action").and_then(serde_json::Value::as_str) {
                             Some("terminated") => format!(
                                 "Terminated session {session}. Its transcript is still readable — \
@@ -577,6 +581,9 @@ impl ServerHandler for HarnessServer {
 /// subcommands rather than one behind a flag.
 #[derive(Debug, Args, Clone)]
 pub struct HarnessArgs {
+    #[command(flatten)]
+    pub serve: super::serve_args::ServeArgs,
+
     /// How many FINISHED agent sessions to retain before evicting the
     /// oldest (with their transcripts). `0` retains every one.
     ///
@@ -1143,7 +1150,121 @@ fn parse_delegate_mcp(raw: &str) -> anyhow::Result<crate::config::McpConfig> {
     Ok(overlay)
 }
 
-/// Run the harness server over stdio.
+/// Install the per-turn exit hook on the session table.
+///
+/// ALWAYS installed. `notifyOnComplete` names the Claude channel push
+/// and nothing else — the knob exists for NOISE, since a session is
+/// `exited` every turn. Gating the whole hook on it also skipped
+/// `seal_turn` (so a task never reached a terminal state) and the
+/// session `resources/updated` (so a subscriber acknowledged for that
+/// URI waited forever while its cached read claimed `running` for the
+/// full ttl). Both are correctness, not noise.
+///
+/// `peer` is `None` over HTTP. MCP `2026-07-28` is stateless, so there
+/// is no ambient peer a hook could hold — which costs the two DIRECT
+/// pushes below (`notifications/claude/channel` and the SEP-2663 task
+/// status, neither of which rmcp will route through a subscription) and
+/// nothing else. `seal_turn` and the `resources/updated` announcement
+/// both still run, the latter reaching every open `subscriptions/listen`
+/// stream through the shared registry.
+fn install_exit_hook(
+    sessions: &Arc<super::sessions::SessionTable>,
+    harness: Arc<Harness>,
+    subscriptions: super::rpc::Subscriptions,
+    peer: Option<rmcp::service::Peer<rmcp::service::RoleServer>>,
+    notify_channel: bool,
+) {
+    let name = DEFAULT_HARNESS_SERVER_NAME.to_string();
+    let table = Arc::clone(sessions);
+    sessions.set_exit_hook(Arc::new(move |handle: String, turn: u32, code: i32| {
+        let peer = peer.clone();
+        let name = name.clone();
+        let harness = Arc::clone(&harness);
+        let subscriptions = subscriptions.clone();
+        // Seal SYNCHRONOUSLY, before the spawned notifier runs: this
+        // is the only moment the real finish time is known, and a
+        // `session_send` can start the next turn while the notifier
+        // is still queued.
+        table.seal_turn(&handle, turn, code);
+        tokio::spawn(async move {
+            // Both direct pushes need an ambient peer, which the
+            // HTTP transport has none of — see `peer`'s doc above.
+            if let (true, Some(peer)) = (notify_channel, peer.as_ref()) {
+                super::harness::notify_session_finished(peer, &name, &handle, code).await;
+            }
+
+            // The standard wake-up, alongside the two above it.
+            //
+            // Through the subscription stream when the client opened
+            // one — filtered against the URIs it actually asked for
+            // and tagged with the subscription id it correlates on —
+            // and as a raw broadcast otherwise, which is the only
+            // channel an older-revision client has.
+            //
+            // This is what makes the long `ttlMs` honest for a
+            // session resource: a cached read goes stale here, and
+            // here is where we say so.
+            // Every view: the status, the answer and the
+            // transcript all change when a turn ends, and a
+            // subscriber may hold any subset of them.
+            subscriptions
+                .resources_updated(
+                    peer.as_ref(),
+                    super::harness::SessionView::ALL
+                        .into_iter()
+                        .map(|view| super::harness::session_view_uri(&handle, view))
+                        // Also the turn that just ended, by number.
+                        // Subscribing to one turn is the whole point
+                        // of addressing turns, and its views become
+                        // final exactly here.
+                        .chain(
+                            super::harness::SessionView::ALL
+                                .into_iter()
+                                .map(|view| super::harness::session_turn_uri(&handle, turn, view)),
+                        )
+                        .collect(),
+                )
+                .await;
+            // The listing embeds each session's live status in its
+            // description, so a turn ending makes a cached
+            // `resources/list` claim `(running)` for a session that
+            // exited — for the full ttl, since membership did not
+            // move. Announce it.
+            subscriptions.resource_list_changed(peer.as_ref()).await;
+
+            // SEP-2663 status push — GATED, and it has to be. The
+            // hook fires for every turn of every session, so an
+            // ungated push here would send `notifications/tasks` to a
+            // client that never declared the extension, for an
+            // ordinary `spawn`. That is the one behaviour change this
+            // feature must not make.
+            //
+            // Gated on ONE recorded fact: did this turn actually hand
+            // the caller a task handle. That already implies the
+            // caller opted in, and it is the only form available here
+            // — a request sees per-request `_meta` capabilities, while
+            // this hook has nothing but the peer's `initialize` info.
+            // Re-deriving from `peer_info()` would silently skip the
+            // push for a client that declared tasks the way the spec
+            // documents: per request.
+            // The turn that EXITED, not whatever is current now — a
+            // `session_send` landing first would otherwise make this
+            // announce turn N+1 as `working` in place of turn N's
+            // completion.
+            if !harness.turn_minted_task(&handle, turn) {
+                return;
+            }
+            let Some(peer) = peer.as_ref() else {
+                return;
+            };
+            if let Ok(task) = harness.task_view(&super::harness::task_id(&handle, turn)) {
+                super::harness::notify_task_finished(peer, task).await;
+            }
+        });
+    }));
+}
+
+/// Run the harness server.
 pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyhow::Result<()> {
     // `--no-delegates` is `includeProfiles = []`: an allow-filter that
     // matches nothing, which an empty glob set already is.
@@ -1172,6 +1293,7 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
         args.max_depth,
         delegates,
         delegate_mcp,
+        args.serve.transport,
     );
     // Clone the table BEFORE serving — it consumes the handler, and
     // `waiting()` consumes the `RunningService`, so this is the only
@@ -1182,108 +1304,41 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
     // above — this is the only chance to keep a handle on the stream.
     let subscriptions_for_hook = handler.subscriptions.clone();
 
+    // One long-lived HTTP server is shared by every client that can
+    // reach the port: they see each other's sessions in `session_list`
+    // and can `session_send`, steer and kill them. `spawn` runs an
+    // arbitrary binary as this user either way, so the token — not the
+    // transport — is what bounds who may do that.
+    if args.serve.transport == super::serve_args::Transport::Http {
+        install_exit_hook(
+            &sessions,
+            Arc::clone(&harness_for_hook),
+            subscriptions_for_hook.clone(),
+            None,
+            !args.no_notify_on_complete,
+        );
+        let served = super::http::serve_http(handler, &args.serve, DEFAULT_HARNESS_SERVER_NAME).await;
+        // Sessions die with this process whatever stopped it — the same
+        // contract the stdio path has, and the reason a restart never
+        // inherits one.
+        sessions.shutdown().await;
+
+        return served;
+    }
+
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
 
     // The peer exists only once the service is running, which is also
     // the earliest a session can exist — so installing the hook here is
     // ordered correctly, not merely convenient.
-    // ALWAYS installed. `notifyOnComplete` names the Claude channel push
-    // and nothing else — the knob exists for NOISE, since a session is
-    // `exited` every turn. Gating the whole hook on it also skipped
-    // `seal_turn` (so a task never reached a terminal state) and the
-    // session `resources/updated` (so a subscriber acknowledged for that
-    // URI waited forever while its cached read claimed `running` for the
-    // full ttl). Both are correctness, not noise.
-    {
-        let peer = running.peer().clone();
-        let name = DEFAULT_HARNESS_SERVER_NAME.to_string();
-        let harness = Arc::clone(&harness_for_hook);
-        let subscriptions = subscriptions_for_hook.clone();
-        let notify_channel = !args.no_notify_on_complete;
-        let table = Arc::clone(&sessions);
-        sessions.set_exit_hook(Arc::new(move |handle: String, turn: u32, code: i32| {
-            let peer = peer.clone();
-            let name = name.clone();
-            let harness = Arc::clone(&harness);
-            let subscriptions = subscriptions.clone();
-            // Seal SYNCHRONOUSLY, before the spawned notifier runs: this
-            // is the only moment the real finish time is known, and a
-            // `session_send` can start the next turn while the notifier
-            // is still queued.
-            table.seal_turn(&handle, turn, code);
-            tokio::spawn(async move {
-                if notify_channel {
-                    super::harness::notify_session_finished(&peer, &name, &handle, code).await;
-                }
-
-                // The standard wake-up, alongside the two above it.
-                //
-                // Through the subscription stream when the client opened
-                // one — filtered against the URIs it actually asked for
-                // and tagged with the subscription id it correlates on —
-                // and as a raw broadcast otherwise, which is the only
-                // channel an older-revision client has.
-                //
-                // This is what makes the long `ttlMs` honest for a
-                // session resource: a cached read goes stale here, and
-                // here is where we say so.
-                // Every view: the status, the answer and the
-                // transcript all change when a turn ends, and a
-                // subscriber may hold any subset of them.
-                subscriptions
-                    .resources_updated(
-                        &peer,
-                        super::harness::SessionView::ALL
-                            .into_iter()
-                            .map(|view| super::harness::session_view_uri(&handle, view))
-                            // Also the turn that just ended, by number.
-                            // Subscribing to one turn is the whole point
-                            // of addressing turns, and its views become
-                            // final exactly here.
-                            .chain(
-                                super::harness::SessionView::ALL
-                                    .into_iter()
-                                    .map(|view| super::harness::session_turn_uri(&handle, turn, view)),
-                            )
-                            .collect(),
-                    )
-                    .await;
-                // The listing embeds each session's live status in its
-                // description, so a turn ending makes a cached
-                // `resources/list` claim `(running)` for a session that
-                // exited — for the full ttl, since membership did not
-                // move. Announce it.
-                subscriptions.resource_list_changed(&peer).await;
-
-                // SEP-2663 status push — GATED, and it has to be. The
-                // hook fires for every turn of every session, so an
-                // ungated push here would send `notifications/tasks` to a
-                // client that never declared the extension, for an
-                // ordinary `spawn`. That is the one behaviour change this
-                // feature must not make.
-                //
-                // Gated on ONE recorded fact: did this turn actually hand
-                // the caller a task handle. That already implies the
-                // caller opted in, and it is the only form available here
-                // — a request sees per-request `_meta` capabilities, while
-                // this hook has nothing but the peer's `initialize` info.
-                // Re-deriving from `peer_info()` would silently skip the
-                // push for a client that declared tasks the way the spec
-                // documents: per request.
-                // The turn that EXITED, not whatever is current now — a
-                // `session_send` landing first would otherwise make this
-                // announce turn N+1 as `working` in place of turn N's
-                // completion.
-                if !harness.turn_minted_task(&handle, turn) {
-                    return;
-                }
-                if let Ok(task) = harness.task_view(&super::harness::task_id(&handle, turn)) {
-                    super::harness::notify_task_finished(&peer, task).await;
-                }
-            });
-        }));
-    }
+    install_exit_hook(
+        &sessions,
+        Arc::clone(&harness_for_hook),
+        subscriptions_for_hook.clone(),
+        Some(running.peer().clone()),
+        !args.no_notify_on_complete,
+    );
 
     wait_for_shutdown(running).await;
     sessions.shutdown().await;

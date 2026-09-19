@@ -10,6 +10,8 @@ next: false
 
 <!-- more -->
 
+The harness can also be served over a port with [`--transport http`](./mcp-http) — read that page first, because an HTTP harness is shared by every client that can reach it and loses two of its notification channels.
+
 ## What it solves
 
 Without the harness, an agent connected to hyprpilot's MCP servers can only read skills — it has no way to act as an orchestrator that spins up other hyprpilot sessions. The harness adds that: discover profiles, start one, send it follow-up turns, follow its output live, stop it. Every launch flows through the same `spawn::prepare` path `hyprpilot <profile>` itself uses, so profile resolution, the `-- <args>` escape hatch, and cwd precedence can't drift between a CLI launch and a harness-driven one — see [Launching](./launch).

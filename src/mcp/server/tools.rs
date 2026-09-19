@@ -24,18 +24,31 @@ use crate::config::mcp::{DEFAULT_HARNESS_SERVER_NAME, DEFAULT_SKILLS_SERVER_NAME
 
 use super::rpc::{
     object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown, RESULT_CACHE_SCOPE,
-    RESULT_TTL_MS,
 };
+use super::serve_args::{ServeArgs, Transport};
 
-/// Args for `hyprpilot mcp serve`. None today — the server is
-/// stateless and takes no catalog. The struct exists so the subcommand
-/// still accepts the global `--config` / `--log-level` flags and gains
-/// options without a signature change.
+/// Args for `hyprpilot mcp serve`. Nothing of its own — the server is
+/// stateless and takes no catalog — beyond how it is served.
 #[derive(Debug, Args, Clone)]
-pub struct ToolsArgs {}
+pub struct ToolsArgs {
+    #[command(flatten)]
+    pub serve: ServeArgs,
+}
 
 /// The general-tools server.
-pub struct ToolsServer;
+///
+/// `Clone` because the HTTP transport builds one handler and clones it
+/// per request; there is no state behind it, so the clone is free.
+#[derive(Clone, Copy)]
+pub struct ToolsServer {
+    transport: Transport,
+}
+
+impl ToolsServer {
+    pub(super) fn new(transport: Transport) -> Self {
+        Self { transport }
+    }
+}
 
 impl ServerHandler for ToolsServer {
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
@@ -83,7 +96,7 @@ impl ServerHandler for ToolsServer {
             ),
             open_object_schema(),
         )])
-        .with_ttl_ms(RESULT_TTL_MS)
+        .with_ttl_ms(self.transport.result_ttl_ms())
         .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
@@ -140,12 +153,20 @@ fn open_object_schema() -> std::sync::Arc<serde_json::Map<String, serde_json::Va
     )
 }
 
-/// Run the general-tools server over stdio.
-pub async fn run_tools(_args: ToolsArgs, _config: super::ConfigSource) -> anyhow::Result<()> {
+/// Run the general-tools server.
+pub async fn run_tools(args: ToolsArgs, _config: super::ConfigSource) -> anyhow::Result<()> {
     tracing::info!("mcp: starting the general-tools server");
 
+    let handler = ToolsServer::new(args.serve.transport);
+    if args.serve.transport == Transport::Http {
+        // `open` hands a URL or path to the OS default handler, so over
+        // a shared port this is a way to make the host open whatever a
+        // caller names. Same class as the harness, smaller blast radius.
+        return super::http::serve_http(handler, &args.serve, DEFAULT_TOOLS_SERVER_NAME).await;
+    }
+
     let (stdin, stdout) = rmcp::transport::io::stdio();
-    let running = super::rpc::serve_from_first_byte(ToolsServer, (stdin, stdout));
+    let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
 
     wait_for_shutdown(running).await;
 
