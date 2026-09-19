@@ -404,7 +404,19 @@ rather than an earlier one; and a fresh turn is a fresh directory, so no
 completion marker has to be cleared before it starts. `sessionInfo.files`
 names the session's paths plus the CURRENT turn's (`turn`, `turnDir`,
 `turnsDir`); earlier turns are inferable from the turn number and are
-deliberately not enumerated. `session_read`'s cursor carries its turn
+deliberately not enumerated. **One builder —
+`harness::session_files(&Session, turn)` — is behind every surface that
+reports them**, because a status poll, a resource read and a `spawn`
+result describe the same session and must not disagree about where its
+files are: `sessionInfo.files` on `spawn`/`session_send`/`session_read`,
+`files` on `session_status` and on a `session_kill` that TERMINATED (a
+reap deletes the directory, so it carries none), `dir` per
+`session_list` row, and `_meta["io.hyprpilot/session"]` on every session
+`resources/read` — a resource read is text alone, so without it a caller
+holding `/result` cannot say which file the answer came from. The two
+TEXT summaries carry a path too (`launch_summary` the directory,
+`status_summary` the transcript), since a text-only client renders no
+structured content at all. `session_read`'s cursor carries its turn
 (`turn.offset`, hex) — a bare offset would address the wrong file once
 the next turn started.
 
@@ -413,7 +425,11 @@ outcome and the URI that fetches it, so one read answers "which turns
 exist and which is worth fetching" instead of walking
 `…/turns/<n>/status` until one errors. The UN-TURNED forms stay the
 shortcut to the current turn. Every view is also addressable PER TURN
-(`…/turns/<n>/<view>`). Guessing the boundary from the events was
+(`…/turns/<n>/<view>`), and a turn-scoped STATUS describes that turn —
+`session_status` takes the turn, so its bytes, `exitCode`, `hasResult`,
+`files` and its own cacheability follow the URI rather than the session's
+current turn; `turnFinished` is what the ttl reads, because an earlier
+turn is immutable however the session is doing now. Guessing the boundary from the events was
 a live bug twice — a heuristic mis-attributed one turn's error to the
 next, then an unbounded slice swallowed every later turn — which is what
 the per-turn layout retires rather than patches. `resources/list` names the indexes and ONE entry per session,
@@ -957,9 +973,9 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   `launch_child` DELETES it before every turn — `session_send` reuses
   the directory, so a watcher armed for turn N+1 would otherwise fire
   on turn N's leftover. Surfaced as `sessionInfo.files.done`; `files` names every
-  file the session owns (`dir` / `transcript` / `stderr` / `done` /
-  `breadcrumb`) so a caller can `jq` the transcript instead of paging
-  it. Advisory:
+  file the session owns (`dir` / `turnsDir` / `turn` / `turnDir` /
+  `transcript` / `stderr` / `done` / `breadcrumb`) so a caller can `jq`
+  the transcript instead of paging it. Advisory:
   reap/evict/shutdown remove the directory, so the watcher contract is
   `[ ! -d "$DIR" ] || [ -f "$DIR/done.json" ]`. Never panic in that
   task — `panic = "abort"` would take every running agent down with it.

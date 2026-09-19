@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use super::sessions::{SessionStatus, SessionTable, TurnOutcome};
+use super::sessions::{Session, SessionStatus, SessionTable, TurnOutcome};
 use super::ConfigSource;
 use crate::spawn::providers::HarnessProjection;
 use crate::spawn::{LaunchOrigin, SpawnRequest};
@@ -767,8 +767,11 @@ impl Harness {
         turn: Option<u32>,
     ) -> Result<(String, bool), String> {
         if view == SessionView::Status {
-            let (_, payload) = self.session_status(handle)?;
-            let finished = payload.get("status").and_then(Value::as_str) == Some("exited");
+            let (_, payload) = self.session_status(handle, turn)?;
+            // The addressed TURN's state, not the session's: an earlier
+            // turn is immutable however the session is doing now, and the
+            // ttl at the call site is a claim about this view alone.
+            let finished = payload.get("turnFinished").and_then(Value::as_bool).unwrap_or(false);
             let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
             return Ok((text, finished));
         }
@@ -854,23 +857,57 @@ impl Harness {
 
     /// One session's state without its transcript — the cheap poll: a
     /// handle lookup plus one `stat`.
-    pub(crate) fn session_status(&self, handle: &str) -> Result<(String, Value), String> {
-        self.sessions
+    ///
+    /// `turn` addresses ONE turn of the conversation and defaults to the
+    /// current one. Everything turn-scoped in the payload — the byte
+    /// count, `hasResult`, the exit code and the file paths — follows it,
+    /// so a read of `…/turns/2/status` describes turn 2 rather than
+    /// whatever the session is doing now.
+    pub(crate) fn session_status(&self, handle: &str, turn: Option<u32>) -> Result<(String, Value), String> {
+        let row = self
+            .sessions
             .with(handle, |session| {
-                let turns = session.turns_path();
+                let wanted = turn.unwrap_or(session.turn);
+                if wanted == 0 || wanted > session.turn {
+                    return Err(format!(
+                        "session `{handle}` has no turn {wanted} — it is on turn {}.",
+                        session.turn
+                    ));
+                }
+                let turns = session.turn_transcript(wanted);
                 let transcript_bytes = std::fs::metadata(&turns).map(|m| m.len()).unwrap_or(0);
+                let outcome = session
+                    .turn_record(wanted)
+                    .map_or(super::sessions::TurnOutcome::Running, |record| record.outcome);
+                // An earlier turn has ended whatever the session is doing
+                // now; only the one in flight can still change under the
+                // caller.
+                let finished = wanted < session.turn || outcome != super::sessions::TurnOutcome::Running;
                 let mut out = json!({
                     "session": session.handle,
                     "profile": session.profile_id,
                     "provider": session.provider.wire_id(),
+                    // The SESSION's state. The addressed turn's own is
+                    // `turnFinished` and the `turns` list below — for the
+                    // current turn they say the same thing, and for an
+                    // earlier one they answer different questions.
                     "status": session.status().as_str(),
                     "createdAt": unix_secs(session.created_at),
                     "lastTurnAt": unix_secs(session.last_turn_at),
-                    // Which turn of the conversation this is. A caller
-                    // polling across several turns cannot otherwise tell
-                    // whether the `exited` it sees is the turn it sent or
-                    // the previous one still being reported.
-                    "turn": session.turn,
+                    // Which turn of the conversation this describes. A
+                    // caller polling across several turns cannot
+                    // otherwise tell whether the `exited` it sees is the
+                    // turn it sent or the previous one still being
+                    // reported.
+                    "turn": wanted,
+                    // Not derivable from `hasResult`: a turn that ended
+                    // without an answer and a turn still working both
+                    // report `hasResult: false`.
+                    "turnFinished": finished,
+                    // Where this turn's output lives. The cheap poll is
+                    // where a caller learns the turn is worth reading, so
+                    // it is also where the paths belong.
+                    "files": session_files(session, wanted),
                     "transcriptBytes": transcript_bytes,
                     // Only meaningful once the turn has ENDED, and read
                     // from the tail. Both halves are load-bearing:
@@ -879,12 +916,16 @@ impl Harness {
                     //   a `text` part for every completed sentence, so
                     //   asking mid-run reports the first one as the
                     //   answer.
-                    //   Scoped to the CURRENT turn's own file, so an
-                    //   earlier turn's marker cannot make a running turn
+                    //   Scoped to the ADDRESSED turn's own file, so a
+                    //   neighbouring turn's marker cannot make this one
                     //   read as finished.
-                    "hasResult": session.status() == SessionStatus::Exited && tail_has_terminal_result(&turns),
+                    "hasResult": finished && tail_has_terminal_result(&turns),
                 });
-                if let Some(code) = session.exit_code() {
+                // This turn's own code, off its record. A kill produces
+                // `-1`, which says nothing — the `turns` row's `killed`
+                // is the fact worth reporting, so no code is emitted for
+                // one.
+                if let super::sessions::TurnOutcome::Exited(code) = outcome {
                     out["exitCode"] = json!(code);
                 }
                 // Every turn and how it ended, so one read answers
@@ -918,10 +959,12 @@ impl Harness {
                         row
                     })
                     .collect::<Vec<_>>());
-                out
+
+                Ok(out)
             })
-            .map(|row| (status_summary(&row), row))
-            .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))
+            .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))??;
+
+        Ok((status_summary(&row), row))
     }
 
     pub(crate) async fn spawn(&self, args: LaunchToolArgs) -> Result<Value, String> {
@@ -1077,28 +1120,7 @@ impl Harness {
                         |record| unix_secs(record.started_at_wall),
                     ),
                     "pid": record.as_ref().map_or_else(|| session.pid(), |record| record.pid),
-                    // The session's own files, plus THIS turn's. A
-                    // caller with shell access can `jq` the transcript
-                    // directly rather than paging it through
-                    // `session_read` — that is a feature, so the paths
-                    // are first-class rather than derived from a
-                    // sibling.
-                    //
-                    // Earlier turns are deliberately NOT enumerated:
-                    // they live at `<turnsDir>/<n>/` for every `n` from
-                    // 1 to `turn`, which is inferable, and listing them
-                    // would grow this payload with every turn while
-                    // saying nothing new.
-                    "files": {
-                        "dir": session.dir_path().display().to_string(),
-                        "turnsDir": session.dir_path().join("turns").display().to_string(),
-                        "turn": turn,
-                        "turnDir": session.turn_dir(turn).display().to_string(),
-                        "transcript": session.turn_transcript(turn).display().to_string(),
-                        "stderr": session.turn_stderr(turn).display().to_string(),
-                        "done": session.turn_done(turn).display().to_string(),
-                        "breadcrumb": session.breadcrumb_path().display().to_string(),
-                    },
+                    "files": session_files(session, turn),
                     "command": prov.program,
                     "argv": prov.argv,
                     "envKeys": prov.env_keys,
@@ -1106,6 +1128,23 @@ impl Harness {
                 })
             })
             .unwrap_or(Value::Null)
+    }
+
+    /// Which session and turn a resource read answered for, and the
+    /// files behind it.
+    ///
+    /// A resource read is text alone, so without this a caller holding
+    /// the answer cannot say which file it came from — the one thing
+    /// `sessionInfo.files` gives every tool result.
+    pub(crate) fn session_meta(&self, handle: &str, turn: Option<u32>) -> Option<Value> {
+        self.sessions.with(handle, |session| {
+            let turn = turn.unwrap_or(session.turn);
+            json!({
+                "session": session.handle,
+                "turn": turn,
+                "files": session_files(session, turn),
+            })
+        })
     }
 
     /// One row per session for `resources/list` — handle, profile,
@@ -1141,6 +1180,10 @@ impl Harness {
             if let Some(cwd) = session.launch.cwd.as_ref() {
                 row["cwd"] = json!(cwd.display().to_string());
             }
+            // The directory alone, not the whole `files` block: one row
+            // per retained session, and everything else hangs off it at a
+            // documented name.
+            row["dir"] = json!(session.dir_path().display().to_string());
             row
         });
 
@@ -1284,12 +1327,23 @@ impl Harness {
             .ok_or_else(|| format!("unknown session `{handle}`. Call `session_list` for live handles."))?;
 
         if was_running {
-            return Ok(json!({
+            let mut out = json!({
                 "session": handle,
                 "action": "terminated",
                 "wasRunning": true,
                 "reaped": false,
-            }));
+            });
+            // The transcript outlives a terminate, so the paths do too.
+            // A reap below is the opposite case — the directory is gone,
+            // and naming a path into it would be a lie.
+            if let Some(files) = self
+                .sessions
+                .with(handle, |session| session_files(session, session.turn))
+            {
+                out["files"] = files;
+            }
+
+            return Ok(out);
         }
 
         // Already finished — this call is the cleanup.
@@ -1704,6 +1758,33 @@ fn unix_secs(t: std::time::SystemTime) -> u64 {
 /// Aligned one-line-per-profile table for the `content` block. opencode
 /// renders only `content`, so this is the discovery view for a whole
 /// class of clients — not a debug convenience.
+/// Every path a caller needs to reach a session's output — the
+/// session's own, plus `turn`'s. A caller with shell access can `jq` the
+/// transcript directly rather than paging it through `session_read`, so
+/// the paths are first-class rather than derived from a sibling.
+///
+/// One builder behind every surface that reports them: a status poll, a
+/// resource read and a `spawn` result describe the same session, so they
+/// must not disagree about where its files are. Takes the `Session`
+/// because every caller already holds the table lock.
+///
+/// Earlier turns are deliberately NOT enumerated: they live at
+/// `<turnsDir>/<n>/` for every `n` from 1 to `turn`, which is inferable,
+/// and listing them would grow this payload with every turn while saying
+/// nothing new.
+fn session_files(session: &Session, turn: u32) -> Value {
+    json!({
+        "dir": session.dir_path().display().to_string(),
+        "turnsDir": session.dir_path().join("turns").display().to_string(),
+        "turn": turn,
+        "turnDir": session.turn_dir(turn).display().to_string(),
+        "transcript": session.turn_transcript(turn).display().to_string(),
+        "stderr": session.turn_stderr(turn).display().to_string(),
+        "done": session.turn_done(turn).display().to_string(),
+        "breadcrumb": session.breadcrumb_path().display().to_string(),
+    })
+}
+
 fn status_summary(row: &Value) -> String {
     let get = |key: &str| row.get(key).and_then(Value::as_str).unwrap_or("?").to_string();
     let mut out = format!("{} — {} ({})", get("session"), get("status"), get("profile"));
@@ -1715,6 +1796,11 @@ fn status_summary(row: &Value) -> String {
     }
     if row.get("hasResult").and_then(Value::as_bool) == Some(true) {
         out.push_str(", result ready");
+    }
+    // A client that renders only the text block (opencode) never sees
+    // `files`, so the one path a caller reaches for goes here too.
+    if let Some(transcript) = row.pointer("/files/transcript").and_then(Value::as_str) {
+        out.push_str(&format!("\ntranscript: {transcript}"));
     }
 
     out
@@ -2289,6 +2375,194 @@ mod tests {
         }
     }
 
+    fn provenance_fixture(program: &str) -> super::super::sessions::Provenance {
+        super::super::sessions::Provenance {
+            program: program.into(),
+            argv: Vec::new(),
+            env_keys: Vec::new(),
+            model: None,
+            effort: None,
+            mode: None,
+            prompt_bytes: 0,
+        }
+    }
+
+    fn exits_immediately() -> crate::spawn::providers::SpawnCommand {
+        crate::spawn::providers::SpawnCommand {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "exit 0".into()],
+            env: Default::default(),
+            cwd: None,
+            stdin_prompt: None,
+        }
+    }
+
+    async fn await_exit(harness: &Harness, handle: &str) {
+        let mut done = harness.sessions.with(handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+    }
+
+    fn test_harness() -> Harness {
+        Harness::new(
+            super::super::ConfigSource::default(),
+            DEFAULT_MAX_SESSIONS,
+            DEFAULT_MAX_LIVE_SESSIONS,
+            DEFAULT_MAX_SPAWN_DEPTH,
+            DelegatePolicy::default(),
+            None,
+        )
+    }
+
+    /// Every surface that names a session names the SAME files.
+    ///
+    /// They were built in one place and reported from another: a status
+    /// poll said the answer had landed and never said where, a resource
+    /// read handed back text with no file behind it, and a listing named
+    /// no directory at all — so a caller holding a handle had to run a
+    /// tool that did carry them just to learn a path.
+    #[tokio::test]
+    async fn every_surface_names_the_same_files() {
+        let harness = test_harness();
+        let handle = harness
+            .sessions
+            .spawn(
+                exits_immediately(),
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                provenance_fixture("sh"),
+                super::super::sessions::LaunchShape::default(),
+            )
+            .unwrap();
+        await_exit(&harness, &handle).await;
+
+        let expected = harness.provenance(&handle, 1)["files"].clone();
+        for key in [
+            "dir",
+            "turnsDir",
+            "turn",
+            "turnDir",
+            "transcript",
+            "stderr",
+            "done",
+            "breadcrumb",
+        ] {
+            assert!(expected.get(key).is_some(), "`files` must name {key}: {expected}");
+        }
+
+        let (_, status) = harness.session_status(&handle, None).expect("status");
+        assert_eq!(status["files"], expected, "the cheap poll must name the files too");
+
+        let meta = harness.session_meta(&handle, None).expect("meta");
+        assert_eq!(meta["files"], expected, "a resource read must say which file it read");
+        assert_eq!(meta["session"], json!(handle));
+
+        let read = harness.session_read(&handle, 200, None, None).await.expect("read");
+        assert_eq!(read["sessionInfo"]["files"], expected);
+
+        let killed = harness.describe(&handle, Some(true), Some(0), 1);
+        assert_eq!(killed["sessionInfo"]["files"], expected);
+
+        let (_, list) = harness.session_list();
+        assert_eq!(
+            list["sessions"][0]["dir"], expected["dir"],
+            "a listing row must carry the route into the session's files"
+        );
+    }
+
+    /// A turn-scoped status describes THAT turn.
+    ///
+    /// `…/turns/1/status` parsed the turn out of the URI and then threw
+    /// it away, so it reported the current turn's bytes, exit code and
+    /// paths under an address that promised an earlier one's.
+    #[tokio::test]
+    async fn a_turn_scoped_status_describes_that_turn() {
+        let harness = test_harness();
+        let handle = harness
+            .sessions
+            .spawn(
+                exits_immediately(),
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                provenance_fixture("sh"),
+                super::super::sessions::LaunchShape::default(),
+            )
+            .unwrap();
+        await_exit(&harness, &handle).await;
+        harness
+            .sessions
+            .respawn(&handle, exits_immediately(), provenance_fixture("sh"))
+            .expect("second turn");
+        await_exit(&harness, &handle).await;
+
+        let (_, current) = harness.session_status(&handle, None).expect("status");
+        assert_eq!(current["turn"], json!(2), "no turn means the current one");
+
+        let (_, first) = harness.session_status(&handle, Some(1)).expect("turn 1");
+        assert_eq!(first["turn"], json!(1));
+        assert_eq!(first["turnFinished"], json!(true), "an earlier turn has ended");
+        assert_eq!(first["files"], harness.provenance(&handle, 1)["files"]);
+        assert_ne!(
+            first["files"]["turnDir"], current["files"]["turnDir"],
+            "each turn owns its own directory"
+        );
+
+        // The status VIEW is what the URI reaches, and its freshness is a
+        // claim about the turn it addressed — an earlier turn is
+        // immutable however the session is doing now.
+        let (_, finished) = harness
+            .session_view(&handle, SessionView::Status, Some(1))
+            .expect("turn 1 view");
+        assert!(finished, "a finished turn's view is cacheable");
+
+        for bogus in [0, 3] {
+            assert!(
+                harness.session_status(&handle, Some(bogus)).is_err(),
+                "turn {bogus} does not exist and must not answer as the current one"
+            );
+        }
+    }
+
+    /// A terminate KEEPS the transcript, so the payload has to say where
+    /// it is. A reap is the opposite case: the directory is gone, and
+    /// naming a path into it would be a lie.
+    #[tokio::test]
+    async fn terminating_a_session_names_the_transcript_it_kept() {
+        let harness = test_harness();
+        let handle = harness
+            .sessions
+            .spawn(
+                crate::spawn::providers::SpawnCommand {
+                    program: "sleep".into(),
+                    args: vec!["30".into()],
+                    env: Default::default(),
+                    cwd: None,
+                    stdin_prompt: None,
+                },
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                provenance_fixture("sleep"),
+                super::super::sessions::LaunchShape::default(),
+            )
+            .unwrap();
+
+        let terminated = harness.session_kill(&handle).await.expect("terminate");
+        assert_eq!(terminated["action"], json!("terminated"));
+        assert_eq!(
+            terminated["files"]["transcript"],
+            harness.provenance(&handle, 1)["files"]["transcript"],
+            "the transcript survives a terminate, so the path must come with it"
+        );
+
+        let reaped = harness.session_kill(&handle).await.expect("reap");
+        assert_eq!(reaped["action"], json!("reaped"));
+        assert!(
+            reaped.get("files").is_none(),
+            "a reap removes the directory — naming a path into it would be a lie"
+        );
+    }
+
     /// The vendor's session id is a resume token, not an identity. It is
     /// absent for the whole first turn and appears later, so a caller
     /// that saw it could not rely on it; and it addresses nothing —
@@ -2357,7 +2631,7 @@ mod tests {
             "the token must still be captured — `session_send` cannot resume without it"
         );
 
-        let (_, status) = harness.session_status(&handle).expect("status");
+        let (_, status) = harness.session_status(&handle, None).expect("status");
         let (_, list) = harness.session_list();
         let described = harness.describe(&handle, Some(true), Some(0), 1);
 
@@ -2937,7 +3211,7 @@ mod task_tests {
                 super::super::sessions::LaunchShape::default(),
             )
             .unwrap();
-        let (_, payload) = harness.session_status(&handle).expect("status");
+        let (_, payload) = harness.session_status(&handle, None).expect("status");
         assert_eq!(payload.get("turn").and_then(serde_json::Value::as_u64), Some(1));
     }
 

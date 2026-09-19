@@ -330,13 +330,22 @@ impl ServerHandler for HarnessServer {
             SessionView::Transcript => "application/x-ndjson",
             SessionView::Stderr => "text/plain",
         };
+        // Which session and turn this text came from, and the files
+        // behind it. A resource read carries no payload of its own, so
+        // this is the only place it can say — and a caller reading
+        // `/result` almost always wants the transcript path next.
+        let meta = self.harness.session_meta(handle, turn).map(|session| {
+            let mut meta = serde_json::Map::new();
+            meta.insert("io.hyprpilot/session".into(), session);
+            rmcp::model::MetaObject(meta)
+        });
 
         Ok(
             rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::TextResourceContents {
                 uri: uri.clone(),
                 mime_type: Some(mime.into()),
                 text,
-                meta: None,
+                meta,
             }])
             .with_ttl_ms(ttl)
             .with_cache_scope(RESULT_CACHE_SCOPE)
@@ -462,7 +471,11 @@ impl ServerHandler for HarnessServer {
             }
             "session_status" => {
                 let session = require_string(&args, "session")?;
-                match harness.session_status(session) {
+                let turn = match optional_usize(&args, "turn") {
+                    Ok(turn) => turn.map(|turn| turn as u32),
+                    Err(err) => return Ok(tool_error(err.to_string())),
+                };
+                match harness.session_status(session, turn) {
                     Ok((summary, payload)) => Ok(structured_with_text(summary, payload)),
                     Err(msg) => Ok(tool_error(msg)),
                 }
@@ -855,12 +868,12 @@ fn harness_tools() -> Vec<Tool> {
             "session_status",
             Some(
                 "Check ONE session's state without reading its transcript — status (`running` / `exited`), \
-                 exit code, how many bytes it has written, and whether the agent's final answer has landed \
-                 (`hasResult`). This is the cheap poll: `session_list` returns every session and \
-                 `session_read` returns the transcript itself, which runs to tens of kilobytes. Use it after \
-                 a `spawn` or `session_send` that came back `running`, then call `session_read` once it \
-                 reports `exited`. Note a session is `exited` after every TURN, not only when the \
-                 conversation is over."
+                 exit code, how many bytes it has written, whether the agent's final answer has landed \
+                 (`hasResult`), and `files`, the paths this turn writes to. This is the cheap poll: \
+                 `session_list` returns every session and `session_read` returns the transcript itself, \
+                 which runs to tens of kilobytes. Use it after a `spawn` or `session_send` that came back \
+                 `running`, then call `session_read` once it reports `exited`. Note a session is `exited` \
+                 after every TURN, not only when the conversation is over."
                     .into(),
             ),
             object_schema(
@@ -868,6 +881,13 @@ fn harness_tools() -> Vec<Tool> {
                     "session": {
                         "type": "string",
                         "description": "Session handle from `spawn` or `session_list`.",
+                    },
+                    "turn": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Which turn to describe. Defaults to the current one. An earlier turn \
+                                        reports its own bytes, exit code, `hasResult` and `files` — the \
+                                        conversation's other turns are listed under `turns`.",
                     },
                 }),
                 &["session"],
@@ -1092,6 +1112,15 @@ pub(super) fn launch_summary(payload: &serde_json::Value) -> String {
             "── session {handle} — {} (no exit code yet)",
             payload.get("status").and_then(serde_json::Value::as_str).unwrap_or("?")
         )),
+    }
+    // `sessionInfo.files` is structured content, which a text-only
+    // client (opencode) never renders — so the directory everything
+    // else hangs off is named here as well.
+    if let Some(dir) = payload
+        .pointer("/sessionInfo/files/dir")
+        .and_then(serde_json::Value::as_str)
+    {
+        out.push_str(&format!("\n── files: {dir}"));
     }
 
     out
