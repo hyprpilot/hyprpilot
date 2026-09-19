@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.21.0](https://github.com/hyprpilot/hyprpilot/compare/v3.20.0...v3.21.0) (2026-09-19)
+
+
+### Features
+
+* **mcp:** serve the in-tree MCP servers over HTTP ([#261](https://github.com/hyprpilot/hyprpilot/issues/261)) ([a0c5bc8](https://github.com/hyprpilot/hyprpilot/commit/a0c5bc8b66c6f4371112277c027424ab8dd9e3d6))
+
 ## [3.20.0](https://github.com/hyprpilot/hyprpilot/compare/v3.19.0...v3.20.0) (2026-09-19)
 
 
