@@ -9,6 +9,8 @@ Skills are `SKILL.md` bundles — reusable markdown instructions the agent can l
 
 <!-- more -->
 
+The catalogue is served over stdio to the vendor that spawned it. To share one catalogue with other clients instead, see [Serving MCP over HTTP](./mcp-http).
+
 ## Skill bundles
 
 The skills catalogue is configured under the [`mcp` block](../config/mcp#the-mcp-block); each configured root is a flat directory of `<slug>/SKILL.md` bundles, compatible with [Anthropic's skill convention](https://github.com/anthropics/skills):

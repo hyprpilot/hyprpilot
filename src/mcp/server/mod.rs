@@ -21,10 +21,34 @@ use clap::{Args, Subcommand};
 pub mod harness;
 pub mod harness_server;
 pub mod rpc;
+pub mod serve_args;
 pub mod sessions;
 pub mod skills_server;
 pub mod tools;
 pub mod transcript;
+
+#[cfg(feature = "http")]
+pub mod http;
+
+/// `--transport http` compiled out.
+///
+/// The flag still PARSES with the feature off, so the failure is a
+/// sentence naming the rebuild rather than an unknown-argument error
+/// from clap — and the dispatch `match` stays exhaustive, which gating
+/// the enum variant would not.
+#[cfg(not(feature = "http"))]
+pub mod http {
+    pub(super) async fn serve_http<H>(
+        _handler: H,
+        _args: &super::serve_args::ServeArgs,
+        _server_name: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!(
+            "mcp: this hyprpilot was built without the `http` feature, so `--transport http` \
+             cannot serve. Rebuild with `--features http` (it is on by default)."
+        )
+    }
+}
 
 /// Top-level args for `hyprpilot mcp <subcommand>`.
 #[derive(Debug, Args)]

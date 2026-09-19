@@ -211,9 +211,17 @@ impl Subscriptions {
     /// another. A refusal is not a failure — the client declared what it
     /// wants, and broadcasting past its filter would defeat the
     /// declaration — so it still counts as handled. The broadcast is the
-    /// fallback only when no stream exists, which is the case for every
-    /// client on an older revision.
-    pub(super) async fn resource_updated(&self, peer: &rmcp::service::Peer<RoleServer>, uri: String) {
+    /// fallback when `needs_broadcast` holds — no stream exists, or
+    /// every open one failed — which is the case for every client on an
+    /// older revision.
+    ///
+    /// **`peer` is optional because the HTTP transport has no ambient
+    /// one.** MCP `2026-07-28` is stateless, so a request's peer dies
+    /// with its response and the two out-of-band notifiers — the skills
+    /// watcher and the harness exit hook — hold nothing to broadcast
+    /// through. `None` means the open streams are the only channel, and
+    /// `Transport::result_ttl_ms` is what stops that being a silent gap.
+    pub(super) async fn resource_updated(&self, peer: Option<&rmcp::service::Peer<RoleServer>>, uri: String) {
         let mut outcomes = Vec::new();
         for sink in &self.streams().await {
             outcomes.push(match sink.notify_resource_updated(uri.clone()).await {
@@ -228,6 +236,9 @@ impl Subscriptions {
         if !needs_broadcast(&outcomes) {
             return;
         }
+        let Some(peer) = peer else {
+            return;
+        };
         let param = rmcp::model::ResourceUpdatedNotificationParam::new(uri.clone());
         if let Err(err) = peer.notify_resource_updated(param).await {
             tracing::debug!(%err, %uri, "mcp::server: resource-updated notification failed");
@@ -239,7 +250,7 @@ impl Subscriptions {
     /// One event can invalidate more than one view of the same thing —
     /// a turn ending changes a session's status, its answer and its
     /// transcript — and a subscriber may hold any subset of them.
-    pub(super) async fn resources_updated(&self, peer: &rmcp::service::Peer<RoleServer>, uris: Vec<String>) {
+    pub(super) async fn resources_updated(&self, peer: Option<&rmcp::service::Peer<RoleServer>>, uris: Vec<String>) {
         for uri in uris {
             self.resource_updated(peer, uri).await;
         }
@@ -247,7 +258,7 @@ impl Subscriptions {
 
     /// Deliver `notifications/resources/list_changed`. Same channel
     /// choice as [`Self::resource_updated`].
-    pub(super) async fn resource_list_changed(&self, peer: &rmcp::service::Peer<RoleServer>) {
+    pub(super) async fn resource_list_changed(&self, peer: Option<&rmcp::service::Peer<RoleServer>>) {
         let mut outcomes = Vec::new();
         for sink in &self.streams().await {
             outcomes.push(match sink.notify_resource_list_changed().await {
@@ -262,6 +273,9 @@ impl Subscriptions {
         if !needs_broadcast(&outcomes) {
             return;
         }
+        let Some(peer) = peer else {
+            return;
+        };
         if let Err(err) = peer.notify_resource_list_changed().await {
             tracing::debug!(%err, "mcp::server: resource list-changed notification failed");
         }

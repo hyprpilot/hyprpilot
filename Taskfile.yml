@@ -87,6 +87,15 @@ tasks:
     cmds:
       - cargo build --release
 
+  build:minimal:
+    desc: Build with every optional feature off, so the `http` cfg arm cannot rot.
+    cmds:
+      # `--transport http` is behind a default-on feature. With it off the
+      # flag still parses and the dispatch arm errors with a sentence, so
+      # this target exists to prove that arm still COMPILES - a `#[cfg]`
+      # nobody builds is a `#[cfg]` that breaks silently.
+      - cargo clippy --no-default-features --all-targets -- -D warnings
+
   docs:dev:
     desc: VitePress dev server for the documentation site.
     cmds:

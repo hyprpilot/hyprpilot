@@ -99,7 +99,6 @@ type WatchSignals = tokio::sync::mpsc::UnboundedReceiver<crate::watch::WatchSign
 
 use super::rpc::{
     empty_object_schema, require_string, structured_with_text, tool_error, wait_for_shutdown, RESULT_CACHE_SCOPE,
-    RESULT_TTL_MS,
 };
 use crate::mcp::skills::wire_metadata::{frontmatter_json, skill_block, skill_meta};
 use crate::mcp::skills::wire_references::{
@@ -115,6 +114,9 @@ use crate::mcp::skills::wire_references::{
 /// that pattern.
 #[derive(Debug, Args, Clone)]
 pub struct SkillsArgs {
+    #[command(flatten)]
+    pub serve: super::serve_args::ServeArgs,
+
     /// JSON-encoded skill root entry. Repeatable — directories are
     /// searched in declaration order; first-slug-wins on collision.
     ///
@@ -155,10 +157,11 @@ fn parse_skill_dir_arg(raw: &str) -> Result<SkillDirEntry, String> {
 /// vendor closes the pipe (or on init error).
 pub async fn run_skills(args: SkillsArgs, config: super::ConfigSource) -> anyhow::Result<()> {
     tracing::info!(dirs = args.skill_dirs.len(), "mcp: starting the skills server");
-    run(SkillsServer::new(args, config)?).await
+    let serve = args.serve.clone();
+    run(SkillsServer::new(args, config)?, &serve).await
 }
 
-async fn run(handler: SkillsServer) -> anyhow::Result<()> {
+async fn run(handler: SkillsServer, serve: &super::serve_args::ServeArgs) -> anyhow::Result<()> {
     // Armed BEFORE the startup scan, so an edit landing between the scan
     // and the first drain is queued rather than lost.
     let (watcher, signals) = handler.arm_watch(crate::watch::DEBOUNCE).await;
@@ -171,13 +174,27 @@ async fn run(handler: SkillsServer) -> anyhow::Result<()> {
     // shape the harness uses to keep a handle on its session table.
     let relay_server = handler.clone();
 
+    if serve.transport == super::serve_args::Transport::Http {
+        // No peer to hand the relay: every HTTP request under
+        // `2026-07-28` is stateless, so nothing outlives a response to
+        // broadcast through. An edit still reaches every client holding
+        // a `subscriptions/listen` stream, because the sinks live in the
+        // registry this handler's clones all share.
+        let relay = tokio::spawn(relay_server.relay_watch(signals, None));
+        let served = super::http::serve_http(handler, serve, crate::config::mcp::DEFAULT_SKILLS_SERVER_NAME).await;
+        relay.abort();
+        drop(watcher);
+
+        return served;
+    }
+
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
 
     // The peer exists only once the service is running, which is also
     // the earliest a notification could reach anyone — so this ordering
     // is correct, not merely convenient.
-    let relay = tokio::spawn(relay_server.relay_watch(signals, running.peer().clone()));
+    let relay = tokio::spawn(relay_server.relay_watch(signals, Some(running.peer().clone())));
 
     // Race the transport against SIGTERM/SIGHUP. Without this a
     // supervisor stopping the sidecar would skip every destructor and
@@ -291,10 +308,14 @@ struct SkillsServer {
     /// Per-root watch coverage, so a caller can tell whether it needs
     /// `reload` at all.
     watch_status: Arc<RwLock<crate::watch::WatchStatus>>,
+    /// How this process is served, which decides how long a client may
+    /// cache what it reads — see [`Transport::result_ttl_ms`].
+    transport: super::serve_args::Transport,
 }
 
 impl SkillsServer {
     fn new(args: SkillsArgs, _config: super::ConfigSource) -> anyhow::Result<Self> {
+        let transport = args.serve.transport;
         // Build one `ResolvedSkillEntry` per decoded `--skill-dir`
         // JSON entry. Each entry carries its OWN ignore list so the
         // sidecar replicates the launcher's per-dir suppression exactly —
@@ -350,6 +371,7 @@ impl SkillsServer {
             subscriptions: super::rpc::Subscriptions::default(),
             reload_gate: Arc::new(tokio::sync::Mutex::new(())),
             watch_status: Arc::new(RwLock::new(crate::watch::WatchStatus::default())),
+            transport,
         })
     }
 
@@ -414,7 +436,12 @@ impl SkillsServer {
     /// and the watcher relay — reach the wire only through here, so the
     /// two cannot drift into announcing different things for the same
     /// delta.
-    async fn announce(&self, peer: &rmcp::service::Peer<RoleServer>, delta: &CatalogueDelta) {
+    /// `peer` is `None` over HTTP, where there is no ambient one to
+    /// broadcast through — see [`super::rpc::Subscriptions`]. Open
+    /// `subscriptions/listen` streams are reached either way, because
+    /// their sinks carry their own peer and the registry is shared by
+    /// every clone of this handler.
+    async fn announce(&self, peer: Option<&rmcp::service::Peer<RoleServer>>, delta: &CatalogueDelta) {
         // Deliberately NOT gated on `peer.peer_info()`. A client that
         // opens with `subscriptions/listen` — which is the NORMAL path
         // for Claude Code's v2 runtime, per the opener tests — takes
@@ -437,7 +464,7 @@ impl SkillsServer {
     /// Never an opener and never on a request's path, so it cannot
     /// reintroduce the pre-loop deadlock `serve_from_first_byte` exists
     /// to avoid — the serve loop is already spawned when this starts.
-    async fn relay_watch(self, mut signals: WatchSignals, peer: rmcp::service::Peer<RoleServer>) {
+    async fn relay_watch(self, mut signals: WatchSignals, peer: Option<rmcp::service::Peer<RoleServer>>) {
         while let Some(first) = signals.recv().await {
             // Drain the burst before doing any work: a `git checkout`
             // that outlasts the debounce window still costs one rescan
@@ -477,7 +504,7 @@ impl SkillsServer {
                 reference_citers = delta.reference_citers.len(),
                 "mcp::server: skills rescanned from a watched change"
             );
-            self.announce(&peer, &delta).await;
+            self.announce(peer.as_ref(), &delta).await;
         }
         // The sender dropped. When nothing was ever armed that is the
         // ordinary shape of a config with no watchable root, not a
@@ -1156,7 +1183,7 @@ impl ServerHandler for SkillsServer {
             ),
         ];
         Ok(ListToolsResult::with_all_items(tools)
-            .with_ttl_ms(RESULT_TTL_MS)
+            .with_ttl_ms(self.transport.result_ttl_ms())
             .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
@@ -1294,7 +1321,7 @@ impl ServerHandler for SkillsServer {
                 // story rather than a nicety, and makes one shared
                 // notification path the only way the two callers cannot
                 // disagree about a delta.
-                self.announce(&context.peer, &delta).await;
+                self.announce(Some(&context.peer), &delta).await;
                 tracing::info!(
                     count,
                     membership_changed = delta.membership_changed,
@@ -1379,7 +1406,7 @@ impl ServerHandler for SkillsServer {
             // skill cite" far more cheaply than a listing can.
         }
         Ok(ListResourcesResult::with_all_items(resources)
-            .with_ttl_ms(RESULT_TTL_MS)
+            .with_ttl_ms(self.transport.result_ttl_ms())
             .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
@@ -1392,7 +1419,7 @@ impl ServerHandler for SkillsServer {
             .with_description("Full SKILL.md body for the addressed skill slug.")
             .with_mime_type("text/markdown")];
         Ok(ListResourceTemplatesResult::with_all_items(templates)
-            .with_ttl_ms(RESULT_TTL_MS)
+            .with_ttl_ms(self.transport.result_ttl_ms())
             .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 
@@ -1411,7 +1438,7 @@ impl ServerHandler for SkillsServer {
                     text: catalogue_markdown(&cache),
                     meta: None,
                 }])
-                .with_ttl_ms(RESULT_TTL_MS)
+                .with_ttl_ms(self.transport.result_ttl_ms())
                 .with_cache_scope(RESULT_CACHE_SCOPE)
                 .into())
             }
@@ -1435,7 +1462,7 @@ impl ServerHandler for SkillsServer {
                     text: format!("{}{}", skill.body, wire_references::manifest_footer(&entries, slug)),
                     meta: Some(skill_meta(&skill.meta_block)),
                 }])
-                .with_ttl_ms(RESULT_TTL_MS)
+                .with_ttl_ms(self.transport.result_ttl_ms())
                 .with_cache_scope(RESULT_CACHE_SCOPE)
                 .into())
             }
@@ -1610,6 +1637,7 @@ mod tests {
     fn a_relative_skill_dir_is_absolutized() {
         let server = SkillsServer::new(
             SkillsArgs {
+                serve: Default::default(),
                 skill_dirs: vec![SkillDirEntry {
                     dir: std::path::PathBuf::from("./relative-skills"),
                     ignore: Vec::new(),
@@ -2201,6 +2229,7 @@ mod watch_tests {
     ) {
         let handler = SkillsServer::new(
             SkillsArgs {
+                serve: Default::default(),
                 skill_dirs: vec![SkillDirEntry {
                     dir: root.to_path_buf(),
                     ignore: Vec::new(),
@@ -2218,7 +2247,7 @@ mod watch_tests {
         let (client_tx, server_rx) = tokio::io::duplex(1 << 16);
         let (server_tx, client_rx) = tokio::io::duplex(1 << 16);
         let running = crate::mcp::server::rpc::serve_from_first_byte(handler, (server_rx, server_tx));
-        let relay = tokio::spawn(relay_server.relay_watch(signals, running.peer().clone()));
+        let relay = tokio::spawn(relay_server.relay_watch(signals, Some(running.peer().clone())));
 
         (client_tx, BufReader::new(client_rx).lines(), watcher, relay, running)
     }
@@ -2415,7 +2444,10 @@ mod opener_tests {
     /// exercises one of them and reports the other as covered.
     async fn opener_run(opener: &str, expect_ack: bool) -> Vec<String> {
         let handler = SkillsServer::new(
-            SkillsArgs { skill_dirs: Vec::new() },
+            SkillsArgs {
+                skill_dirs: Vec::new(),
+                serve: Default::default(),
+            },
             crate::mcp::server::ConfigSource::default(),
         )
         .expect("build skills server");
@@ -2487,7 +2519,10 @@ mod opener_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_down_negotiated_session_is_not_served_a_newer_result_shape() {
         let handler = SkillsServer::new(
-            SkillsArgs { skill_dirs: Vec::new() },
+            SkillsArgs {
+                skill_dirs: Vec::new(),
+                serve: Default::default(),
+            },
             crate::mcp::server::ConfigSource::default(),
         )
         .expect("build skills server");
