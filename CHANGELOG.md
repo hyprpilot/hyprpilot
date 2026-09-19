@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.20.0](https://github.com/hyprpilot/hyprpilot/compare/v3.19.0...v3.20.0) (2026-09-19)
+
+
+### Features
+
+* **harness:** report a session's files on every surface ([#259](https://github.com/hyprpilot/hyprpilot/issues/259)) ([144dbc7](https://github.com/hyprpilot/hyprpilot/commit/144dbc7db6abd2efdecd82019c1a6cbd85521bee))
+
 ## [3.19.0](https://github.com/hyprpilot/hyprpilot/compare/v3.18.0...v3.19.0) (2026-09-11)
 
 
