@@ -106,8 +106,8 @@ One corollary worth stating: a scoped-out id that **is** configured refuses diff
 | `list_profiles`  | Discover the profiles you can launch — vendor, model, effort, mode, cwd. Start here.                                           |
 | `spawn`          | Start a new session from a profile and send it a prompt.                                                                       |
 | `session_send`   | Send another message to an existing session — resuming it if it's finished, or, with `steer`, interrupting the turn in flight. |
-| `session_list`   | List this server's sessions — handle, profile, status, exit code, timestamps.                                                  |
-| `session_status` | One session's state without its transcript — the cheap poll.                                                                   |
+| `session_list`   | List this server's sessions — handle, profile, status, exit code, timestamps, directory.                                       |
+| `session_status` | One session's state and file paths without its transcript — the cheap poll. Takes an optional `turn`.                          |
 | `session_read`   | Read, and optionally follow live, a session's transcript.                                                                      |
 | `session_kill`   | Stop a running session and everything it started — or reap one that has already finished.                                      |
 
@@ -115,7 +115,7 @@ One corollary worth stating: a scoped-out id that **is** configured refuses diff
 
 1. **`list_profiles`** to find an `id` — a row marked `!` failed to resolve; don't launch it.
 2. **`spawn { profile, prompt }`** to start a session. It returns a `session` handle straight away and the agent keeps working — that handle is the session's identity for every later call. Pass `wait: true` to block instead, worth it only for a turn you expect to be short: past `timeout_seconds` the result comes back with status `running`, a `nextCursor` to resume reading from, and the agent still working.
-3. **`session_status { session }`** until it reports `exited` — do **not** call `spawn` again for the same conversation. It reads no transcript, and its `transcriptBytes` tells you whether a running agent is progressing or wedged, which `status` alone cannot. To watch the output as it arrives instead, follow with `session_read { session, wait: true }`.
+3. **`session_status { session }`** until it reports `exited` — do **not** call `spawn` again for the same conversation. It reads no transcript, and its `transcriptBytes` tells you whether a running agent is progressing or wedged, which `status` alone cannot. It also carries `files`, so the poll that tells you the answer landed tells you where it landed. To watch the output as it arrives instead, follow with `session_read { session, wait: true }`.
 4. **`session_read { session }`** for the transcript once it has finished.
 5. **`session_send { session, prompt }`** for every follow-up turn, once the session has finished its previous one. Add `steer: true` to interrupt a turn that is still running and take the conversation somewhere else instead.
 6. **`session_kill { session }`** to stop a runaway agent, or to free a slot when `spawn` reports a `max_live_sessions` ceiling. It is state-aware, like `session_send`: on a **running** session it terminates the agent and keeps the transcript, so you can still read why; on an **already-finished** one it reaps the session and its transcript. Calling it twice is the natural stop-then-clean-up, and the result's `action` says which happened.
@@ -156,13 +156,18 @@ The session handle rides `_meta` rather than being parsed out of the task id: ev
 
 ### `session_status`
 
-| Field             | Type   | When        | What it means                                                                            |
-| ----------------- | ------ | ----------- | ---------------------------------------------------------------------------------------- |
-| `status`          | string | always      | `running` or `exited`. A session is `exited` after every **turn**, not only at the end.  |
-| `exitCode`        | int    | once exited | Omitted while running.                                                                   |
-| `turn`            | int    | always      | Which turn of the conversation this is, 1-based. Also the suffix of that turn's task id. |
-| `transcriptBytes` | int    | always      | Bytes written so far. A number that stops moving is a wedged agent.                      |
-| `hasResult`       | bool   | always      | Whether the agent's final answer has landed — see below.                                 |
+| Field             | Type   | When        | What it means                                                                                                                                           |
+| ----------------- | ------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`          | string | always      | The **session's** state: `running` or `exited`. A session is `exited` after every **turn**.                                                             |
+| `exitCode`        | int    | once exited | This turn's own code. Omitted while running, and for a killed turn — the `-1` a kill produces says nothing.                                             |
+| `turn`            | int    | always      | Which turn this describes, 1-based. Also the suffix of that turn's task id.                                                                             |
+| `turnFinished`    | bool   | always      | Whether **this turn** has ended. Not derivable from `hasResult`: a turn that ended with no answer and one still working both report `hasResult: false`. |
+| `transcriptBytes` | int    | always      | Bytes this turn has written. A number that stops moving is a wedged agent.                                                                              |
+| `hasResult`       | bool   | always      | Whether the agent's final answer has landed — see below.                                                                                                |
+| `files`           | object | always      | This turn's paths — the same block `sessionInfo.files` carries. See [The session directory](#the-session-directory).                                    |
+| `turns`           | array  | always      | Every turn of the conversation with its outcome and the URI that fetches it.                                                                            |
+
+**`turn` is an argument too.** `session_status { session, turn }` describes that turn instead of the current one, and everything turn-scoped above follows it — the byte count, `exitCode`, `hasResult` and `files`. Omit it for the current turn; a turn the session never reached is an error rather than a silent fall back to the current one. This is what `hyprpilot://sessions/<handle>/turns/<n>/status` reads.
 
 `hasResult` is `false` for any running session, and only then scanned per vendor. Both halves matter:
 
@@ -177,15 +182,28 @@ The three vendors mark completion differently — all verified against the insta
 
 ### The session directory
 
-Each session owns a 0700 temp directory. Every file in it is named on `spawn` / `session_send` / `session_read` results under `sessionInfo.files`, so nothing has to be derived from a sibling path:
+Each session owns a 0700 temp directory, and **every surface that names a session names its files**, so nothing has to be derived from a sibling path and no call has to be made twice to learn a path:
+
+| Where                                     | How they arrive                                                                |
+| ----------------------------------------- | ------------------------------------------------------------------------------ |
+| `spawn` / `session_send` / `session_read` | `sessionInfo.files`                                                            |
+| `session_status`                          | `files`, scoped to the turn you addressed                                      |
+| `session_kill`                            | `files`, on a **terminate** — a reap deletes the directory, so it carries none |
+| `session_list`                            | `dir` per row — everything else hangs off it at the names below                |
+| Any session `resources/read`              | `_meta["io.hyprpilot/session"]` — `session`, `turn`, `files`                   |
 
 | Key          | File                    | What it is                                                                               |
 | ------------ | ----------------------- | ---------------------------------------------------------------------------------------- |
 | `dir`        | —                       | The directory itself. Gone once the session is reaped, evicted, or the sidecar exits.    |
+| `turnsDir`   | `turns/`                | Where every turn's directory lives.                                                      |
+| `turn`       | —                       | Which turn the three paths below belong to.                                              |
+| `turnDir`    | `turns/<n>/`            | THIS turn's directory.                                                                   |
 | `transcript` | `turns/<n>/turns.jsonl` | The vendor's raw JSON event stream for THIS turn.                                        |
-| `stderr`     | `stderr.log`            | The vendor's stderr. Surfaced in results only when non-empty.                            |
-| `done`       | `done.json`             | The completion marker — see below.                                                       |
+| `stderr`     | `turns/<n>/stderr.log`  | THIS turn's stderr. Surfaced in results only when non-empty.                             |
+| `done`       | `turns/<n>/done.json`   | THIS turn's completion marker — see below.                                               |
 | `breadcrumb` | `session.json`          | Crash-recovery state (pid, pgid, owning sidecar, start ticks) read by the startup sweep. |
+
+A resource read is text alone, which is why the paths ride its `_meta`: a caller holding `/result` could otherwise not say which file the answer came from. Clients that render only the text block see the session directory on the `spawn` summary and the transcript path on the `session_status` summary instead.
 
 **`transcript` is there so you can read it directly.** `session_read` pages it for you, but an agent with shell access is often better off with `jq` — the answer sits in a different event per vendor, and the `tool_use` events in between can be enormous:
 
@@ -214,14 +232,14 @@ Every session is also a **resource** — `hyprpilot://sessions/<handle>` — so 
 
 ### The resource surface
 
-| URI                                        | What it returns                                               | Cacheable      |
-| ------------------------------------------ | ------------------------------------------------------------- | -------------- |
-| `hyprpilot://profiles`                     | What `list_profiles` returns, same delegate scope             | no — see below |
-| `hyprpilot://sessions`                     | What `session_list` returns                                   | no — see below |
-| `hyprpilot://sessions/<handle>`            | What `session_status` returns — state, exit code, `hasResult` | when exited    |
-| `hyprpilot://sessions/<handle>/result`     | **The latest turn's answer**, or why there isn't one          | when exited    |
-| `hyprpilot://sessions/<handle>/transcript` | The raw event stream, capped                                  | when exited    |
-| `hyprpilot://sessions/<handle>/stderr`     | The vendor's stderr                                           | when exited    |
+| URI                                        | What it returns                                                        | Cacheable      |
+| ------------------------------------------ | ---------------------------------------------------------------------- | -------------- |
+| `hyprpilot://profiles`                     | What `list_profiles` returns, same delegate scope                      | no — see below |
+| `hyprpilot://sessions`                     | What `session_list` returns                                            | no — see below |
+| `hyprpilot://sessions/<handle>`            | What `session_status` returns — state, exit code, `hasResult`, `files` | when exited    |
+| `hyprpilot://sessions/<handle>/result`     | **The latest turn's answer**, or why there isn't one                   | when exited    |
+| `hyprpilot://sessions/<handle>/transcript` | The raw event stream, capped                                           | when exited    |
+| `hyprpilot://sessions/<handle>/stderr`     | The vendor's stderr                                                    | when exited    |
 
 Reading `hyprpilot://sessions/<handle>` also lists every turn and how it ended, each with the URI that fetches it:
 
@@ -241,7 +259,7 @@ So one read answers "which turns exist and which is worth fetching", rather than
 
 The **un-turned** forms are the shortcut to the current turn: `…/<handle>/result` is the latest answer with no turn number to look up. Reach for a turn-scoped URI only when you want an earlier one.
 
-Every view is also addressable **per turn** — `hyprpilot://sessions/<handle>/turns/<n>/result` and the same for `status`, `transcript`, `stderr`. This is how an earlier turn's answer stays reachable once later turns have run. Turn numbers are 1-based; one the session never reached is an error, not an empty read.
+Every view is also addressable **per turn** — `hyprpilot://sessions/<handle>/turns/<n>/result` and the same for `status`, `transcript`, `stderr`. This is how an earlier turn's answer stays reachable once later turns have run. Turn numbers are 1-based; one the session never reached is an error, not an empty read. A turn-scoped `status` describes **that** turn, down to its `files` and its cacheability — an earlier turn is immutable however the session is doing now.
 
 `resources/list` names the two indexes and **one entry per session**, not one per view. The views are advertised as the template `hyprpilot://sessions/{handle}/{view}` instead — four views across 64 retained sessions would be 256 rows every client pays for on connect.
 
