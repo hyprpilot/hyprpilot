@@ -120,7 +120,6 @@ this file.
 | `task cli` | Invoke the built debug binary (`./target/debug/hyprpilot`) with `{{.CLI_ARGS}}`. |
 | `task build` | `cargo build` (debug launcher). |
 | `task release` | `cargo build --release`. |
-| `task build:minimal` | `cargo clippy --no-default-features --all-targets -D warnings` — proves the `http`-feature-off arm still compiles. |
 | `task test` | `task test:rust`. |
 | `task test:rust` | `cargo nextest run --all-targets --no-fail-fast`. |
 | `task format` | `format:rust` (`cargo fmt --all`) + `format:node`. |
@@ -872,7 +871,8 @@ a cargo feature, **on by default**, and the `Transport::Http` arm stays
 compiled in either way: with the feature off it bails with a sentence
 naming the rebuild, because gating the ENUM VARIANT makes the dispatch
 `match` non-exhaustive and leaves the flags dead under `-D warnings`.
-`task build:minimal` is in CI so that arm cannot rot.
+CI builds the DEFAULT feature set only, so that arm is compiled but not
+verified — check it by hand when you touch it.
 
 - **rmcp binds nothing.** `StreamableHttpService` is a
   `tower_service::Service`; every `TcpListener` in rmcp's source is

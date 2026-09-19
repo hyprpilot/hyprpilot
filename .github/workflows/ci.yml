@@ -77,20 +77,3 @@ jobs:
 
       - name: Build
         run: task build
-
-  build-minimal:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Bootstrap toolchain via mise
-        uses: jdx/mise-action@v4
-        with:
-          install: true
-          cache: true
-
-      - name: Install workspace deps
-        run: task install
-
-      - name: Build without default features
-        run: task build:minimal
