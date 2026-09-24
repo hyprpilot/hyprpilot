@@ -51,7 +51,8 @@ Files iterate in order; a later file's server overrides an earlier one of the sa
 | ------------- | ---------------- | ------- | ------------------------------------------------------------------------------ |
 | `file`        | path             | —       | An `{ "mcpServers": { … } }` JSON file. Exactly one of `file` / `mcp_servers`. |
 | `mcp_servers` | map              | —       | Inline server map, same shape as the file's `mcpServers` value.                |
-| `ignore`      | string[] (globs) | `[]`    | Server names matching any pattern are dropped.                                 |
+| `include`     | string[] (globs) | unset   | When set, only server names matching a pattern are kept.                       |
+| `ignore`      | string[] (globs) | `[]`    | Server names matching any pattern are dropped. Beats `include` on overlap.     |
 
 ### Inline servers
 
@@ -66,9 +67,16 @@ mcps:
           - hyprpilot-nvim-mcp
 ```
 
-### Ignoring servers
+### Filtering servers
 
-`ignore` is an optional glob array per entry. Server names matching any pattern are dropped before they reach the agent. Globs anchor against the full server name — `work-*` matches `work-foo` but not `pre-work-foo`.
+`include` and `ignore` are optional glob arrays per entry. `ignore` drops server names matching any pattern before they reach the agent. `include` is an allow-list: when set, only matching names survive, so a server added to the file later stays out until the list names it. A name matching both is dropped, and an empty or absent `include` applies no allow-list. Globs anchor against the full server name — `work-*` matches `work-foo` but not `pre-work-foo`.
+
+```yaml
+mcps:
+  - file: ~/.config/hyprpilot/mcps/personal.json
+    include:
+      - gitlab
+```
 
 ### Per-profile override
 
@@ -170,19 +178,20 @@ The general-tools server — the surface for things that are neither a skills re
 
 ### `mcp.skills`
 
-| Field  | Type                         | Default  | What it does                                                                     |
-| ------ | ---------------------------- | -------- | -------------------------------------------------------------------------------- |
-| `dirs` | `{ dir, ignore?, watch? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles. Watched by default. |
+| Field  | Type                                   | Default  | What it does                                                                     |
+| ------ | -------------------------------------- | -------- | -------------------------------------------------------------------------------- |
+| `dirs` | `{ dir, include?, ignore?, watch? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles. Watched by default. |
 
 Unlike the other two, this server is also gated on having something to serve: if `dirs` resolves to no skills at all, nothing is injected. The root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry rather than a compiled default, so a user layer's `patches` extends the seed instead of replacing it.
 
 #### `dirs` entries
 
-| Field    | Type             | Default | What it does                                                                                                                                                                                                                           |
-| -------- | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dir`    | path             | —       | Skill root to scan. Missing roots warn and are skipped.                                                                                                                                                                                |
-| `ignore` | string[] (globs) | `[]`    | Slugs matching any pattern are skipped. First root wins on slug collision.                                                                                                                                                             |
-| `watch`  | bool             | `true`  | Watch this root and announce changes. Seeded on for the default root. Turn it off for a root on a filesystem that cannot deliver events (NFS, SSHFS, most FUSE) — those accept the watch and never fire, so edits there need `reload`. |
+| Field     | Type             | Default | What it does                                                                                                                                                                                                                           |
+| --------- | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dir`     | path             | —       | Skill root to scan. Missing roots warn and are skipped.                                                                                                                                                                                |
+| `include` | string[] (globs) | unset   | When set, only slugs matching a pattern load from this root. An empty or absent list applies no allow-list.                                                                                                                            |
+| `ignore`  | string[] (globs) | `[]`    | Slugs matching any pattern are skipped. Beats `include` on overlap. First root wins on slug collision.                                                                                                                                 |
+| `watch`   | bool             | `true`  | Watch this root and announce changes. Seeded on for the default root. Turn it off for a root on a filesystem that cannot deliver events (NFS, SSHFS, most FUSE) — those accept the watch and never fire, so edits there need `reload`. |
 
 ### `mcp.harness`
 
