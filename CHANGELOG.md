@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.22.0](https://github.com/hyprpilot/hyprpilot/compare/v3.21.0...v3.22.0) (2026-09-24)
+
+
+### Features
+
+* **skills:** add an include allow-list to skill roots ([#263](https://github.com/hyprpilot/hyprpilot/issues/263)) ([fc076fc](https://github.com/hyprpilot/hyprpilot/commit/fc076fc78a6da6255a63d18eca07abd3d5a1264f))
+
 ## [3.21.0](https://github.com/hyprpilot/hyprpilot/compare/v3.20.0...v3.21.0) (2026-09-19)
 
 
