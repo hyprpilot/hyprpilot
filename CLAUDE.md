@@ -63,7 +63,9 @@ crate dir are gone).
   build inputs and publishes on `main` (`main` + `sha-*` tags) and on a
   release, which `release-please.yml` dispatches with the tag (semver +
   `latest`) because its token-created tag fires no workflow itself.
-  `GITHUB_TOKEN` is the only credential.
+  `GITHUB_TOKEN` is the only credential. release-please runs the `rust`
+  release-type so every release PR bumps `Cargo.toml` AND `Cargo.lock`
+  together — the image's `cargo build --locked` fails on any drift.
 
 Key `src/` modules:
 
