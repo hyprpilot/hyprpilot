@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.23.0](https://github.com/hyprpilot/hyprpilot/compare/v3.22.0...v3.23.0) (2026-09-30)
+
+
+### Features
+
+* **mcp:** add an HTTP passthrough server ([#267](https://github.com/hyprpilot/hyprpilot/issues/267)) ([ab9830d](https://github.com/hyprpilot/hyprpilot/commit/ab9830d5bc47eaf89e13aab85a365f77d2310bc0))
+
+
+### Bug Fixes
+
+* **spawn:** remove claude's MCP temp config when its turn ends ([#265](https://github.com/hyprpilot/hyprpilot/issues/265)) ([3c18794](https://github.com/hyprpilot/hyprpilot/commit/3c18794933f4f907459831321c3bd091285405b2))
+
 ## [3.22.0](https://github.com/hyprpilot/hyprpilot/compare/v3.21.0...v3.22.0) (2026-09-24)
 
 
