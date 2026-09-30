@@ -11,7 +11,7 @@
 //! - [`opencode`] — `opencode` `OPENCODE_CONFIG_CONTENT` /
 //!   `OPENCODE_PERMISSION` env + `run` subcommand.
 //! - [`argv`] — flag-detection predicates shared by all three.
-//! - [`temp`] — the launch-scoped 0600 temp-config lifecycle + reaper
+//! - [`temp`] — the launch-scoped 0600 temp-config guard + reaper
 //!   backing claude's by-path `--mcp-config`.
 //!
 //! This module keeps the dispatch, the `exec` handoff (with its
@@ -34,7 +34,7 @@ mod argv;
 mod claude;
 mod codex;
 mod opencode;
-mod temp;
+pub(crate) mod temp;
 
 const INLINE_CONFIG_LIMIT: usize = 256 * 1024;
 
@@ -89,6 +89,9 @@ pub(crate) struct SpawnCommand {
     /// would leave codex reading EOF). `None` keeps the `exec()` handoff
     /// (interactive, and opencode's positional-prompt headless path).
     pub(crate) stdin_prompt: Option<String>,
+    /// Config file the argv points at, removed when this drops — so it
+    /// must travel with whatever waits on the child.
+    pub(crate) temp_config: Option<temp::TempConfig>,
 }
 
 impl SpawnCommand {
@@ -294,6 +297,7 @@ pub(super) fn base_command(resolved: &ResolvedProfile) -> SpawnCommand {
         env,
         cwd,
         stdin_prompt: None,
+        temp_config: None,
     }
 }
 

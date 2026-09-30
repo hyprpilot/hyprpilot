@@ -2075,6 +2075,7 @@ mod tests {
             env: Default::default(),
             cwd: None,
             stdin_prompt: None,
+            temp_config: None,
         };
         let start = |harness: &Harness| {
             harness
@@ -2333,6 +2334,7 @@ mod tests {
             env: Default::default(),
             cwd: None,
             stdin_prompt: None,
+            temp_config: None,
         };
         let handle = harness
             .sessions
@@ -2394,6 +2396,7 @@ mod tests {
             env: Default::default(),
             cwd: None,
             stdin_prompt: None,
+            temp_config: None,
         }
     }
 
@@ -2539,6 +2542,7 @@ mod tests {
                     env: Default::default(),
                     cwd: None,
                     stdin_prompt: None,
+                    temp_config: None,
                 },
                 "p".into(),
                 crate::config::AgentProvider::ClaudeCode,
@@ -2597,6 +2601,7 @@ mod tests {
             env: Default::default(),
             cwd: None,
             stdin_prompt: None,
+            temp_config: None,
         };
         let handle = harness
             .sessions
@@ -3196,6 +3201,7 @@ mod task_tests {
                     env: Default::default(),
                     cwd: None,
                     stdin_prompt: None,
+                    temp_config: None,
                 },
                 "p".into(),
                 crate::config::AgentProvider::ClaudeCode,
@@ -3242,6 +3248,7 @@ mod task_tests {
                     env: Default::default(),
                     cwd: None,
                     stdin_prompt: None,
+                    temp_config: None,
                 },
                 "p".into(),
                 crate::config::AgentProvider::ClaudeCode,
@@ -3308,6 +3315,7 @@ mod task_tests {
             env: Default::default(),
             cwd: None,
             stdin_prompt: None,
+            temp_config: None,
         };
         let handle = harness
             .sessions

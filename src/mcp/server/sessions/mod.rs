@@ -482,7 +482,7 @@ impl SessionTable {
     pub(crate) fn respawn(
         self: &Arc<Self>,
         handle: &str,
-        command: SpawnCommand,
+        mut command: SpawnCommand,
         provenance: Provenance,
     ) -> std::result::Result<(), RespawnError> {
         let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
@@ -500,7 +500,7 @@ impl SessionTable {
             }
         }
         let launched = launch_child(
-            &command,
+            &mut command,
             session.dir.path(),
             handle,
             self.on_exit.get().cloned(),
@@ -728,7 +728,7 @@ impl SessionTable {
     /// Spawn a prepared command as an owned session.
     pub(crate) fn spawn(
         self: &Arc<Self>,
-        command: SpawnCommand,
+        mut command: SpawnCommand,
         profile_id: String,
         provider: AgentProvider,
         provenance: Provenance,
@@ -747,7 +747,8 @@ impl SessionTable {
         // The resolved cwd, so a follow-up turn replays to the same
         // directory even when this one fell back to `$PWD`.
         launch.cwd = command.cwd.clone();
-        let Launched { pid, pgid, done } = launch_child(&command, dir.path(), &handle, self.on_exit.get().cloned(), 1)?;
+        let Launched { pid, pgid, done } =
+            launch_child(&mut command, dir.path(), &handle, self.on_exit.get().cloned(), 1)?;
 
         let now = SystemTime::now();
         let session = Session {
@@ -849,7 +850,7 @@ struct Launched {
 /// reading turn N unable to swallow turn N+1, its stderr unambiguously
 /// its own, and its completion marker safe without a clear step.
 fn launch_child(
-    command: &SpawnCommand,
+    command: &mut SpawnCommand,
     dir: &Path,
     handle: &str,
     on_exit: Option<ExitHook>,
@@ -927,6 +928,7 @@ fn launch_child(
 
     let (tx, done) = watch::channel(None);
     let waiter_handle = handle.to_string();
+    let temp_config = command.temp_config.take();
     tokio::spawn(async move {
         let code = match child.wait().await {
             Ok(status) => status.code().unwrap_or(-1),
@@ -936,6 +938,7 @@ fn launch_child(
             }
         };
         tracing::info!(handle = %waiter_handle, exit_code = code, "mcp harness: session exited");
+        drop(temp_config);
         // Marker first, then the channel: a watcher polling the file is
         // the one that cannot be woken any other way.
         //
@@ -1220,6 +1223,7 @@ mod tests {
             env: BTreeMap::new(),
             cwd: None,
             stdin_prompt: None,
+            temp_config: None,
         }
     }
 
@@ -1268,6 +1272,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_turns_temp_config_outlives_the_child_and_not_the_turn() {
+        let table = table();
+        let temp_config = crate::spawn::providers::temp::write_launch_temp_config("test", "{}").unwrap();
+        let path = temp_config.path().to_path_buf();
+        let handle = spawn(
+            &table,
+            SpawnCommand {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), format!("test -f '{}'", path.display())],
+                env: BTreeMap::new(),
+                cwd: None,
+                stdin_prompt: None,
+                temp_config: Some(temp_config),
+            },
+        );
+
+        let mut done = table.with(&handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+
+        assert_eq!(*done.borrow(), Some(0), "the child must still find its config");
+        assert!(!path.exists(), "a finished turn must not leave its config behind");
+        table.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn shutdown_kills_live_sessions() {
         let table = table();
         let handle = spawn(&table, sleeper("300"));
@@ -1296,6 +1327,7 @@ mod tests {
             env: Default::default(),
             cwd: None,
             stdin_prompt: None,
+            temp_config: None,
         };
         let handle = table
             .spawn(
@@ -1334,6 +1366,7 @@ mod tests {
                     env: Default::default(),
                     cwd: None,
                     stdin_prompt: None,
+                    temp_config: None,
                 },
                 Provenance {
                     program: "sh".into(),
@@ -1374,6 +1407,7 @@ mod tests {
             env: Default::default(),
             cwd: None,
             stdin_prompt: None,
+            temp_config: None,
         };
         let prov = || Provenance {
             program: "sh".into(),
@@ -1408,6 +1442,7 @@ mod tests {
                     env: Default::default(),
                     cwd: None,
                     stdin_prompt: None,
+                    temp_config: None,
                 },
                 "p".into(),
                 crate::config::AgentProvider::ClaudeCode,

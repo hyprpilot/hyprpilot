@@ -4,25 +4,25 @@
 //! at carries expanded MCP header secrets (bearer tokens). Writing it
 //! to an owner-only (0600) temp file keeps those secrets out of the
 //! world-readable `/proc/<pid>/cmdline` argv an inline `--mcp-config
-//! <json>` would expose. The launcher `exec()`s, so it never unlinks
-//! the file — the vendor CLI reads it afterwards — hence the reaper
-//! that sweeps stale orphans before each write.
+//! <json>` would expose. The file is a [`TempConfig`] guard that unlinks
+//! it on drop, so a launch that WAITS on its child (the harness, the
+//! headless spawn path) removes it at teardown. An `exec()` runs no
+//! destructor, so a bare launch leaves it for the vendor CLI to read —
+//! hence the reaper that sweeps stale orphans before each write.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 /// Write a launch-scoped config to an owner-only (0600) temp file and
-/// return its path. Keeps expanded MCP header secrets (bearer tokens)
+/// return the guard that owns it. Keeps expanded MCP header secrets (bearer tokens)
 /// out of the world-readable `/proc/<pid>/cmdline` argv that an inline
 /// `--mcp-config <json>` would expose. The file is created 0600 from
 /// the start via `OpenOptionsExt::mode` (not a chmod-after-write race),
-/// so it is never briefly world-readable. It is deliberately NOT
-/// deleted before the launcher `exec()`s: `exec()` replaces this
-/// process, so the vendor CLI must still be able to read the path
-/// afterwards — the file is a launch-scoped temp the OS reclaims on
-/// tmp cleanup, and its 0600 mode bounds the exposure.
-pub(super) fn write_launch_temp_config(label: &str, config: &str) -> Result<PathBuf> {
+/// so it is never briefly world-readable. The guard must outlive the
+/// vendor's read of the path: whoever runs the child holds it until
+/// the child exits.
+pub(crate) fn write_launch_temp_config(label: &str, config: &str) -> Result<TempConfig> {
     use std::io::Write;
 
     // The launcher `exec()`s, so it never unlinks the file it just
@@ -42,10 +42,30 @@ pub(super) fn write_launch_temp_config(label: &str, config: &str) -> Result<Path
     let mut file = options
         .open(&path)
         .with_context(|| format!("{label}: create owner-only temp config at {}", path.display()))?;
+    let guard = TempConfig(path);
     file.write_all(config.as_bytes())
-        .with_context(|| format!("{label}: write temp config at {}", path.display()))?;
+        .with_context(|| format!("{label}: write temp config at {}", guard.path().display()))?;
 
-    Ok(path)
+    Ok(guard)
+}
+
+/// A launch-scoped temp config, unlinked when dropped.
+#[derive(Debug)]
+pub(crate) struct TempConfig(PathBuf);
+
+impl TempConfig {
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempConfig {
+    fn drop(&mut self) {
+        match std::fs::remove_file(&self.0) {
+            Ok(()) => tracing::debug!(path = %self.0.display(), "cli: removed launch temp config"),
+            Err(err) => tracing::debug!(%err, path = %self.0.display(), "cli: removing launch temp config failed"),
+        }
+    }
 }
 
 /// Age past which an orphaned launch-scoped MCP temp config is fair
@@ -154,5 +174,20 @@ mod tests {
 
         let _ = std::fs::remove_file(&stale);
         let _ = std::fs::remove_file(&fresh);
+    }
+
+    #[test]
+    fn temp_config_is_owner_only_and_unlinked_on_drop() {
+        let config = write_launch_temp_config("test", "{}").unwrap();
+        let path = config.path().to_path_buf();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+
+        drop(config);
+
+        assert!(!path.exists(), "dropping the guard must remove the temp config");
     }
 }
