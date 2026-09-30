@@ -56,6 +56,14 @@ crate dir are gone).
 - `docs/` — VitePress site; the only Node package. **`docs/` prose is
   owned by a separate issue (K-733) — do not rewrite it here.**
 - `packaging/`, `.github/workflows/` — AUR packaging + CI.
+- `Dockerfile` — the `ghcr.io/hyprpilot/hyprpilot` image: the whole
+  default-feature CLI on `distroless/cc-debian13:nonroot`, entrypoint
+  `hyprpilot`, no `EXPOSE` (transport and port are flags).
+  `.github/workflows/container.yml` builds it on every PR touching the
+  build inputs and publishes on `main` (`main` + `sha-*` tags) and on a
+  release, which `release-please.yml` dispatches with the tag (semver +
+  `latest`) because its token-created tag fires no workflow itself.
+  `GITHUB_TOKEN` is the only credential.
 
 Key `src/` modules:
 

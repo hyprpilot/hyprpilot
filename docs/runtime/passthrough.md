@@ -70,3 +70,15 @@ hyprpilot mcp passthrough \
 ```
 
 Each `--tool` is validated exactly like a config entry and a bad one fails startup. It serves over [HTTP](./mcp-http) like the other servers with `--transport http --listen <addr>`. Field reference: [Config → `mcp.passthrough`](../config/mcp#mcp-passthrough).
+
+## Container image
+
+`ghcr.io/hyprpilot/hyprpilot` ships the whole CLI on a distroless, non-root base; the arguments pick the subcommand, and a bare run prints `--help`. Inside a container the listener must bind a non-loopback address, which needs `--allow-remote` to answer anything:
+
+```sh
+docker run --rm -p 8080:8080 ghcr.io/hyprpilot/hyprpilot:latest \
+  mcp passthrough --transport http --listen 0.0.0.0:8080 --allow-remote \
+  --tool '{"name":"decide","inputSchema":{"type":"object"},"url":"http://decide:8000/decide"}'
+```
+
+Tags: `<version>`, `<major>.<minor>`, `<major>` and `latest` per release, `main` for the branch tip, and `sha-<short>` for every published build. Set `HYPRPILOT_MCP_TOKEN` or `--token-file` before exposing the port beyond the pod or host.
