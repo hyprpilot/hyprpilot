@@ -103,6 +103,12 @@ uuid = { version = "1", features = ["v4"] }
 # discards by hand today.
 notify-debouncer-full = "0.7"
 
+# Outbound HTTP for `hyprpilot mcp passthrough`, which POSTs every tool
+# call to the url the captain declared. rustls so an `https` upstream
+# needs no system OpenSSL; nothing else, because the server sends one
+# JSON body and reads one text body back.
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1.53", features = ["full", "test-util"] }

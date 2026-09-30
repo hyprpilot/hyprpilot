@@ -85,9 +85,13 @@ fn apply_primitive_list_deletes(left: &mut Map<String, Value>, right: &mut Map<S
 /// entry for the same directory instead of overriding the first. The
 /// documented `watch = false` off-switch then watched the root anyway
 /// and reported it unwatched.
+///
+/// `name` for `[[mcp.passthrough.tools]]`, for the same reason: dispatch
+/// is by tool name, so two entries sharing one is never what a layer
+/// meant.
 fn entry_key(v: &Value) -> Option<String> {
     let obj = v.as_object()?;
-    ["id", "dir"]
+    ["id", "dir", "name"]
         .iter()
         .find_map(|k| obj.get(*k))
         .and_then(Value::as_str)
@@ -353,6 +357,19 @@ mod tests {
                 { "id": "b", "value": 20 },
                 { "id": "c", "value": 3 },
             ])
+        );
+    }
+
+    /// A later layer naming a declared passthrough tool retargets it; it
+    /// must not list a second tool that dispatch could never reach.
+    #[test]
+    fn passthrough_tools_merge_by_name() {
+        let base = json!({ "tools": [{ "name": "decide", "url": "http://a/" }] });
+        let patch =
+            json!({ "tools": [{ "name": "decide", "url": "http://b/" }, { "name": "other", "url": "http://c/" }] });
+        assert_eq!(
+            merge_values(base, patch),
+            json!({ "tools": [{ "name": "decide", "url": "http://b/" }, { "name": "other", "url": "http://c/" }] })
         );
     }
 

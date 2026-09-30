@@ -14,6 +14,7 @@ Every in-tree MCP server speaks stdio by default, spawned by the vendor CLI that
 hyprpilot mcp skills  --transport http --listen 127.0.0.1:7777 --skill-dir '{"dir":"~/.config/hyprpilot/skills","ignore":[],"watch":true}'
 hyprpilot mcp serve   --transport http --listen 127.0.0.1:7778
 hyprpilot mcp harness --transport http --listen 127.0.0.1:7779 --token-file ~/.config/hyprpilot/mcp-token
+hyprpilot mcp passthrough --transport http --listen 127.0.0.1:7780 --tool '{"name":"decide","inputSchema":{"type":"object"},"url":"http://127.0.0.1:8080/decide"}'
 ```
 
 | Flag                      | Meaning                                                                                                               |

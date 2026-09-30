@@ -88,6 +88,18 @@ name = "hyprpilot"
 [patches.mcp.skills]
 name = "hyprpilot-skills"
 
+# `[mcp.passthrough]` — forwards each declared tool call as a JSON POST
+# to an HTTP endpoint and returns the response verbatim. Off, and no
+# tools: an upstream is something you choose, so nothing is seeded that
+# points anywhere. Declare `[[mcp.passthrough.tools]]` and set
+# `enabled = true` in your own config (or a `$match`ed patch).
+#
+# `timeout_seconds` — per-request timeout, connect through the last
+# byte. Written snake_case for the duplicate-key reason noted above.
+[patches.mcp.passthrough]
+name = "hyprpilot-passthrough"
+timeout_seconds = 300
+
 # `watch` — watch this root and announce edits over MCP, so a change to
 # a `SKILL.md` or a declared reference reaches connected clients without
 # anyone calling `reload`. Seeded ON here rather than left to the Rust

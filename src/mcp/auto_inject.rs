@@ -67,6 +67,62 @@ pub fn build_tools_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPDef
     })
 }
 
+/// Build the passthrough catalog entry.
+///
+/// Gated on content like skills: a passthrough with no declared tools
+/// would be a process serving an empty listing. Off unless the captain
+/// enabled it — see [`crate::config::mcp::PassthroughServerConfig`].
+#[must_use]
+pub fn build_passthrough_definition(cfg: &McpConfig, source: PathBuf) -> Option<MCPDefinition> {
+    let passthrough = cfg.passthrough.clone().unwrap_or_default();
+    if !passthrough.is_enabled() {
+        return None;
+    }
+    if passthrough.tools().is_empty() {
+        tracing::debug!("auto_inject: passthrough enabled with no tools declared — nothing to serve");
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let mut args = vec![
+        "mcp".to_string(),
+        "passthrough".to_string(),
+        "--timeout-seconds".to_string(),
+        passthrough.timeout_seconds().to_string(),
+    ];
+    for tool in passthrough.tools() {
+        match serde_json::to_string(tool) {
+            Ok(json) => args.push(format!("--tool={json}")),
+            Err(err) => {
+                tracing::error!(%err, tool = %tool.name, "auto_inject: passthrough tool failed to serialize — not injecting the passthrough");
+                return None;
+            }
+        }
+    }
+    let raw = serde_json::json!({
+        "command": exe.display().to_string(),
+        "args": args,
+        "env": serde_json::Map::<String, serde_json::Value>::new(),
+    });
+
+    Some(MCPDefinition {
+        name: passthrough.server_name().to_string(),
+        raw,
+        hyprpilot: HyprpilotExtension {
+            include_tools: None,
+            exclude_tools: Vec::new(),
+            auto_accept_tools: passthrough
+                .auto_accept_tools
+                .clone()
+                .unwrap_or_else(|| cfg.auto_accept_tools().to_vec()),
+            auto_reject_tools: passthrough
+                .auto_reject_tools
+                .clone()
+                .unwrap_or_else(|| cfg.auto_reject_tools().to_vec()),
+        },
+        source,
+    })
+}
+
 /// Build the harness catalog entry for a session that will run at
 /// `spawn_depth`.
 ///
@@ -322,6 +378,66 @@ mod tests {
             let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
             assert_eq!(parsed["watch"], serde_json::Value::Bool(watch));
         }
+    }
+
+    fn passthrough_cfg(enabled: Option<bool>, tools: serde_json::Value) -> McpConfig {
+        McpConfig {
+            passthrough: Some(
+                serde_json::from_value(serde_json::json!({ "enabled": enabled, "tools": tools }))
+                    .expect("passthrough block"),
+            ),
+            ..default_cfg()
+        }
+    }
+
+    fn decide_tool() -> serde_json::Value {
+        serde_json::json!([{
+            "name": "decide",
+            "description": "Ask the decision service.",
+            "inputSchema": { "type": "object", "properties": { "question": { "type": "string" } } },
+            "url": "https://decide.example/v1",
+            "body": { "stream": false },
+        }])
+    }
+
+    #[test]
+    fn passthrough_stays_out_unless_enabled_and_declared() {
+        let source = || PathBuf::from("<test>");
+        assert!(
+            build_passthrough_definition(&default_cfg(), source()).is_none(),
+            "off by default"
+        );
+        assert!(
+            build_passthrough_definition(&passthrough_cfg(None, decide_tool()), source()).is_none(),
+            "declaring tools does not turn it on"
+        );
+        assert!(
+            build_passthrough_definition(&passthrough_cfg(Some(true), serde_json::json!([])), source()).is_none(),
+            "enabled with nothing to serve injects nothing"
+        );
+    }
+
+    /// Each tool has to survive the argv round trip into exactly the
+    /// entry the captain declared, or the sidecar lists one thing and
+    /// calls another.
+    #[test]
+    fn each_passthrough_tool_rides_argv_intact() {
+        let cfg = passthrough_cfg(Some(true), decide_tool());
+        let def = build_passthrough_definition(&cfg, PathBuf::from("<test>")).expect("enabled with a tool injects");
+
+        assert_eq!(def.name, crate::config::mcp::DEFAULT_PASSTHROUGH_SERVER_NAME);
+        let args: Vec<&str> = def.raw["args"]
+            .as_array()
+            .expect("argv")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert_eq!(&args[..4], ["mcp", "passthrough", "--timeout-seconds", "300"]);
+        let decoded = crate::mcp::server::passthrough::parse_tool_arg(
+            args[4].strip_prefix("--tool=").expect("one --tool per declared tool"),
+        )
+        .expect("the sidecar decodes what the launcher wrote");
+        assert_eq!(&decoded, &cfg.passthrough.unwrap().tools()[0]);
     }
 
     #[test]

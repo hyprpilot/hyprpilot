@@ -43,7 +43,7 @@ The crate is a single package at the repo root (`Cargo.toml` + `src/`). Key modu
 - `src/config/` — layered config load, merge, validation, `[[agents]]` / `[[profiles]]`, patches, and the compiled `defaults.toml`.
 - `src/resolve/` — the pure `Config` → resolution core (profile pick, patch folding, per-launch MCP + skills registries).
 - `src/spawn/` — profile launch: per-vendor native-flag projection, the interactive picker, the multiplexer rename, and the final `exec()`.
-- `src/mcp/` — the MCP catalogue plus the three in-tree servers (`hyprpilot mcp serve` / `skills` / `harness`).
+- `src/mcp/` — the MCP catalogue plus the four in-tree servers (`hyprpilot mcp serve` / `skills` / `harness` / `passthrough`).
 - `src/mcp/skills/` — the `SKILL.md` loader and registry, under `mcp/` because it exists for the skills server.
 
 ## Found a rough edge?

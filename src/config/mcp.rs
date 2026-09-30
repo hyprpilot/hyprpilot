@@ -87,6 +87,18 @@ pub const DEFAULT_HARNESS_SERVER_NAME: &str = "hyprpilot-harness";
 /// other two carry has nothing to separate.
 pub const DEFAULT_TOOLS_SERVER_NAME: &str = "hyprpilot";
 
+/// Fallback name for the passthrough surface — see
+/// [`DEFAULT_SKILLS_SERVER_NAME`].
+pub const DEFAULT_PASSTHROUGH_SERVER_NAME: &str = "hyprpilot-passthrough";
+
+/// Fallback for `[mcp.passthrough] timeoutSeconds` — see
+/// [`DEFAULT_MAX_SPAWN_DEPTH`] for why a nested block needs one.
+///
+/// Generous because the upstreams worth fronting this way are the slow
+/// ones — a model deciding, a build answering — and a client that gives
+/// up first gets nothing either way.
+pub const DEFAULT_PASSTHROUGH_TIMEOUT_SECONDS: u64 = 300;
+
 /// `[mcp.serve]` — the auto-injected general-tools server.
 ///
 /// Home for tools that are neither a skills read nor an agent launch:
@@ -124,6 +136,136 @@ impl ToolsServerConfig {
     pub fn server_name(&self) -> &str {
         self.name.as_deref().unwrap_or(DEFAULT_TOOLS_SERVER_NAME)
     }
+}
+
+/// `[mcp.passthrough]` — the auto-injected HTTP passthrough server.
+///
+/// Every tool it serves is declared here: a call POSTs the tool's
+/// static `body` merged with the call arguments to the tool's `url`
+/// and returns the response body verbatim. The server knows nothing
+/// about what sits behind a url, which is the whole point — a new
+/// upstream is a config entry, not a release.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[merge(strategy = overwrite_some)]
+pub struct PassthroughServerConfig {
+    /// Defaults to `false`: a passthrough target is chosen deliberately,
+    /// and every call it serves is a request to a host the agent did not
+    /// pick.
+    #[garde(skip)]
+    pub enabled: Option<bool>,
+
+    #[garde(skip)]
+    pub name: Option<String>,
+
+    /// The tools this server exposes. Keyed by `name` in the patch
+    /// engine, so a later layer naming an existing tool overrides it
+    /// instead of declaring a second one.
+    #[garde(dive, custom(validate_unique_tool_names))]
+    pub tools: Option<Vec<PassthroughTool>>,
+
+    /// Per-request timeout, covering connect through the last byte of
+    /// the response.
+    #[garde(range(min = 1))]
+    #[serde(alias = "timeout_seconds")]
+    pub timeout_seconds: Option<u64>,
+
+    /// Per-server tool policy. Falls back to the `[mcp]`-level globs.
+    #[garde(custom(validate_globs))]
+    #[serde(alias = "auto_accept_tools")]
+    pub auto_accept_tools: Option<Vec<String>>,
+    #[garde(custom(validate_globs))]
+    #[serde(alias = "auto_reject_tools")]
+    pub auto_reject_tools: Option<Vec<String>>,
+}
+
+impl PassthroughServerConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+
+    pub fn server_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(DEFAULT_PASSTHROUGH_SERVER_NAME)
+    }
+
+    #[must_use]
+    pub fn tools(&self) -> &[PassthroughTool] {
+        self.tools.as_deref().unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn timeout_seconds(&self) -> u64 {
+        self.timeout_seconds.unwrap_or(DEFAULT_PASSTHROUGH_TIMEOUT_SECONDS)
+    }
+}
+
+/// One `[[mcp.passthrough.tools]]` entry — also the JSON the sidecar
+/// decodes from each `--tool`, so the launcher and the sidecar cannot
+/// disagree about the shape.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Validate)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PassthroughTool {
+    /// The MCP tool name, and the key a later layer overrides it by.
+    #[garde(custom(validate_tool_name))]
+    pub name: String,
+
+    #[garde(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Listed verbatim as the tool's `inputSchema`. Not enforced by the
+    /// server — the upstream owns what its arguments mean.
+    #[garde(skip)]
+    #[serde(alias = "input_schema")]
+    pub input_schema: serde_json::Map<String, serde_json::Value>,
+
+    /// Absolute `http` / `https` url every call POSTs to.
+    #[garde(custom(validate_http_url))]
+    pub url: String,
+
+    /// Static fields sent with every call. The call's arguments are laid
+    /// over it key by key, so an argument wins on collision.
+    #[garde(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// MCP `2025-11-25` constrains tool names to this set, and a vendor
+/// rejects the whole listing over one bad name rather than skipping it.
+fn validate_tool_name(name: &String, _: &()) -> garde::Result {
+    let valid = (1..=128).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if !valid {
+        return Err(garde::Error::new(format!(
+            "tool name '{name}' must be 1-128 characters of [A-Za-z0-9_.-]"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_http_url(url: &String, _: &()) -> garde::Result {
+    match reqwest::Url::parse(url) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => Ok(()),
+        Ok(parsed) => Err(garde::Error::new(format!(
+            "url '{url}' must be http or https, not '{}'",
+            parsed.scheme()
+        ))),
+        Err(err) => Err(garde::Error::new(format!("url '{url}' is not a valid url: {err}"))),
+    }
+}
+
+fn validate_unique_tool_names(tools: &Option<Vec<PassthroughTool>>, _: &()) -> garde::Result {
+    let mut seen = std::collections::HashSet::new();
+    for tool in tools.as_deref().unwrap_or_default() {
+        if !seen.insert(tool.name.as_str()) {
+            return Err(garde::Error::new(format!("tool '{}' is declared twice", tool.name)));
+        }
+    }
+
+    Ok(())
 }
 
 /// `[mcp.skills]` — the auto-injected skills server.
@@ -389,6 +531,15 @@ pub struct McpConfig {
     #[merge(strategy = merge_nested)]
     pub harness: Option<HarnessServerConfig>,
 
+    /// The HTTP passthrough — `hyprpilot mcp passthrough`, exposing the
+    /// tools `[mcp.passthrough].tools` declares.
+    ///
+    /// Off by default: each tool is a request to a host the captain
+    /// chose, and that choice is not one to inherit by accident.
+    #[garde(dive)]
+    #[merge(strategy = merge_nested)]
+    pub passthrough: Option<PassthroughServerConfig>,
+
     /// Default glob patterns matching MCP tool leaf names for
     /// auto-accept. Default `["*"]` (`McpConfig::default()`) → every
     /// MCP tool on servers without a stricter per-server extension is
@@ -431,6 +582,7 @@ impl Default for McpConfig {
             serve: None,
             skills: None,
             harness: None,
+            passthrough: None,
             auto_accept_tools: Some(vec!["*".to_string()]),
             auto_reject_tools: Some(Vec::new()),
         }
@@ -454,6 +606,7 @@ impl McpConfig {
             serve: None,
             skills: None,
             harness: None,
+            passthrough: None,
             auto_accept_tools: None,
             auto_reject_tools: None,
         }
@@ -686,6 +839,115 @@ mod tests {
             seeded.harness.expect("the seed carries [mcp.harness]").name.as_deref(),
             Some(DEFAULT_HARNESS_SERVER_NAME)
         );
+        assert_eq!(
+            seeded
+                .passthrough
+                .expect("the seed carries [mcp.passthrough]")
+                .name
+                .as_deref(),
+            Some(DEFAULT_PASSTHROUGH_SERVER_NAME)
+        );
+    }
+
+    #[test]
+    fn defaults_seed_the_passthrough_timeout_and_nothing_to_call() {
+        let passthrough = seeded_mcp().passthrough.expect("the seed carries [mcp.passthrough]");
+
+        assert_eq!(passthrough.timeout_seconds, Some(DEFAULT_PASSTHROUGH_TIMEOUT_SECONDS));
+        assert_eq!(
+            passthrough.enabled, None,
+            "seeding `enabled` would point every launch at an upstream nobody chose"
+        );
+        assert_eq!(passthrough.tools, None, "no upstream is a sensible default");
+    }
+
+    fn passthrough_with(tools: &str) -> Result<PassthroughServerConfig, String> {
+        let block: PassthroughServerConfig = toml::from_str(tools).map_err(|e| e.to_string())?;
+        block.validate().map_err(|e| e.to_string())?;
+
+        Ok(block)
+    }
+
+    #[test]
+    fn a_declared_tool_parses_with_its_schema_and_body() {
+        let block = passthrough_with(
+            r#"
+enabled = true
+[[tools]]
+name = "decide"
+description = "Ask the decision service."
+url = "https://decide.example/v1/decide"
+body = { model = "m", stream = false }
+input_schema = { type = "object", properties = { question = { type = "string" } }, required = ["question"] }
+"#,
+        )
+        .expect("a well-formed tool validates");
+
+        let tool = &block.tools()[0];
+        assert_eq!(tool.name, "decide");
+        assert_eq!(tool.input_schema["required"], serde_json::json!(["question"]));
+        assert_eq!(tool.body.as_ref().expect("body")["stream"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn a_non_http_url_rejects_at_load() {
+        let err = passthrough_with(
+            r#"
+[[tools]]
+name = "t"
+url = "file:///etc/passwd"
+inputSchema = { type = "object" }
+"#,
+        )
+        .expect_err("only http and https are forwarded");
+        assert!(err.contains("must be http or https"), "got: {err}");
+    }
+
+    #[test]
+    fn a_tool_name_a_vendor_would_refuse_rejects_at_load() {
+        let err = passthrough_with(
+            r#"
+[[tools]]
+name = "ask the model"
+url = "http://127.0.0.1/"
+inputSchema = { type = "object" }
+"#,
+        )
+        .expect_err("spaces are outside the MCP tool-name set");
+        assert!(err.contains("[A-Za-z0-9_.-]"), "got: {err}");
+    }
+
+    /// Dispatch is by name, so a second declaration would be unreachable
+    /// while still being listed.
+    #[test]
+    fn a_tool_declared_twice_rejects_at_load() {
+        let err = passthrough_with(
+            r#"
+[[tools]]
+name = "t"
+url = "http://127.0.0.1/a"
+inputSchema = { type = "object" }
+[[tools]]
+name = "t"
+url = "http://127.0.0.1/b"
+inputSchema = { type = "object" }
+"#,
+        )
+        .expect_err("duplicate names");
+        assert!(err.contains("declared twice"), "got: {err}");
+    }
+
+    #[test]
+    fn a_non_object_schema_rejects_at_parse() {
+        passthrough_with(
+            r#"
+[[tools]]
+name = "t"
+url = "http://127.0.0.1/"
+inputSchema = "object"
+"#,
+        )
+        .expect_err("an inputSchema is a JSON object");
     }
 
     /// A partial block must come back carrying ONLY what its author
