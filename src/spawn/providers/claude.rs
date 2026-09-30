@@ -92,9 +92,10 @@ pub(super) fn build_claude(
         // world-readable via `/proc/<pid>/cmdline`. `claude --help`
         // documents `--mcp-config` as accepting "JSON files or
         // strings"; the temp file is created 0600 and is launch-scoped.
-        let path = super::temp::write_launch_temp_config("claude --mcp-config", &config)?;
+        let temp_config = super::temp::write_launch_temp_config("claude --mcp-config", &config)?;
         command.args.push("--mcp-config".into());
-        command.args.push(path.to_string_lossy().into_owned());
+        command.args.push(temp_config.path().to_string_lossy().into_owned());
+        command.temp_config = Some(temp_config);
     }
     let permission_tools = claude_mcp_permission_tools(mcp_defs);
     if !permission_tools.allow.is_empty() && !has_claude_allowed_tools_flag(&detect_args) {
@@ -370,8 +371,6 @@ mod tests {
             parsed["mcpServers"]["shell-env"]["env"]["TOKEN_FILE"],
             format!("{home}/token")
         );
-
-        let _ = std::fs::remove_file(path);
     }
 
     /// K-748: the resolved claude MCP config — carrying expanded header
@@ -415,8 +414,6 @@ mod tests {
             let mode = std::fs::metadata(path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "temp mcp config must be owner-only (0600)");
         }
-
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]

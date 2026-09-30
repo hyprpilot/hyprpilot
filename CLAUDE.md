@@ -74,7 +74,7 @@ Key `src/` modules:
   native-flag projection + `exec`: `mod.rs` = dispatch / `exec` /
   `base_command` / redaction / shared helpers, `argv.rs` =
   flag-detection, `claude.rs` / `codex.rs` / `opencode.rs` = the
-  three vendor builders, `temp.rs` = the 0600 temp-config lifecycle +
+  three vendor builders, `temp.rs` = the 0600 `TempConfig` guard +
   reaper), `picker.rs` (interactive profile picker), `multiplexer.rs`
   (tmux/zellij rename).
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
@@ -1216,6 +1216,16 @@ vendor default. `system_prompt` files are read at **resolve** time so
 a missing file fails loudly on the next launch. CLI `--cwd` / `--mode`
 override the resolved profile after profile resolution (there is no
 `--model` / `--agent` flag — use `--with-config`).
+
+**claude's `--mcp-config` file is a drop guard** (`temp::TempConfig`,
+carried as `SpawnCommand.temp_config`). It holds expanded bearer tokens,
+so it must not outlive the child that reads it — and it must not die
+BEFORE that child reads it either, so the guard travels with whatever
+waits: the headless spawn path drops it after `wait()`, and the harness
+moves it into the turn's waiter task (`launch_child`). A long-lived
+harness otherwise left one file per claude turn until the 24h reaper.
+`exec()` runs no destructor, so an interactive launch keeps the file for
+the vendor and the reaper stays the only cleanup there.
 
 ### Headless / prompt delivery
 
