@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.23.1](https://github.com/hyprpilot/hyprpilot/compare/v3.23.0...v3.23.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **ci:** sync the cargo lockfile version in the container build ([#268](https://github.com/hyprpilot/hyprpilot/issues/268)) ([8ae4910](https://github.com/hyprpilot/hyprpilot/commit/8ae4910f3a99588d41682bbf47455a1bfd8959c2))
+
 ## [3.23.0](https://github.com/hyprpilot/hyprpilot/compare/v3.22.0...v3.23.0) (2026-09-30)
 
 
