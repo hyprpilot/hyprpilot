@@ -29,7 +29,7 @@ The one thing that listens is one you start yourself: an MCP server run with [`-
 
 ## The one long-lived thing
 
-The components that outlive the launch are the in-tree **MCP servers** — `hyprpilot mcp serve` (general tools), `mcp skills` (the skill catalogue), and `mcp harness` (driving other agent sessions). The launcher auto-injects a stdio entry for each one your `mcp` config enables, and the vendor spawns those sidecars itself — so your `SKILL.md` catalogue reaches the agent over MCP. See [Skills & the hyprpilot MCP Server](./skills) and [Agent Harness](./harness).
+The components that outlive the launch are the in-tree **MCP servers** — `hyprpilot mcp serve` (general tools), `mcp skills` (the skill catalogue), `mcp harness` (driving other agent sessions), and `mcp passthrough` (declared tools forwarded to HTTP endpoints). The launcher auto-injects a stdio entry for each one your `mcp` config enables, and the vendor spawns those sidecars itself — so your `SKILL.md` catalogue reaches the agent over MCP. See [Skills & the hyprpilot MCP Server](./skills), [Agent Harness](./harness) and [HTTP Passthrough](./passthrough).
 
 ## Why you would want it
 

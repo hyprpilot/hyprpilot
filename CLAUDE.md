@@ -18,11 +18,12 @@ strip refactor (K-725→734); do not reintroduce that vocabulary.
 The one long-lived thing hyprpilot ships is a set of in-tree **MCP
 servers** the launcher auto-injects into the vendor's MCP config —
 `mcp serve` (general tools), `mcp skills` (the captain's *skills*
-catalogue), `mcp harness` (agent sessions). One subcommand, one
+catalogue), `mcp harness` (agent sessions), `mcp passthrough`
+(declared tools forwarded to HTTP endpoints). One subcommand, one
 process, one catalogue entry each. The vendor spawns and owns those
 sidecars' lifetimes.
 
-**One deliberate exception to "no daemon":** any of the three can be
+**One deliberate exception to "no daemon":** any of the four can be
 run with `--transport http --listen <addr>` as a server the CAPTAIN
 starts and owns — for clients that are not the vendor hyprpilot
 launched. The launcher never starts one, never injects a url (auto-
@@ -78,13 +79,15 @@ Key `src/` modules:
   reaper), `picker.rs` (interactive profile picker), `multiplexer.rs`
   (tmux/zellij rename).
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
-  (one builder per in-tree server), `server/` = the three servers,
+  (one builder per in-tree server), `server/` = the four servers,
   one `ServerHandler` each: `tools.rs` (`mcp serve` — `open`;
   stateless), `skills_server.rs` (`mcp skills` — protocol + tools),
-  `rpc.rs` (the JSON-RPC plumbing all three share — schema builders,
+  `passthrough.rs` (`mcp passthrough` — config-declared tools POSTed
+  to HTTP endpoints; stateless),
+  `rpc.rs` (the JSON-RPC plumbing all four share — schema builders,
   result wrappers, argument decoders), `serve_args.rs` (the
   `--transport` / `--listen` / `--token-file` / `--allow-remote` flags
-  all three flatten, plus the `Transport` enum whose `result_ttl_ms`
+  all four flatten, plus the `Transport` enum whose `result_ttl_ms`
   every cacheable result reads), `http.rs` (the axum glue under
   rmcp's `StreamableHttpService`, `#[cfg(feature = "http")]` with a
   bail-with-a-sentence stub in `mod.rs` when it is off),
@@ -145,8 +148,9 @@ hyprpilot profiles --json       # machine-readable
 hyprpilot mcp serve             # general tools (`open`)
 hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[],"watch":true}'
 hyprpilot mcp harness --max-sessions 64 --max-live-sessions 0
+hyprpilot mcp passthrough --tool '{"name":"decide","inputSchema":{"type":"object"},"url":"http://127.0.0.1:8080/decide"}'
 
-# Any of the three over HTTP instead of stdio (a server YOU run)
+# Any of the four over HTTP instead of stdio (a server YOU run)
 hyprpilot mcp skills --transport http --listen 127.0.0.1:7777 --skill-dir '{...}'
 hyprpilot mcp harness --transport http --listen 127.0.0.1:7779 --token-file ~/.config/hyprpilot/mcp-token
 ```
@@ -383,7 +387,7 @@ an optional `hyprpilot` namespace key:
   Reserved names: each in-tree server's resolved name — see
   auto-inject below.
 
-## The three in-tree MCP servers
+## The four in-tree MCP servers
 
 One subcommand, one process, one `ServerHandler`, one catalogue entry
 each. The split is the GATE: the skills server cannot serve `spawn`
@@ -394,7 +398,7 @@ missing. Do not re-merge them.
 
 **A server's name is CONFIG, not a constant.** `[mcp.<server>] name` is
 what `auto_inject` writes into the vendor catalogue and the only thing
-it reads, and `defaults.toml` seeds all three — so renaming one is an
+it reads, and `defaults.toml` seeds all four — so renaming one is an
 edit, not a rebuild. `DEFAULT_*_SERVER_NAME` covers only a `Config`
 carrying no patches (a programmatic one in a test, or a captain who
 cleared the seed) and is what each SIDECAR reports as `serverInfo.name`,
@@ -407,6 +411,7 @@ since a sidecar cannot know which catalogue key spawned it.
 | `mcp serve` | `hyprpilot` | `server/tools.rs` | `open` | on |
 | `mcp skills` | `hyprpilot-skills` | `server/skills_server.rs` | skills tools + resources | on |
 | `mcp harness` | `hyprpilot-harness` | `server/harness_server.rs` | `list_profiles` / `spawn` / `session_*` (7 tools) + session resources | **off** |
+| `mcp passthrough` | `hyprpilot-passthrough` | `server/passthrough.rs` | the tools `[mcp.passthrough].tools` declares | **off** |
 
 **Sessions are resources in FOUR views** — `hyprpilot://sessions/
 <handle>` (status), `/result`, `/transcript` and `/stderr` — plus two
@@ -484,7 +489,7 @@ view is refused rather than read as the status — the subscription filter
 is built on the same parser, so accepting one would acknowledge a URI
 that can never be served.
 
-**All three serve from the connection's FIRST byte**
+**All four serve from the connection's FIRST byte**
 (`rpc::serve_from_first_byte`, wrapping rmcp's `serve_directly`), never
 `ServiceExt::serve`. `serve` runs a pre-loop handshake that handles a
 non-`initialize` opener INLINE — `handle_request().await` completes
@@ -515,7 +520,7 @@ client that does. Tests drive every opener
 gives the first request its own code path; a smoke that only opens
 with `initialize` covers one of three.
 
-`server/rpc.rs` owns the plumbing all three import (`object_schema`,
+`server/rpc.rs` owns the plumbing all four import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
 `optional_*`, `wait_for_shutdown`, `supported_protocol_versions`). It
 used to live in the skills server purely because that server was written
@@ -523,7 +528,7 @@ first — five of the helpers had no caller there at all.
 
 **The negotiable protocol set is ONE declaration through
 `2026-07-28`** (`rpc::supported_protocol_versions`, overridden on all
-three `ServerHandler`s — one function, no per-server variant). rmcp's
+four `ServerHandler`s — one function, no per-server variant). rmcp's
 default is `KNOWN_VERSIONS` and negotiation echoes back whatever the
 client asks within it, so inheriting the default would let a vendor
 CLI's own release change our wire shape. Declaring it keeps the set a
@@ -533,10 +538,10 @@ negotiates down.
 
 **Every cacheable result MUST carry `ttlMs` + `cacheScope`**
 (`Transport::result_ttl_ms` / `rpc::RESULT_CACHE_SCOPE`, stamped at
-all TWELVE `with_ttl_ms` sites: `tools/list` on each server, plus
+all THIRTEEN `with_ttl_ms` sites: `tools/list` on each server, plus
 `resources/list`, `resources/templates/list` and both `resources/read`
 arms on skills, plus the harness's two indexes and its session views —
-nine of which take the transport's ttl and three of which are already
+ten of which take the transport's ttl and three of which are already
 `0` or computed).
 `2026-07-28` makes them REQUIRED — `ListToolsResult extends
 PaginatedResult, CacheableResult`, and `CacheableResult` declares both
@@ -624,8 +629,8 @@ result these servers produce is `Complete`.
 Skills reach the agent **only** through the skills server.
 
 - **`[mcp]` block** (`McpConfig`): `enabled` (default `true` — the
-  MASTER gate over all three servers), `serve` / `skills` / `harness`
-  (per-server blocks), `autoAcceptTools` (`["*"]`), `autoRejectTools`
+  MASTER gate over all four servers), `serve` / `skills` / `harness` /
+  `passthrough` (per-server blocks), `autoAcceptTools` (`["*"]`), `autoRejectTools`
   (`[]`). Per-profile `[profiles.mcp]` wholesale-replaces the global;
   folded via patches.
 - **Per-server blocks** each carry `enabled`, `name`,
@@ -886,9 +891,10 @@ verified — check it by hand when you touch it.
   same three lines of value.
 - **The handler is built ONCE and cloned per request.** rmcp calls the
   service factory for every stateless request, so a factory that
-  CONSTRUCTED one would rescan every skill root per call. All three
-  handlers' state is already `Arc`-backed; only `ToolsServer` (a unit
-  struct) had to gain `Clone`.
+  CONSTRUCTED one would rescan every skill root per call. Every
+  handler's state is `Arc`-backed; `ToolsServer` (a unit struct) had
+  to gain `Clone`, and `PassthroughServer` shares its tool list and one
+  `reqwest::Client` pool across the clones.
 - **A stateless request's peer dies with its response**, so the two
   out-of-band notifiers — the skills watcher relay and the harness exit
   hook — hold `Option<Peer>` and get `None` here. Consequences, in
@@ -1202,6 +1208,47 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   not per request — except the timestamps, which are stat'd there and so
   refresh on every rescan.
 
+## The HTTP passthrough (`mcp passthrough`)
+
+`hyprpilot mcp passthrough` serves exactly the tools
+`[[mcp.passthrough.tools]]` declares (`PassthroughTool { name,
+description?, inputSchema, url, body? }`). A call POSTs `body` with the
+call arguments laid over it (shallow, argument wins) to `url` as JSON;
+a 2xx returns the response body VERBATIM as the tool's text, anything
+else is `isError` — `<url> returned <status>: <body>` or `<url>
+unreachable: <cause>`. An undeclared name is a JSON-RPC
+`METHOD_NOT_FOUND`, like `mcp serve`. Semantics mirror the standalone
+python server this replaced (K-1864); do not grow upstream-specific
+logic here — a new upstream is a config entry.
+
+- **Text only, no structured content.** The contract is the upstream's
+  bytes; parsing them into `structured_content` would reshape a response
+  the server does not understand. opencode renders text, so this is not
+  the "Unknown" failure the skills rule guards against.
+- **The input schema is advertised, not enforced** — the upstream owns
+  what its arguments mean.
+- **Off by default AND gated on content**, like skills: injected only
+  when `enabled = true` and at least one tool is declared. Nothing is
+  seeded that points anywhere; `defaults.toml` seeds only `name` and
+  `timeout_seconds` (300, `DEFAULT_PASSTHROUGH_TIMEOUT_SECONDS`, pinned
+  by `defaults_seed_the_passthrough_timeout_and_nothing_to_call`).
+- **Tools ride argv** as `--tool=<json>`, one per tool, for the
+  `--skill-dir` reason: the `mcp` branch never loads config and only the
+  launcher knows the picked profile. `PassthroughTool` is BOTH the
+  config entry and the argv decode type, and `parse_tool_arg` re-runs
+  garde, so a bad `--tool` fails startup rather than listing a tool that
+  cannot be called. Consequence: argv is world-readable, so `body` and
+  `url` must not carry credentials, and there is deliberately no header
+  support.
+- **`[[mcp.passthrough.tools]]` is keyed by `name`** in the patch engine
+  (`patch::entry_key` gained `name` beside `id` / `dir`), so a later
+  layer retargets a tool instead of listing a second one dispatch could
+  never reach. Config validation also rejects duplicate names, non-http
+  urls, and names outside MCP's `[A-Za-z0-9_.-]{1,128}` — a vendor
+  refuses the whole listing over one bad name.
+- `reqwest` (rustls, no default features) is the outbound client; the
+  timeout covers connect through the last byte.
+
 ## Launch / exec (`spawn`)
 
 `spawn::launch_profile`: resolve the profile → build per-launch skills
@@ -1446,10 +1493,15 @@ Baseline smokes:
 
 - `task build` produces `target/debug/hyprpilot`.
 - `hyprpilot --help`, `hyprpilot profiles --help`, and
-  `hyprpilot mcp {serve,skills,harness} --help` render via clap.
+  `hyprpilot mcp {serve,skills,harness,passthrough} --help` render via clap.
 - Each `mcp` subcommand answers `initialize` + `tools/list` over stdio
   and reports the right `serverInfo.name` (`hyprpilot` /
-  `hyprpilot-skills` / `hyprpilot-harness`) and tool set.
+  `hyprpilot-skills` / `hyprpilot-harness` / `hyprpilot-passthrough`)
+  and tool set.
+- `mcp passthrough --tool '<json>'` pointed at a stub upstream (any
+  local server answering POST) returns the upstream body
+  verbatim on `tools/call`, and `isError` naming url + status on a
+  non-2xx or a dead port.
 - `mcp skills` over a `subscriptions/listen` stream announces a disk
   edit with no `reload`: editing a `SKILL.md` fires
   `resources/updated` for that slug plus `resources/list_changed`;

@@ -121,6 +121,13 @@ pub(crate) fn build_mcp_registry_with(
             prepend_auto_mcp_definition(&mut defs, harness);
             auto_injected.push("harness");
         }
+        if let Some(passthrough) = crate::mcp::auto_inject::build_passthrough_definition(
+            &mcp_cfg,
+            std::path::PathBuf::from("<auto-injected:hyprpilot mcp passthrough>"),
+        ) {
+            prepend_auto_mcp_definition(&mut defs, passthrough);
+            auto_injected.push("passthrough");
+        }
         // Skills last so it lands first in the list.
         if let Some(auto) = skills.and_then(|skills_arc| {
             crate::mcp::auto_inject::build_skills_definition(
@@ -374,6 +381,13 @@ mod tests {
                 enabled: Some(true),
                 ..Default::default()
             }),
+            passthrough: Some(
+                serde_json::from_value(json!({
+                    "enabled": true,
+                    "tools": [{ "name": "t", "inputSchema": { "type": "object" }, "url": "http://127.0.0.1/" }],
+                }))
+                .expect("passthrough block"),
+            ),
             ..McpConfig::default()
         });
 

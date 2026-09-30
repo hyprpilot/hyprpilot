@@ -13,6 +13,7 @@ hyprpilot profiles [--json]
 hyprpilot mcp serve                          # general tools (`open`)
 hyprpilot mcp skills [--skill-dir <json>]…   # the skill catalogue
 hyprpilot mcp harness [--max-sessions <n>]   # spawn/drive agent sessions
+hyprpilot mcp passthrough [--tool <json>]…   # declared tools forwarded to HTTP endpoints
 ```
 
 <!-- more -->
@@ -170,7 +171,7 @@ Log filter precedence is `--log-level` → `RUST_LOG` → `logging.level` → th
 
 1. Load + validate layered config ([Config → Layering](../config/layering)).
 2. Pick the profile (positional `[PROFILE]` → `profile.default` → picker) and fold [`patches`](../config/patches) + [`--with-config`](./with-config) overlays.
-3. Build the per-launch MCP + skills registries, auto-injecting each in-tree server your `mcp` config enables ([Skills](./skills), [Agent Harness](./harness)).
+3. Build the per-launch MCP + skills registries, auto-injecting each in-tree server your `mcp` config enables ([Skills](./skills), [Agent Harness](./harness), [HTTP Passthrough](./passthrough)).
 4. Project everything onto the vendor's native flags/env ([Config → Agents](../config/agents)).
 5. Optionally rename the tmux window / zellij tab ([Config → Multiplexer](../config/multiplexer)).
 6. `exec()` — the vendor CLI replaces the hyprpilot process.

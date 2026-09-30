@@ -1,7 +1,8 @@
 //! `hyprpilot mcp …` — in-tree MCP server subcommands.
 //!
 //! One subcommand per server: `serve` (general tools), `skills` (the
-//! skill catalog), `harness` (agent sessions). Splitting them makes
+//! skill catalog), `harness` (agent sessions), `passthrough` (declared
+//! tools forwarded to HTTP endpoints). Splitting them makes
 //! the harness gate structural — the skills server cannot serve
 //! `spawn` because it does not implement it — instead of a name check
 //! that had to be applied in both `list_tools` and `call_tool`.
@@ -20,6 +21,7 @@ use clap::{Args, Subcommand};
 
 pub mod harness;
 pub mod harness_server;
+pub mod passthrough;
 pub mod rpc;
 pub mod serve_args;
 pub mod sessions;
@@ -82,6 +84,11 @@ pub enum McpSubcommand {
     ///
     /// Needs no skill roots: the harness tools do not read the catalog.
     Harness(harness_server::HarnessArgs),
+
+    /// Serve the tools `[[mcp.passthrough.tools]]` declares, each
+    /// forwarding its arguments as a JSON POST to its url. Tools arrive
+    /// as `--tool` args at spawn time.
+    Passthrough(passthrough::PassthroughArgs),
 }
 
 /// Where the harness tools should load their config from.
@@ -119,6 +126,7 @@ impl McpArgs {
             McpSubcommand::Serve(args) => tools::run_tools(args, config).await,
             McpSubcommand::Skills(args) => skills_server::run_skills(args, config).await,
             McpSubcommand::Harness(args) => harness_server::run_harness(args, config).await,
+            McpSubcommand::Passthrough(args) => passthrough::run_passthrough(args, config).await,
         }
     }
 }

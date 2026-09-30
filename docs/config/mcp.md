@@ -123,15 +123,16 @@ Each server entry takes an optional `hyprpilot` block for tool visibility and ap
 
 ## The `mcp` block
 
-hyprpilot ships **three** in-tree MCP servers. Each is its own subcommand, its own process, and its own catalogue entry, so each can be enabled, renamed, and given a tool policy independently:
+hyprpilot ships **four** in-tree MCP servers. Each is its own subcommand, its own process, and its own catalogue entry, so each can be enabled, renamed, and given a tool policy independently:
 
-| Server        | Subcommand              | Default name        | Serves                                                                                      | Default    |
-| ------------- | ----------------------- | ------------------- | ------------------------------------------------------------------------------------------- | ---------- |
-| General tools | `hyprpilot mcp serve`   | `hyprpilot`         | `open`                                                                                      | enabled    |
-| Skills        | `hyprpilot mcp skills`  | `hyprpilot-skills`  | `list_skills` / `read_skill` / `list_skill_references` / `read_skill_references` / `reload` | enabled    |
-| Agent harness | `hyprpilot mcp harness` | `hyprpilot-harness` | `list_profiles` / `spawn` / `session_*`                                                     | _disabled_ |
+| Server        | Subcommand                  | Default name            | Serves                                                                                      | Default    |
+| ------------- | --------------------------- | ----------------------- | ------------------------------------------------------------------------------------------- | ---------- |
+| General tools | `hyprpilot mcp serve`       | `hyprpilot`             | `open`                                                                                      | enabled    |
+| Skills        | `hyprpilot mcp skills`      | `hyprpilot-skills`      | `list_skills` / `read_skill` / `list_skill_references` / `read_skill_references` / `reload` | enabled    |
+| Agent harness | `hyprpilot mcp harness`     | `hyprpilot-harness`     | `list_profiles` / `spawn` / `session_*`                                                     | _disabled_ |
+| Passthrough   | `hyprpilot mcp passthrough` | `hyprpilot-passthrough` | the tools `mcp.passthrough.tools` declares                                                  | _disabled_ |
 
-The `mcp` block gates and configures all three:
+The `mcp` block gates and configures all four:
 
 ```yaml
 mcp:
@@ -165,12 +166,13 @@ mcp:
 | `serve`           | object           | —       | The general-tools server. See below.                                               |
 | `skills`          | object           | —       | The skills server. See below.                                                      |
 | `harness`         | object           | —       | The agent-harness server. See below.                                               |
+| `passthrough`     | object           | —       | The HTTP passthrough server. See below.                                            |
 | `autoAcceptTools` | string[] (globs) | `['*']` | Default tool-approval accept list, copied onto servers with no per-server policy.  |
 | `autoRejectTools` | string[] (globs) | `[]`    | Default tool-approval reject list. Reject beats accept.                            |
 
 A profile's `mcp` field wholesale-replaces this block. `autoAcceptTools` / `autoRejectTools` are glob-validated at config load (like the `ignore` lists) — a malformed glob errors at startup with a field-path message instead of silently failing at match time.
 
-Every per-server block accepts `enabled`, `name`, `autoAcceptTools`, and `autoRejectTools`. The default names in the table above are not compiled in — they are seeded as `mcp.serve.name` / `mcp.skills.name` / `mcp.harness.name` in the shipped `[[patches]]`, and the injector reads that field and nothing else, so a rename is a config edit. `name` is what the vendor prefixes tool calls with, so renaming the skills server to `docs` turns `mcp__hyprpilot-skills__read_skill` into `mcp__docs__read_skill` — anything that addresses a tool by name (a skill file, a system prompt) has to follow. The `hyprpilot://` resource URIs are a fixed scheme and never change. A per-server `autoAcceptTools` overrides the block-level default rather than merging with it.
+Every per-server block accepts `enabled`, `name`, `autoAcceptTools`, and `autoRejectTools`. The default names in the table above are not compiled in — they are seeded as `mcp.serve.name` / `mcp.skills.name` / `mcp.harness.name` / `mcp.passthrough.name` in the shipped `[[patches]]`, and the injector reads that field and nothing else, so a rename is a config edit. `name` is what the vendor prefixes tool calls with, so renaming the skills server to `docs` turns `mcp__hyprpilot-skills__read_skill` into `mcp__docs__read_skill` — anything that addresses a tool by name (a skill file, a system prompt) has to follow. The `hyprpilot://` resource URIs are a fixed scheme and never change. A per-server `autoAcceptTools` overrides the block-level default rather than merging with it.
 
 ### `mcp.serve`
 
@@ -270,6 +272,36 @@ Setting `harness.enabled: true` here does **not** give a delegate a harness — 
 Because the fold is per key and not wholesale, a block naming only `skills.enabled` keeps the delegate's `skills.dirs`. Arrays replace rather than merge, so `autoAcceptTools` set here is the delegate's whole accept list.
 
 **Off by default, and that is a security property rather than a preference.** A profile's `command` is an arbitrary binary, so anything that can call `spawn` executes commands as you. Turn it on deliberately — see [Runtime → Agent Harness](../runtime/harness).
+
+### `mcp.passthrough`
+
+| Field             | Type                                                 | Default | What it does                                                                          |
+| ----------------- | ---------------------------------------------------- | ------- | ------------------------------------------------------------------------------------- |
+| `enabled`         | bool                                                 | `false` | Inject the server. Also needs at least one tool.                                      |
+| `tools`           | `{ name, description?, input_schema, url, body? }[]` | unset   | The tools served. Keyed by `name`, so a later layer retargets a tool.                 |
+| `timeout_seconds` | int                                                  | `300`   | Per-request timeout, connect through the last byte. Seeded, so write it `snake_case`. |
+
+| Tool field     | Type         | What it does                                                                                    |
+| -------------- | ------------ | ----------------------------------------------------------------------------------------------- |
+| `name`         | string       | MCP tool name, 1-128 characters of `[A-Za-z0-9_.-]`. Unique within the block.                   |
+| `description`  | string       | Listed as written. This is how the agent learns what the tool is for.                           |
+| `input_schema` | JSON object  | Listed as the tool's `inputSchema`. Advertised, not enforced.                                   |
+| `url`          | `http(s)://` | Every call POSTs here. Validated at config load.                                                |
+| `body`         | JSON object  | Static fields sent with every call; the call's arguments are laid over it and win on collision. |
+
+```toml
+[mcp.passthrough]
+enabled = true
+
+[[mcp.passthrough.tools]]
+name = "decide"
+description = "Ask the decision model a yes/no question."
+url = "https://decide.internal.example/v1/decide"
+body = { model = "decision-small", stream = false }
+input_schema = { type = "object", properties = { question = { type = "string" } }, required = ["question"] }
+```
+
+**Off by default**, and like `skills` it is also gated on content: enabled with no tools injects nothing. The call contract and the argv caveat are in [Runtime → HTTP Passthrough](../runtime/passthrough).
 
 ## Vendor projection
 
