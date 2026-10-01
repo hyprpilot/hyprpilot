@@ -17,10 +17,10 @@ use std::sync::Arc;
 use clap::Args;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo, Tool,
+    ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::ServerHandler;
+use rmcp::{ServerHandler, ServiceExt};
 
 use super::harness::{DelegatePolicy, Harness};
 use super::rpc::{
@@ -69,20 +69,20 @@ impl ServerHandler for HarnessServer {
         super::rpc::supported_protocol_versions()
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut caps = ServerCapabilities::default();
         // Fixed for the life of the process.
         let mut tools = rmcp::model::ToolsCapability::default();
         tools.list_changed = Some(false);
         caps.tools = Some(tools);
         // Sessions are resources so a caller can subscribe to ONE handle
-        // and be woken when its turn ends. `list_changed` because a
-        // `spawn` adds a session and eviction removes one; `subscribe`
-        // because the per-handle signal is the whole point — the list
-        // moving says nothing about the turn you are waiting on.
+        // and be woken when its turn ends. The listing is the two indexes
+        // and nothing else, so it never changes and `list_changed` is
+        // off; the per-session views change, and subscribing to them is
+        // the point.
         let mut resources = rmcp::model::ResourcesCapability::default();
         resources.subscribe = Some(true);
-        resources.list_changed = Some(true);
+        resources.list_changed = Some(false);
         caps.resources = Some(resources);
         // Claude Code registers a channel listener only when it sees
         // this key. Declaring it costs nothing elsewhere: the spec says
@@ -91,11 +91,17 @@ impl ServerHandler for HarnessServer {
         //
         // `ServerCapabilities` is `#[non_exhaustive]`, so this is field
         // assignment on the owned `default()`, not a struct literal.
-        caps.experimental = Some(
-            [("claude/channel".to_string(), serde_json::Map::new())]
-                .into_iter()
-                .collect(),
-        );
+        //
+        // Stdio only: over HTTP no peer outlives a request, so the push
+        // can never be sent, and advertising it would have a client wait
+        // for one.
+        if self.transport == super::serve_args::Transport::Stdio {
+            caps.experimental = Some(
+                [("claude/channel".to_string(), serde_json::Map::new())]
+                    .into_iter()
+                    .collect(),
+            );
+        }
         // SEP-2663. Advertising is REQUIRED for `tasks/*` to route at
         // all: `validate_tasks_capability` answers `method_not_found`
         // unless the server declares it. Field assignment rather than
@@ -114,7 +120,7 @@ impl ServerHandler for HarnessServer {
                 .collect(),
         );
 
-        ServerInfo::new(caps)
+        ServerConfig::new(caps)
             .with_server_info(Implementation::new(
                 DEFAULT_HARNESS_SERVER_NAME.to_string(),
                 env!("CARGO_PKG_VERSION").to_string(),
@@ -135,16 +141,6 @@ impl ServerHandler for HarnessServer {
     /// Accept a `subscriptions/listen` opt-in. Without this rmcp leaves
     /// subscriptions unimplemented, and the per-session wake-up below
     /// would have no channel to arrive on.
-    /// Record the negotiated protocol version as the peer's, per
-    /// `rpc::initialize_negotiated`.
-    async fn initialize(
-        &self,
-        request: rmcp::model::InitializeRequestParams,
-        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
-        Ok(super::rpc::initialize_negotiated(self, request, &context))
-    }
-
     fn accepted_subscription_filter(
         &self,
         requested: &rmcp::model::SubscriptionFilter,
@@ -192,28 +188,13 @@ impl ServerHandler for HarnessServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListResourcesResult, rmcp::ErrorData> {
-        let mut resources: Vec<rmcp::model::Resource> = self
-            .harness
-            .session_resources()
-            .into_iter()
-            // ONE entry per session, not one per view. Four views
-            // times 64 retained sessions is 256 entries in a listing
-            // every client pays for on connect — the same bloat the
-            // skills server measured and cut. The other views are
-            // advertised as a TEMPLATE below and read by URI.
-            .map(|session| {
-                rmcp::model::Resource::new(
-                    crate::mcp::server::harness::session_view_uri(
-                        &session.handle,
-                        crate::mcp::server::harness::SessionView::Status,
-                    ),
-                    session.handle.clone(),
-                )
-                .with_description(format!("{} session ({})", session.profile, session.status))
-                .with_mime_type("application/json")
-            })
-            .collect();
-
+        // The two indexes and nothing else. A row per session made the
+        // listing change as a side effect of `spawn` — which 2026-07-28
+        // forbids for `resources/list` — and embedded live status a turn
+        // starting never announced. Sessions are found through the
+        // `hyprpilot://sessions` index and addressed through the
+        // templates.
+        let mut resources: Vec<rmcp::model::Resource> = Vec::new();
         // The two indexes first: what can be launched, and what is
         // running. Both are the catalogue a caller starts from.
         resources.insert(
@@ -245,14 +226,21 @@ impl ServerHandler for HarnessServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData> {
-        let templates =
-            vec![
-                rmcp::model::ResourceTemplate::new("hyprpilot://sessions/{handle}/{view}", "session view")
-                    .with_description(
-                        "One view of a session: `result` (the latest turn's answer, or why there is none), \
-             `transcript` (the raw event stream), or `stderr`. The bare handle is its status.",
-                    ),
-            ];
+        let templates = vec![
+            rmcp::model::ResourceTemplate::new("hyprpilot://sessions/{handle}", "session")
+                .with_description("A session's status: its state, current turn, and every turn with its outcome.")
+                .with_mime_type("application/json"),
+            rmcp::model::ResourceTemplate::new("hyprpilot://sessions/{handle}/{view}", "session view")
+                .with_description(
+                    "One view of a session's CURRENT turn: `status`, `result` (the answer, or why there is \
+                     none), `transcript` (the raw event stream), or `stderr`.",
+                ),
+            rmcp::model::ResourceTemplate::new("hyprpilot://sessions/{handle}/turns/{turn}/{view}", "turn view")
+                .with_description(
+                    "One view of ONE turn, by number — the same four views. A finished turn never changes, \
+                     so its reads stay valid however the session moves on.",
+                ),
+        ];
 
         Ok(rmcp::model::ListResourceTemplatesResult::with_all_items(templates)
             .with_ttl_ms(self.transport.result_ttl_ms())
@@ -286,8 +274,7 @@ impl ServerHandler for HarnessServer {
             ])
             // `0`, like profiles. This payload embeds each session's
             // LIVE status, and nothing fires `resources/updated` for the
-            // index URI — `list_changed` invalidates `resources/list`,
-            // not this read. A surface that cannot signal must not claim
+            // index URI. A surface that cannot signal must not claim
             // freshness.
             .with_ttl_ms(0)
             .with_cache_scope(RESULT_CACHE_SCOPE)
@@ -365,8 +352,9 @@ impl ServerHandler for HarnessServer {
     async fn get_task(
         &self,
         request: rmcp::model::GetTaskParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::GetTaskResult, rmcp::ErrorData> {
+        require_tasks(&context)?;
         let (handle, _) = crate::mcp::server::harness::parse_task_id(&request.task_id)
             .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("`{}` is not a task id.", request.task_id), None))?;
         let task = self
@@ -392,14 +380,37 @@ impl ServerHandler for HarnessServer {
     async fn cancel_task(
         &self,
         request: rmcp::model::CancelTaskParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<(), rmcp::ErrorData> {
+        require_tasks(&context)?;
         let (handle, turn) = crate::mcp::server::harness::parse_task_id(&request.task_id)
             .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("`{}` is not a task id.", request.task_id), None))?;
         self.harness
             .cancel_turn(handle, turn)
             .await
             .map_err(|msg| rmcp::ErrorData::invalid_params(msg, None))
+    }
+
+    /// SEP-2663's third method. A task here never enters
+    /// `input_required`, so there is nothing to apply — but a known task
+    /// is acknowledged, as the spec requires, and an unknown one is
+    /// `-32602`.
+    async fn update_task(
+        &self,
+        request: rmcp::model::UpdateTaskParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        require_tasks(&context)?;
+        let known = crate::mcp::server::harness::parse_task_id(&request.task_id)
+            .is_some_and(|(handle, turn)| self.harness.has_turn(handle, turn));
+        if known {
+            Ok(())
+        } else {
+            Err(rmcp::ErrorData::invalid_params(
+                format!("`{}` is not a task this server knows.", request.task_id),
+                None,
+            ))
+        }
     }
 
     /// Dispatch one harness tool. Recoverable failures come back as
@@ -429,15 +440,7 @@ impl ServerHandler for HarnessServer {
                     // must stay a tool error — minting a task id for work
                     // that never started hands the caller a handle that
                     // can never resolve.
-                    Ok(payload) => {
-                        // A session appeared, and eviction may have
-                        // removed older ones, so the resource LIST moved.
-                        // Without this the list is cached for the full
-                        // `ttlMs` — the surface would mutate with no
-                        // signal, which is exactly what that ttl forbids.
-                        self.subscriptions.resource_list_changed(Some(&context.peer)).await;
-                        Ok(as_task_or_result(harness, context, payload))
-                    }
+                    Ok(payload) => Ok(as_task_or_result(harness, context, payload)),
                     Err(msg) => Ok(tool_error(msg)),
                 }
             }
@@ -537,9 +540,8 @@ impl ServerHandler for HarnessServer {
                 let session = require_string(&args, "session")?;
                 match harness.session_kill(session).await {
                     Ok(payload) => {
-                        // A reap removes the session from the listing; a
-                        // terminate changes its status. Both invalidate a
-                        // cached read, so both are announced.
+                        // A reap removes the session; a terminate changes
+                        // its status. Both invalidate a cached read.
                         self.subscriptions
                             .resources_updated(
                                 Some(&context.peer),
@@ -549,7 +551,6 @@ impl ServerHandler for HarnessServer {
                                     .collect(),
                             )
                             .await;
-                        self.subscriptions.resource_list_changed(Some(&context.peer)).await;
                         let summary = match payload.get("action").and_then(serde_json::Value::as_str) {
                             Some("terminated") => format!(
                                 "Terminated session {session}. Its transcript is still readable — \
@@ -705,7 +706,7 @@ fn launch_props(extra: &[(&str, serde_json::Value)]) -> serde_json::Value {
         },
         "timeout_seconds": {
             "type": "integer",
-            "description": "Seconds to wait when `wait` is true (default 300). Ignored otherwise. On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_status`, do not spawn again.",
+            "description": "Seconds to wait when `wait` is true (default 45 — under opencode's 60 s tool-call cut-off; Codex and Hermes cut at 300 s). Ignored otherwise. On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_status`, do not spawn again.",
         },
     });
     let map = props.as_object_mut().expect("literal is an object");
@@ -756,7 +757,7 @@ fn session_send_props() -> serde_json::Value {
         },
         "timeout_seconds": {
             "type": "integer",
-            "description": "Seconds to wait when `wait` is true (default 300). Ignored otherwise. On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_status`, do not send again.",
+            "description": "Seconds to wait when `wait` is true (default 45 — under opencode's 60 s tool-call cut-off; Codex and Hermes cut at 300 s). Ignored otherwise. On timeout the agent KEEPS RUNNING and the result reports status `running` — poll `session_status`, do not send again.",
         },
         "steer": {
             "type": "boolean",
@@ -769,7 +770,35 @@ fn session_send_props() -> serde_json::Value {
 /// COMPOSES with its siblings, not just what it does — these strings
 /// are the only documentation the calling agent ever sees.
 fn harness_tools() -> Vec<Tool> {
-    vec![
+    use rmcp::model::ToolAnnotations;
+
+    // Hints Codex and Hermes act on: a read-only tool skips their approval
+    // and trust prompts, a destructive one keeps them. Untrusted by spec,
+    // so they describe the tool rather than gate anything here.
+    let read_only = |title: &str| ToolAnnotations::with_title(title).read_only(true).idempotent(true);
+    let annotations = |name: &str| match name {
+        "list_profiles" => read_only("List launchable profiles"),
+        "session_list" => read_only("List sessions"),
+        "session_status" => read_only("Check a session"),
+        "session_read" => read_only("Read a session transcript"),
+        "session_kill" => ToolAnnotations::with_title("Stop or reap a session")
+            .read_only(false)
+            .destructive(true)
+            .idempotent(true)
+            .open_world(false),
+        "spawn" => ToolAnnotations::with_title("Spawn an agent session")
+            .read_only(false)
+            .destructive(true)
+            .idempotent(false)
+            .open_world(true),
+        "session_send" => ToolAnnotations::with_title("Send the next turn")
+            .read_only(false)
+            .destructive(true)
+            .idempotent(false)
+            .open_world(true),
+        other => unreachable!("harness tool `{other}` has no annotations"),
+    };
+    let tools = vec![
         Tool::new_with_raw(
             "list_profiles",
             Some(
@@ -839,8 +868,8 @@ fn harness_tools() -> Vec<Tool> {
             Some(
                 "Read a session's transcript — the vendor's structured JSON event stream, whole lines only. \
                  Works while the agent is still running (poll this after a `spawn` that returned status \
-                 `running`) and afterwards, for as long as this server lives. Pass `offset` from a previous \
-                 result's `nextOffset` to page forward without re-reading; omit it to get the tail. \
+                 `running`) and afterwards, for as long as this server lives. Pass `cursor` from a previous \
+                 result's `nextCursor` to page forward without re-reading; omit it to get the tail. \
                  Pass `wait: true` to follow the session live instead of returning immediately — the same \
                  knob, with the same meaning, as on `spawn`."
                     .into(),
@@ -921,7 +950,16 @@ fn harness_tools() -> Vec<Tool> {
                 &["session"],
             ),
         ),
-    ]
+    ];
+
+    tools
+        .into_iter()
+        .map(|tool| {
+            let annotations = annotations(&tool.name);
+            let title = annotations.title.clone().unwrap_or_default();
+            tool.with_title(title).with_annotations(annotations)
+        })
+        .collect()
 }
 
 /// Whether the caller wants the tool call held open until the turn ends.
@@ -1011,7 +1049,9 @@ fn decode_launch_args(
         } else {
             Vec::new()
         },
-        wait: wait_flag(args)?,
+        // A task caller gets its task when the turn starts; holding the
+        // call open first would hand back a task for work already done.
+        wait: wait_flag(args)? && !tasks_enabled(context),
         timeout_seconds: optional_u64(args, "timeout_seconds")
             .map_err(|err| err.to_string())?
             .unwrap_or_else(crate::mcp::server::harness::LaunchToolArgs::default_timeout),
@@ -1052,20 +1092,48 @@ fn as_task_or_result(
     context: &RequestContext<RoleServer>,
     payload: serde_json::Value,
 ) -> CallToolResponse {
-    let declared = context.client_capabilities().is_some_and(|caps| caps.supports_tasks());
-    if !declared {
+    if !tasks_enabled(context) {
         return structured_with_text(launch_summary(&payload), payload);
     }
-    let Some((handle, turn)) = payload
-        .get("session")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|handle| harness.current_turn(handle).map(|turn| (handle, turn)))
-    else {
+    // The turn THIS launch started, as the launch reported it — never a
+    // fresh read of the session, which a concurrent `session_send` may
+    // already have moved on.
+    let turn = payload
+        .pointer("/sessionInfo/files/turn")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|turn| u32::try_from(turn).ok());
+    let Some((handle, turn)) = payload.get("session").and_then(serde_json::Value::as_str).zip(turn) else {
         // The launch succeeded but the session is already gone. Fall back
         // rather than mint a task id nothing can resolve.
         return structured_with_text(launch_summary(&payload), payload);
     };
     CallToolResponse::Task(harness.new_task(handle, turn))
+}
+
+/// Whether this request may be answered with a SEP-2663 task: the client
+/// declared the extension AND negotiated `2026-07-28` or later.
+///
+/// The version half is the one rmcp does not check. A `2025-11-25` client
+/// can declare the extension in `initialize`, and SEP-2663 is explicit
+/// that a server "MUST NOT treat this capability as enabling tasks under
+/// that protocol version".
+fn tasks_enabled(context: &RequestContext<RoleServer>) -> bool {
+    let modern = context
+        .protocol_version()
+        .is_some_and(|v| v.as_str() >= rmcp::model::ProtocolVersion::V_2026_07_28.as_str());
+    modern && context.client_capabilities().is_some_and(|caps| caps.supports_tasks())
+}
+
+/// `tasks/*` for a request that may not use tasks gets what a client
+/// that never declared the extension gets: `-32021`.
+fn require_tasks(context: &RequestContext<RoleServer>) -> Result<(), rmcp::ErrorData> {
+    if tasks_enabled(context) {
+        Ok(())
+    } else {
+        Err(rmcp::ErrorData::missing_required_client_capability(
+            rmcp::model::ClientCapabilities::builder().enable_tasks().build(),
+        ))
+    }
 }
 
 pub(super) fn launch_summary(payload: &serde_json::Value) -> String {
@@ -1161,12 +1229,11 @@ fn parse_delegate_mcp(raw: &str) -> anyhow::Result<crate::config::McpConfig> {
 /// full ttl). Both are correctness, not noise.
 ///
 /// `peer` is `None` over HTTP. MCP `2026-07-28` is stateless, so there
-/// is no ambient peer a hook could hold — which costs the two DIRECT
-/// pushes below (`notifications/claude/channel` and the SEP-2663 task
-/// status, neither of which rmcp will route through a subscription) and
-/// nothing else. `seal_turn` and the `resources/updated` announcement
-/// both still run, the latter reaching every open `subscriptions/listen`
-/// stream through the shared registry.
+/// is no ambient peer a hook could hold — which costs the DIRECT
+/// `notifications/claude/channel` push and nothing else. `seal_turn` and
+/// the `resources/updated` announcement both still run, the latter
+/// reaching every open `subscriptions/listen` stream through the shared
+/// registry.
 fn install_exit_hook(
     sessions: &Arc<super::sessions::SessionTable>,
     harness: Arc<Harness>,
@@ -1179,44 +1246,47 @@ fn install_exit_hook(
     sessions.set_exit_hook(Arc::new(move |handle: String, turn: u32, code: i32| {
         let peer = peer.clone();
         let name = name.clone();
-        let harness = Arc::clone(&harness);
         let subscriptions = subscriptions.clone();
         // Seal SYNCHRONOUSLY, before the spawned notifier runs: this
         // is the only moment the real finish time is known, and a
         // `session_send` can start the next turn while the notifier
-        // is still queued.
+        // is still queued. The label is read right after, from the
+        // record just sealed, so a kill or a steer is named as one.
         table.seal_turn(&handle, turn, code);
+        let outcome = harness
+            .turn_outcome(&handle, turn)
+            .unwrap_or_else(|| format!("turn {turn} exited {code}"));
         tokio::spawn(async move {
-            // Both direct pushes need an ambient peer, which the
-            // HTTP transport has none of — see `peer`'s doc above.
+            // Needs an ambient peer, which the HTTP transport has none
+            // of — see `peer`'s doc above.
             if let (true, Some(peer)) = (notify_channel, peer.as_ref()) {
-                super::harness::notify_session_finished(peer, &name, &handle, code).await;
+                super::harness::notify_session_finished(peer, &name, &handle, turn, &outcome, code).await;
             }
 
-            // The standard wake-up, alongside the two above it.
+            // The standard wake-up. Through the subscription stream when
+            // the client opened one — filtered against the URIs it asked
+            // for and tagged with its subscription id — and as a raw
+            // broadcast otherwise, the only channel an older-revision
+            // client has.
             //
-            // Through the subscription stream when the client opened
-            // one — filtered against the URIs it actually asked for
-            // and tagged with the subscription id it correlates on —
-            // and as a raw broadcast otherwise, which is the only
-            // channel an older-revision client has.
+            // Every view, of the session and of the turn that just ended
+            // by number: the status, the answer and the transcript all
+            // change here, and a subscriber may hold any subset of them.
+            // This is what makes the long `ttlMs` honest for a session
+            // resource. The LISTING does not change — it carries no
+            // sessions — so no `list_changed` follows.
             //
-            // This is what makes the long `ttlMs` honest for a
-            // session resource: a cached read goes stale here, and
-            // here is where we say so.
-            // Every view: the status, the answer and the
-            // transcript all change when a turn ends, and a
-            // subscriber may hold any subset of them.
+            // There is no SEP-2663 status push. 2026-07-28 allows one
+            // only on a `subscriptions/listen` stream filtered by task id,
+            // which rmcp cannot express yet, and tasks are served to no
+            // older revision; a task client polls `tasks/get` at the
+            // task's `pollIntervalMs`.
             subscriptions
                 .resources_updated(
                     peer.as_ref(),
                     super::harness::SessionView::ALL
                         .into_iter()
                         .map(|view| super::harness::session_view_uri(&handle, view))
-                        // Also the turn that just ended, by number.
-                        // Subscribing to one turn is the whole point
-                        // of addressing turns, and its views become
-                        // final exactly here.
                         .chain(
                             super::harness::SessionView::ALL
                                 .into_iter()
@@ -1225,41 +1295,6 @@ fn install_exit_hook(
                         .collect(),
                 )
                 .await;
-            // The listing embeds each session's live status in its
-            // description, so a turn ending makes a cached
-            // `resources/list` claim `(running)` for a session that
-            // exited — for the full ttl, since membership did not
-            // move. Announce it.
-            subscriptions.resource_list_changed(peer.as_ref()).await;
-
-            // SEP-2663 status push — GATED, and it has to be. The
-            // hook fires for every turn of every session, so an
-            // ungated push here would send `notifications/tasks` to a
-            // client that never declared the extension, for an
-            // ordinary `spawn`. That is the one behaviour change this
-            // feature must not make.
-            //
-            // Gated on ONE recorded fact: did this turn actually hand
-            // the caller a task handle. That already implies the
-            // caller opted in, and it is the only form available here
-            // — a request sees per-request `_meta` capabilities, while
-            // this hook has nothing but the peer's `initialize` info.
-            // Re-deriving from `peer_info()` would silently skip the
-            // push for a client that declared tasks the way the spec
-            // documents: per request.
-            // The turn that EXITED, not whatever is current now — a
-            // `session_send` landing first would otherwise make this
-            // announce turn N+1 as `working` in place of turn N's
-            // completion.
-            if !harness.turn_minted_task(&handle, turn) {
-                return;
-            }
-            let Some(peer) = peer.as_ref() else {
-                return;
-            };
-            if let Ok(task) = harness.task_view(&super::harness::task_id(&handle, turn)) {
-                super::harness::notify_task_finished(peer, task).await;
-            }
         });
     }));
 }
@@ -1326,8 +1361,7 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
         return served;
     }
 
-    let (stdin, stdout) = rmcp::transport::io::stdio();
-    let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
+    let running = handler.serve(rmcp::transport::io::stdio()).await?;
 
     // The peer exists only once the service is running, which is also
     // the earliest a session can exist — so installing the hook here is
@@ -1512,6 +1546,155 @@ mod tests {
                     tool.name
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::*;
+    use rmcp::ServiceExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    const META: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"t","version":"1"},"io.modelcontextprotocol/clientCapabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}}}"#;
+
+    fn server(transport: super::super::serve_args::Transport) -> HarnessServer {
+        HarnessServer::new(
+            super::super::ConfigSource::default(),
+            64,
+            0,
+            1,
+            DelegatePolicy::default(),
+            None,
+            transport,
+        )
+    }
+
+    /// Send JSON-RPC lines (ids 1..) and collect each reply in order.
+    async fn exchange(requests: &[String]) -> Vec<serde_json::Value> {
+        let (mut client_tx, server_rx) = tokio::io::duplex(1 << 16);
+        let (server_tx, client_rx) = tokio::io::duplex(1 << 16);
+        for (i, request) in requests.iter().enumerate() {
+            let line = request.replacen('{', &format!("{{\"jsonrpc\":\"2.0\",\"id\":{},", i + 1), 1);
+            client_tx.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+        }
+        client_tx.flush().await.unwrap();
+        let running = server(super::super::serve_args::Transport::Stdio)
+            .serve((server_rx, server_tx))
+            .await
+            .expect("serve");
+        let mut replies = std::collections::BTreeMap::new();
+        let mut lines = BufReader::new(client_rx).lines();
+        while replies.len() < requests.len() {
+            let line = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+                .await
+                .expect("a reply within the bound")
+                .unwrap()
+                .expect("the stream stays open");
+            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
+                replies.insert(id, value);
+            }
+        }
+        drop(client_tx);
+        running.cancel().await.ok();
+        replies.into_values().collect()
+    }
+
+    /// SEP-2663: a client on `2025-11-25` gets no tasks, even having
+    /// declared the extension in `initialize` — `tasks/*` answers it as a
+    /// client that never declared, `-32021`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_legacy_client_that_declared_tasks_gets_none() {
+        let replies = exchange(&[
+            r#"{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}},"clientInfo":{"name":"t","version":"1"}}}"#.to_string(),
+            r#"{"method":"tasks/get","params":{"taskId":"3b5ce010-1f61-4a8a-8fa7-086d4b5d43c0:1"}}"#.to_string(),
+        ])
+        .await;
+        assert_eq!(replies[1]["error"]["code"], -32021, "{}", replies[1]);
+    }
+
+    /// A modern client that declared tasks reaches the task methods; an
+    /// id no session knows is `-32602` on every one of them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn task_methods_refuse_an_unknown_task_with_invalid_params() {
+        let id = "3b5ce010-1f61-4a8a-8fa7-086d4b5d43c0:1";
+        let replies = exchange(&[
+            format!(r#"{{"method":"tasks/update","params":{{{META},"taskId":"{id}","inputResponses":{{}}}}}}"#),
+            format!(r#"{{"method":"tasks/get","params":{{{META},"taskId":"{id}"}}}}"#),
+        ])
+        .await;
+        for reply in &replies {
+            assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        }
+    }
+
+    /// The listing is the two indexes, whatever sessions exist — a list
+    /// that changes as a side effect of `spawn` is what 2026-07-28
+    /// forbids — and every view is reachable through a template instead.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_listing_is_fixed_and_the_views_are_templates() {
+        let replies = exchange(&[
+            format!(r#"{{"method":"resources/list","params":{{{META}}}}}"#),
+            format!(r#"{{"method":"resources/templates/list","params":{{{META}}}}}"#),
+        ])
+        .await;
+        let uris: Vec<&str> = replies[0]["result"]["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["uri"].as_str())
+            .collect();
+        assert_eq!(uris, ["hyprpilot://profiles", "hyprpilot://sessions"]);
+        let templates: Vec<&str> = replies[1]["result"]["resourceTemplates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["uriTemplate"].as_str())
+            .collect();
+        assert_eq!(
+            templates,
+            [
+                "hyprpilot://sessions/{handle}",
+                "hyprpilot://sessions/{handle}/{view}",
+                "hyprpilot://sessions/{handle}/turns/{turn}/{view}",
+            ]
+        );
+    }
+
+    /// Over HTTP no peer outlives a request, so the channel can never be
+    /// pushed — advertising it would have a client wait for one.
+    #[test]
+    fn the_channel_is_advertised_on_stdio_only() {
+        let channel = |transport| {
+            server(transport)
+                .get_info()
+                .capabilities
+                .experimental
+                .is_some_and(|e| e.contains_key("claude/channel"))
+        };
+        assert!(channel(super::super::serve_args::Transport::Stdio));
+        assert!(!channel(super::super::serve_args::Transport::Http));
+        let resources = server(super::super::serve_args::Transport::Stdio)
+            .get_info()
+            .capabilities
+            .resources
+            .unwrap();
+        assert_eq!(resources.list_changed, Some(false), "nothing in the listing changes");
+    }
+
+    /// Codex and Hermes gate approval on these, so a tool without them
+    /// prompts on every call.
+    #[test]
+    fn every_tool_carries_a_title_and_its_hints() {
+        for tool in harness_tools() {
+            let annotations = tool.annotations.as_ref().expect("annotated");
+            assert!(tool.title.as_deref().is_some_and(|t| !t.is_empty()), "{}", tool.name);
+            let read_only = matches!(
+                tool.name.as_ref(),
+                "list_profiles" | "session_list" | "session_status" | "session_read"
+            );
+            assert_eq!(annotations.read_only_hint, Some(read_only), "{}", tool.name);
         }
     }
 }

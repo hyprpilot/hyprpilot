@@ -59,6 +59,12 @@ pub const DEFAULT_MAX_LIVE_SESSIONS: usize = 0;
 /// equal.
 pub const DEFAULT_SKILL_ROOT_WATCH: bool = true;
 
+/// Fallback for `[mcp.skills] system_prompts` — see
+/// [`DEFAULT_MAX_SPAWN_DEPTH`] for why a nested block needs one. The
+/// value a real launch reads is seeded in `defaults.toml`, and
+/// `defaults_seed_the_system_prompt_passthrough` pins the pair equal.
+pub const DEFAULT_SYSTEM_PROMPTS: bool = true;
+
 /// Fallback name for the skills surface — see
 /// [`DEFAULT_MAX_SPAWN_DEPTH`] for why a nested block needs one.
 ///
@@ -71,8 +77,8 @@ pub const DEFAULT_SKILL_ROOT_WATCH: bool = true;
 ///
 /// **Renaming changes tool attribution** — `mcp__hyprpilot-skills__read_skill`
 /// becomes `mcp__<name>__read_skill` — so any skill or instruction file
-/// that names a tool by its prefix breaks with it. The `hyprpilot://`
-/// resource URIs are a fixed scheme and are NOT affected.
+/// that names a tool by its prefix breaks with it. The `skill://` and
+/// `hyprpilot://` resource URIs are fixed schemes and are NOT affected.
 pub const DEFAULT_SKILLS_SERVER_NAME: &str = "hyprpilot-skills";
 
 /// Fallback name for the harness surface — see
@@ -283,11 +289,25 @@ pub struct SkillsServerConfig {
     #[garde(skip)]
     pub name: Option<String>,
 
-    /// Skill catalog directories. Each is a directory of `<slug>/SKILL.md`
-    /// bundles plus an optional per-root glob `ignore` list applied only
-    /// to that root's discoveries.
+    /// Skill catalog directories. Each is a tree of `SKILL.md` bundles,
+    /// at any depth, plus optional per-root `include` / `ignore` globs
+    /// matched against each skill's path and applied only to that root's
+    /// discoveries.
     #[garde(dive)]
     pub dirs: Option<Vec<SkillEntry>>,
+
+    /// Prompt directories: every `*.md` directly inside one is served as
+    /// an MCP prompt, named by its frontmatter `name` or its stem.
+    /// `include` / `ignore` match that name.
+    #[garde(dive)]
+    pub prompts: Option<Vec<SkillEntry>>,
+
+    /// Also serve the launched profile's own `system_prompt` files as
+    /// prompts, so an edited system prompt can be re-invoked without a
+    /// relaunch. Seeded `true`.
+    #[garde(skip)]
+    #[serde(alias = "system_prompts")]
+    pub system_prompts: Option<bool>,
 
     /// Per-server tool policy. Falls back to the `[mcp]`-level globs.
     #[garde(custom(validate_globs))]
@@ -419,6 +439,10 @@ pub struct HarnessServerConfig {
 impl SkillsServerConfig {
     pub fn is_enabled(&self) -> bool {
         self.enabled.unwrap_or(true)
+    }
+
+    pub fn passes_system_prompts(&self) -> bool {
+        self.system_prompts.unwrap_or(DEFAULT_SYSTEM_PROMPTS)
     }
 
     pub fn server_name(&self) -> &str {
@@ -646,9 +670,18 @@ impl McpConfig {
     /// "no skills" semantically.
     #[must_use]
     pub fn resolved_skills(&self) -> Vec<super::ResolvedSkillEntry> {
-        self.skills
-            .as_ref()
-            .and_then(|skills| skills.dirs.as_deref())
+        Self::resolve_entries(self.skills.as_ref().and_then(|skills| skills.dirs.as_deref()))
+    }
+
+    /// Resolve every `[[mcp.skills.prompts]]` directory, the same way
+    /// [`Self::resolved_skills`] resolves skill roots.
+    #[must_use]
+    pub fn resolved_prompts(&self) -> Vec<super::ResolvedSkillEntry> {
+        Self::resolve_entries(self.skills.as_ref().and_then(|skills| skills.prompts.as_deref()))
+    }
+
+    fn resolve_entries(entries: Option<&[SkillEntry]>) -> Vec<super::ResolvedSkillEntry> {
+        entries
             .unwrap_or(&[])
             .iter()
             .map(|e| super::ResolvedSkillEntry {
@@ -817,6 +850,33 @@ mod tests {
 
         assert_eq!(root.watch, Some(DEFAULT_SKILL_ROOT_WATCH));
         assert!(root.watches(), "the seeded root is watched");
+    }
+
+    /// Seeded rather than left to the accessor, for the reason the
+    /// watch flag is: `[mcp.skills]` is nested and never backfilled.
+    #[test]
+    fn defaults_seed_the_system_prompt_passthrough() {
+        let skills = seeded_mcp().skills.expect("the seed carries [mcp.skills]");
+
+        assert_eq!(skills.system_prompts, Some(DEFAULT_SYSTEM_PROMPTS));
+        assert!(skills.passes_system_prompts());
+    }
+
+    #[test]
+    fn system_prompts_parses_in_either_casing() {
+        let camel: SkillsServerConfig = toml::from_str(
+            "systemPrompts = false
+",
+        )
+        .expect("camelCase parses");
+        let snake: SkillsServerConfig = toml::from_str(
+            "system_prompts = false
+",
+        )
+        .expect("snake_case parses");
+
+        assert_eq!(camel, snake);
+        assert!(!snake.passes_system_prompts());
     }
 
     /// The name a server is INJECTED under is `[mcp.*] name`, and the

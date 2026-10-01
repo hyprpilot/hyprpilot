@@ -156,14 +156,6 @@ pub(crate) fn session_handle_from_uri(uri: &str) -> Option<&str> {
     parse_session_uri(uri).map(|(handle, _, _)| handle)
 }
 
-/// A session projected for `resources/list`. Three fields, on purpose —
-/// see [`Harness::session_resources`].
-pub(crate) struct SessionResource {
-    pub handle: String,
-    pub profile: String,
-    pub status: String,
-}
-
 // Every ceiling a real launch uses is seeded in `defaults.toml` and
 // resolved by the launcher, which hands them to `Harness::new`. The
 // fallbacks in `config::mcp` cover only a hand-started sidecar (via the
@@ -181,7 +173,10 @@ const READ_CAP_BYTES: usize = 60_000;
 /// Generous — a turn's closing events are the last handful — but
 /// bounded, because `session_status` is advertised as the cheap poll.
 const TERMINAL_SCAN_LINES: usize = 200;
-const DEFAULT_TIMEOUT_SECS: u64 = 300;
+/// How long `wait: true` holds a call by default. Under every client's
+/// own cut-off: opencode abandons a tool call at 60 s, Codex and Hermes
+/// at 300 s — a wait that outlives its caller only loses the result.
+const DEFAULT_TIMEOUT_SECS: u64 = 45;
 
 /// How often a follow re-checks the transcript for new bytes. The file
 /// is append-only and a quarter-second lag is invisible next to model
@@ -461,10 +456,11 @@ impl Harness {
         // never has to notice that a later turn is a different process,
         // and an N-turn conversation costs one table entry and one
         // transcript rather than N.
-        let (handle, resume_from) = match resume.as_ref() {
+        let (handle, resume_from, turn_now) = match resume.as_ref() {
             Some(target) => {
                 let handle = target.handle.clone();
-                self.sessions
+                let turn = self
+                    .sessions
                     .respawn(&handle, prepared.command, provenance)
                     .map_err(|err| match err {
                         super::sessions::RespawnError::Unknown => {
@@ -485,7 +481,7 @@ impl Harness {
                 // whatever the child had already written between spawn
                 // and the stat — permanently, since offsets only move
                 // forward.
-                (handle, 0)
+                (handle, 0, turn)
             }
             None => {
                 let handle = self
@@ -509,7 +505,7 @@ impl Harness {
                 // Bound the table now that it just grew.
                 self.sessions.evict_exited_over(self.max_sessions);
 
-                (handle, 0)
+                (handle, 0, 1)
             }
         };
 
@@ -520,11 +516,6 @@ impl Harness {
             resumed = resume.is_some(),
             "mcp harness: turn started"
         );
-
-        // The turn this launch started — captured now, because a
-        // concurrent `session_send` cannot begin one but a later read of
-        // `session.turn` would still be a different question.
-        let turn_now = self.sessions.with(&handle, |session| session.turn).unwrap_or(1);
 
         if !args.wait {
             return Ok(self.describe(&handle, None, Some(resume_from), turn_now));
@@ -627,11 +618,13 @@ impl Harness {
         let Some(id) = vendor_session_id(&body) else {
             return;
         };
+        // `last_turn_at` stays put: it is when a turn STARTED, and a
+        // harvest is a read. Moving it reordered `session_list` and spared
+        // a polled session from eviction.
         self.sessions.with_mut(handle, |session| {
             if session.resume_token.is_none() {
                 session.resume_token = Some(id.clone());
             }
-            session.last_turn_at = std::time::SystemTime::now();
         });
     }
 
@@ -651,17 +644,30 @@ impl Harness {
     /// output the moment `session_send` ran.
     fn describe(&self, handle: &str, finished: Option<bool>, turn_start: Option<u64>, turn: u32) -> Value {
         let Some(snapshot) = self.sessions.with(handle, |session| {
+            // THIS turn's outcome, never the session's live one: once
+            // turn N+1 starts, the session reads `running` — and a
+            // finished turn N reporting that (with no exit code and a
+            // fresh cursor) is a terminal task changing under its caller.
+            let (status, exit_code) = match session.turn_record(turn).map(|record| record.outcome) {
+                Some(TurnOutcome::Exited(code)) => (SessionStatus::Exited, Some(code)),
+                Some(TurnOutcome::Killed | TurnOutcome::Steered) => (
+                    SessionStatus::Exited,
+                    (session.turn == turn).then(|| session.exit_code()).flatten(),
+                ),
+                Some(TurnOutcome::Running) | None => (session.status(), session.exit_code()),
+            };
             (
                 session.profile_id.clone(),
-                session.provider.wire_id(),
-                session.status(),
-                session.exit_code(),
+                session.provider,
+                status,
+                exit_code,
                 session.turn_transcript(turn),
             )
         }) else {
             return json!({ "session": handle, "status": "exited" });
         };
-        let (profile, provider, status, exit_code, turns) = snapshot;
+        let (profile, provider_kind, status, exit_code, turns) = snapshot;
+        let provider = provider_kind.wire_id();
 
         let mut out = json!({
             "session": handle,
@@ -687,6 +693,16 @@ impl Harness {
             // poller would fall back to `tail` and lose its place.
             if truncated || status != SessionStatus::Exited {
                 out["nextCursor"] = json!(encode_cursor(turn, next));
+            }
+        }
+        // The answer itself, for a finished turn — what `/result` serves.
+        // `text` is the transcript from the turn's FIRST byte, capped, so
+        // a long turn's answer (which comes last) can fall outside it.
+        if status == SessionStatus::Exited {
+            let body = std::fs::read_to_string(&turns).unwrap_or_default();
+            match super::transcript::extract(&body, provider_kind) {
+                super::transcript::Answer::Pending => {}
+                answer => out["answer"] = json!(answer.render()),
             }
         }
 
@@ -1147,23 +1163,6 @@ impl Harness {
         })
     }
 
-    /// One row per session for `resources/list` — handle, profile,
-    /// status, and nothing else.
-    ///
-    /// The VALUE here is `resourceSubscriptions` on a handle you already
-    /// hold, not browsing the catalogue, so the listing stays a routing
-    /// aid. Deliberately no transcript and no argv: a transcript is
-    /// capped at 60 kB per read for a reason, and putting one in a
-    /// listing would pay that for every session at once. `session_read`
-    /// remains the way to get output.
-    pub(crate) fn session_resources(&self) -> Vec<SessionResource> {
-        self.sessions.map_all(|session| SessionResource {
-            handle: session.handle.clone(),
-            profile: session.profile_id.clone(),
-            status: session.status().as_str().to_string(),
-        })
-    }
-
     pub(crate) fn session_list(&self) -> (String, Value) {
         let rows = self.sessions.map_all(|session| {
             let mut row = json!({
@@ -1511,17 +1510,21 @@ pub(crate) async fn notify_session_finished(
     peer: &rmcp::service::Peer<rmcp::service::RoleServer>,
     server_name: &str,
     handle: &str,
+    turn: u32,
+    outcome: &str,
     exit_code: i32,
 ) {
     let mut meta = serde_json::Map::new();
     meta.insert("session".into(), json!(handle));
+    meta.insert("turn".into(), json!(turn.to_string()));
     meta.insert("exit_code".into(), json!(exit_code.to_string()));
 
+    // `outcome` is `turn_label`'s fixed vocabulary — never agent text.
     let mut params = serde_json::Map::new();
     params.insert(
         "content".into(),
         json!(format!(
-            "hyprpilot harness session {handle} finished (exit {exit_code}). \
+            "hyprpilot harness session {handle}: {outcome}. \
              Read its output with session_read."
         )),
     );
@@ -1540,31 +1543,15 @@ pub(crate) async fn notify_session_finished(
     }
 }
 
-/// Push the SEP-2663 status event for a turn that just ended.
-///
-/// **Double-gated by the caller**, and both halves matter. A client that
-/// never declared the extension must not receive `notifications/tasks`
-/// for an ordinary `spawn` — that would be a behaviour change visible to
-/// a caller who opted into nothing, which is exactly what this feature
-/// promises not to do. And a turn that never minted a task has no task
-/// to report on.
-///
-/// Note this rides `Peer::send_notification` directly rather than
-/// `subscriptions/listen`: rmcp explicitly refuses to route task
-/// notifications through a subscription today (`SubscriptionFilter` has
-/// no `taskIds` field), so the subscription path is not available to us.
-/// A client that does not handle the method drops it silently — the same
-/// contract as the Claude channel above.
-pub(crate) async fn notify_task_finished(
-    peer: &rmcp::service::Peer<rmcp::service::RoleServer>,
-    task: rmcp::model::DetailedTask,
-) {
-    let notification = rmcp::model::TaskStatusNotification::new(rmcp::model::TaskStatusNotificationParams::from(task));
-    if let Err(err) = peer
-        .send_notification(rmcp::model::ServerNotification::TaskStatusNotification(notification))
-        .await
-    {
-        tracing::debug!(%err, "mcp harness: task status push failed");
+/// How a finished turn is named on every surface that announces it: the
+/// task `statusMessage` and the channel push. A fixed vocabulary, so no
+/// agent output can ride along.
+pub(crate) fn turn_label(turn: u32, outcome: &TurnOutcome) -> String {
+    match outcome {
+        TurnOutcome::Running => format!("turn {turn} running"),
+        TurnOutcome::Exited(code) => format!("turn {turn} exited {code}"),
+        TurnOutcome::Killed => format!("turn {turn} killed"),
+        TurnOutcome::Steered => format!("turn {turn} steered"),
     }
 }
 
@@ -2218,7 +2205,7 @@ mod tests {
     /// scheme is not a session, and an empty handle addresses nothing.
     #[test]
     fn a_foreign_uri_is_not_mistaken_for_a_session() {
-        assert_eq!(session_handle_from_uri("hyprpilot://skills/git-commit"), None);
+        assert_eq!(session_handle_from_uri("skill://git-commit/SKILL.md"), None);
         assert_eq!(session_handle_from_uri(SESSION_URI_PREFIX), None);
         assert_eq!(session_handle_from_uri("file:///etc/passwd"), None);
     }
@@ -2977,11 +2964,6 @@ impl Harness {
             format!("`{raw}` is not a task id. Task ids come from a `spawn` or `session_send` result.")
         })?;
 
-        // Lazily, for the same reason `session_send` does it: a detached
-        // turn never runs the waiting path, so nothing else would fold
-        // the vendor's own id into the session.
-        self.harvest(handle);
-
         let record = self
             .sessions
             .with(handle, |session| session.turn_record(turn))
@@ -3037,6 +3019,7 @@ impl Harness {
 
         let updated = record.finished_at.clone().unwrap_or_else(|| record.started_at.clone());
         let mut task = Task::new(raw.to_string(), TaskStatus::Working, record.started_at.clone(), updated);
+        task.status_message = Some(turn_label(turn, &record.outcome));
         // Unlimited would be a lie in the other direction, but so would a
         // number: retention is bounded by `--max-sessions` eviction, by
         // `session_kill` reaping a finished session, and by the sidecar's
@@ -3046,11 +3029,6 @@ impl Harness {
         task.poll_interval_ms = Some(TASK_POLL_INTERVAL_MS);
 
         Ok(DetailedTask::new(task, payload))
-    }
-
-    /// Which turn is currently in flight for a session, if it exists.
-    pub(crate) fn current_turn(&self, handle: &str) -> Option<u32> {
-        self.sessions.with(handle, |session| session.turn)
     }
 
     /// Cancel ONE turn, addressed by task id.
@@ -3067,67 +3045,51 @@ impl Harness {
     /// turn actually in flight can be cancelled, and addressing an older
     /// turn acknowledges without touching the running one.
     pub(crate) async fn cancel_turn(&self, handle: &str, turn: u32) -> Result<(), String> {
-        let current = self
-            .sessions
-            .with(handle, |session| session.turn)
+        // `kill_turn` checks the turn under the same lock that stamps it,
+        // so a turn that ended while this call was in flight is left
+        // alone — and so is the turn that replaced it.
+        self.sessions
+            .kill_turn(handle, turn)
+            .await
             .ok_or_else(|| format!("session `{handle}` is gone — evicted, reaped, or never existed."))?;
-        if current != turn {
-            return Ok(());
-        }
-        // `kill` alone: terminate the process group, keep the transcript.
-        self.sessions.kill(handle).await;
         Ok(())
     }
 
-    /// Record that this turn handed out a task handle.
-    ///
-    /// The exit hook gates the completion push on this rather than on the
-    /// peer's capabilities — see `TurnRecord::task_minted`. One recorded
-    /// fact answers both questions the push has to ask: did the caller
-    /// opt in, and is there a task to report on.
-    fn mark_task_minted(&self, handle: &str, turn: u32) {
-        self.sessions.with_mut(handle, |session| {
-            if let Some(record) = session.turns.iter_mut().find(|r| r.turn == turn) {
-                record.task_minted = true;
-            }
-        });
+    /// Whether `turn` of `handle` exists — what `tasks/update` checks
+    /// before acknowledging.
+    pub(crate) fn has_turn(&self, handle: &str, turn: u32) -> bool {
+        self.sessions
+            .with(handle, |session| session.turns.iter().any(|r| r.turn == turn))
+            .unwrap_or(false)
     }
 
-    /// Whether this turn handed out a task handle.
-    pub(crate) fn turn_minted_task(&self, handle: &str, turn: u32) -> bool {
+    /// The fixed-vocabulary label a finished turn is announced with.
+    pub(crate) fn turn_outcome(&self, handle: &str, turn: u32) -> Option<String> {
         self.sessions
             .with(handle, |session| {
-                session.turns.iter().any(|r| r.turn == turn && r.task_minted)
+                session.turn_record(turn).map(|r| turn_label(turn, &r.outcome))
             })
-            .unwrap_or(false)
+            .flatten()
     }
 
     /// Seed state for a task the caller just created.
     pub(crate) fn new_task(&self, handle: &str, turn: u32) -> rmcp::model::CreateTaskResult {
         use rmcp::model::{CreateTaskResult, MetaObject, Task, TaskStatus};
 
-        // Record it here, at the one moment a task handle actually
-        // reaches a caller. The exit hook has no other way to know.
-        self.mark_task_minted(handle, turn);
-
         let id = task_id(handle, turn);
-        // Seeded from the turn record, not a fresh clock: minting and the
-        // first `tasks/get` otherwise report the same task with two
-        // different creation times.
-        let started = self
-            .sessions
-            .with(handle, |session| {
-                session
-                    .turns
-                    .iter()
-                    .find(|r| r.turn == turn)
-                    .map(|r| r.started_at.clone())
-            })
-            .flatten()
-            .unwrap_or_else(rmcp::task_manager::current_timestamp);
-        let mut task = Task::new(id, TaskStatus::Working, started.clone(), started);
-        task.ttl_ms = None;
-        task.poll_interval_ms = Some(TASK_POLL_INTERVAL_MS);
+        // Seeded from the turn record — its real state, not `working`:
+        // a fast-failing turn has already ended by the time the task is
+        // minted, and nothing would ever correct a `working` seed. Same
+        // creation time as every later `tasks/get` reports.
+        let task = match self.task_view(&id) {
+            Ok(detailed) => detailed.task,
+            Err(_) => {
+                let now = rmcp::task_manager::current_timestamp();
+                let mut task = Task::new(id, TaskStatus::Working, now.clone(), now);
+                task.poll_interval_ms = Some(TASK_POLL_INTERVAL_MS);
+                task
+            }
+        };
 
         let mut result = CreateTaskResult::new(task);
         // The handle rides `_meta` so a task-mode caller never has to
@@ -3294,64 +3256,168 @@ mod task_tests {
         assert!(harness.cancel_turn("nope", 1).await.is_err());
     }
 
-    /// The completion push is gated on this flag, so a mint that fails
-    /// to record it means a task-mode caller polls forever and is never
-    /// told its turn ended. Nothing else in the suite covers it — the
-    /// gap was caught by clippy noticing the setter had no caller, which
-    /// is not a guarantee that survives a refactor.
-    #[tokio::test]
-    async fn minting_a_task_records_it_on_the_turn() {
-        let harness = Harness::new(
+    fn sh(script: &str) -> crate::spawn::providers::SpawnCommand {
+        crate::spawn::providers::SpawnCommand {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+            env: Default::default(),
+            cwd: None,
+            stdin_prompt: None,
+            temp_config: None,
+        }
+    }
+
+    fn sh_provenance() -> super::super::sessions::Provenance {
+        super::super::sessions::Provenance {
+            program: "sh".into(),
+            argv: Vec::new(),
+            env_keys: Vec::new(),
+            model: None,
+            effort: None,
+            mode: None,
+            prompt_bytes: 0,
+        }
+    }
+
+    fn task_harness() -> Harness {
+        Harness::new(
             super::super::ConfigSource::default(),
             DEFAULT_MAX_SESSIONS,
             DEFAULT_MAX_LIVE_SESSIONS,
             DEFAULT_MAX_SPAWN_DEPTH,
             DelegatePolicy::default(),
             None,
-        );
-        let command = crate::spawn::providers::SpawnCommand {
-            program: "/bin/sh".into(),
-            args: vec!["-c".into(), "exit 0".into()],
-            env: Default::default(),
-            cwd: None,
-            stdin_prompt: None,
-            temp_config: None,
-        };
+        )
+    }
+
+    async fn await_turn_end(harness: &Harness, handle: &str) {
+        let mut done = harness.sessions.with(handle, |s| s.completion()).unwrap();
+        while done.borrow().is_none() {
+            done.changed().await.unwrap();
+        }
+    }
+
+    /// A turn that ended before its task was minted — a fast failure, or
+    /// a `wait: true` launch — must be minted terminal. A `working` seed
+    /// is a promise nothing would ever correct.
+    #[tokio::test]
+    async fn a_task_for_a_finished_turn_is_minted_terminal() {
+        let harness = task_harness();
         let handle = harness
             .sessions
             .spawn(
-                command,
+                sh("exit 3"),
                 "p".into(),
                 crate::config::AgentProvider::ClaudeCode,
-                super::super::sessions::Provenance {
-                    program: "sh".into(),
-                    argv: Vec::new(),
-                    env_keys: Vec::new(),
-                    model: None,
-                    effort: None,
-                    mode: None,
-                    prompt_bytes: 0,
-                },
-                super::super::sessions::LaunchShape::default(),
+                sh_provenance(),
+                Default::default(),
             )
             .unwrap();
+        await_turn_end(&harness, &handle).await;
+        harness.sessions.seal_turn(&handle, 1, 3);
 
-        assert!(
-            !harness.turn_minted_task(&handle, 1),
-            "a launch that never handed out a task must not look like one that did"
-        );
         let created = harness.new_task(&handle, 1);
         assert_eq!(created.task.task_id, task_id(&handle, 1));
-        assert!(
-            harness.turn_minted_task(&handle, 1),
-            "minting must record on the turn, or the completion push never fires"
-        );
+        assert_eq!(created.task.status, rmcp::model::TaskStatus::Completed);
+        assert_eq!(created.task.status_message.as_deref(), Some("turn 1 exited 3"));
         // The handle must be reachable WITHOUT parsing the task id.
         let meta = created.meta.expect("_meta carries the session handle");
         assert_eq!(
             meta.0.get("io.hyprpilot/session").and_then(|v| v.as_str()),
             Some(handle.as_str())
         );
+    }
+
+    /// SEP-2663: a terminal task never changes. Turn 1's completed
+    /// payload used to be rebuilt from the session's LIVE state, so turn
+    /// 2 starting turned it into `running` with no exit code.
+    #[tokio::test]
+    async fn a_completed_task_is_unchanged_by_the_next_turn() {
+        let harness = task_harness();
+        let handle = harness
+            .sessions
+            .spawn(
+                sh("exit 0"),
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                sh_provenance(),
+                Default::default(),
+            )
+            .unwrap();
+        await_turn_end(&harness, &handle).await;
+        harness.sessions.seal_turn(&handle, 1, 0);
+        let before = serde_json::to_value(harness.task_view(&task_id(&handle, 1)).unwrap()).unwrap();
+
+        let turn = harness
+            .sessions
+            .respawn(&handle, sh("sleep 30"), sh_provenance())
+            .unwrap();
+        assert_eq!(turn, 2, "respawn reports the turn it started");
+        let after = serde_json::to_value(harness.task_view(&task_id(&handle, 1)).unwrap()).unwrap();
+        assert_eq!(before, after, "turn 1's terminal task moved when turn 2 started");
+        assert!(before.to_string().contains("\"exitCode\":0"), "{before}");
+
+        harness.sessions.kill(&handle).await;
+    }
+
+    /// A cancel addressed to turn 1 must never reach turn 2. The kill
+    /// used to read "the current turn" after the check, so a turn ending
+    /// in between let the cancel land on its replacement.
+    #[tokio::test]
+    async fn cancelling_an_old_turn_never_kills_the_new_one() {
+        let harness = task_harness();
+        let handle = harness
+            .sessions
+            .spawn(
+                sh("exit 0"),
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                sh_provenance(),
+                Default::default(),
+            )
+            .unwrap();
+        await_turn_end(&harness, &handle).await;
+        harness
+            .sessions
+            .respawn(&handle, sh("sleep 30"), sh_provenance())
+            .unwrap();
+
+        assert_eq!(harness.sessions.kill_turn(&handle, 1).await, Some(false));
+        let (outcome, running) = harness
+            .sessions
+            .with(&handle, |s| (s.turn_record(2).map(|r| r.outcome), s.status()))
+            .unwrap();
+        assert_eq!(outcome, Some(TurnOutcome::Running), "turn 2 must not be stamped killed");
+        assert_eq!(running, super::super::sessions::SessionStatus::Running);
+
+        assert_eq!(harness.sessions.kill_turn(&handle, 2).await, Some(true));
+    }
+
+    /// `tasks/update` acknowledges a task that exists and refuses one
+    /// that does not; this is the existence check behind it.
+    #[tokio::test]
+    async fn a_task_exists_only_for_a_turn_that_ran() {
+        let harness = task_harness();
+        let handle = harness
+            .sessions
+            .spawn(
+                sh("exit 0"),
+                "p".into(),
+                crate::config::AgentProvider::ClaudeCode,
+                sh_provenance(),
+                Default::default(),
+            )
+            .unwrap();
+        assert!(harness.has_turn(&handle, 1));
+        assert!(!harness.has_turn(&handle, 2));
+        assert!(!harness.has_turn("nope", 1));
+    }
+
+    #[test]
+    fn a_turn_is_labelled_from_a_fixed_vocabulary() {
+        assert_eq!(turn_label(2, &TurnOutcome::Exited(0)), "turn 2 exited 0");
+        assert_eq!(turn_label(2, &TurnOutcome::Killed), "turn 2 killed");
+        assert_eq!(turn_label(2, &TurnOutcome::Steered), "turn 2 steered");
     }
 
     /// An unknown or evicted session must produce an ERROR, never a

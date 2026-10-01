@@ -129,9 +129,11 @@ pub(crate) fn build_mcp_registry_with(
             auto_injected.push("passthrough");
         }
         // Skills last so it lands first in the list.
+        let prompts = effective_prompt_sources_with(profile, &mcp_cfg);
         if let Some(auto) = skills.and_then(|skills_arc| {
             crate::mcp::auto_inject::build_skills_definition(
                 skills_arc,
+                &prompts,
                 &mcp_cfg,
                 std::path::PathBuf::from("<auto-injected:hyprpilot mcp skills>"),
             )
@@ -210,6 +212,38 @@ pub(crate) fn effective_mcp_with(profile: &ProfileConfig) -> crate::config::McpC
 /// `mcp.skills` (root `[[patches]]` already folded upstream).
 fn effective_skills_with(profile: &ProfileConfig) -> Vec<crate::config::ResolvedSkillEntry> {
     effective_mcp_with(profile).resolved_skills()
+}
+
+/// The prompts the skills server serves for this launch: the profile's
+/// own `system_prompt` files (unless `[mcp.skills] system_prompts` is
+/// off) and the `[[mcp.skills.prompts]]` directories. Every
+/// `system_prompt` entry passes, `inject = false` ones included — that
+/// flag decides what is baked in at launch, and a prompt kept out of the
+/// launch is exactly one worth invoking on demand.
+fn effective_prompt_sources_with(
+    profile: &ProfileConfig,
+    mcp_cfg: &crate::config::McpConfig,
+) -> crate::mcp::skills::prompts::PromptSources {
+    let passes = mcp_cfg
+        .skills
+        .as_ref()
+        .map_or(crate::config::mcp::DEFAULT_SYSTEM_PROMPTS, |skills| {
+            skills.passes_system_prompts()
+        });
+    let files = if passes {
+        profile
+            .system_prompt
+            .iter()
+            .flatten()
+            .map(|entry| crate::paths::resolve_user(&entry.file.to_string_lossy()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    crate::mcp::skills::prompts::PromptSources {
+        files,
+        dirs: mcp_cfg.resolved_prompts(),
+    }
 }
 
 /// Build the per-launch skills registry from the patched profile.

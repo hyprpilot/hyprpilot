@@ -87,6 +87,12 @@ name = "hyprpilot"
 
 [patches.mcp.skills]
 name = "hyprpilot-skills"
+# `system_prompts` — also serve the launched profile's own
+# `system_prompt` files as MCP prompts (and `hyprpilot://prompts/<name>`
+# resources), so an edited system prompt can be re-invoked mid-session
+# instead of waiting for a relaunch. Snake_case for the duplicate-key
+# reason noted on the harness block above.
+system_prompts = true
 
 # `[mcp.passthrough]` — forwards each declared tool call as a JSON POST
 # to an HTTP endpoint and returns the response verbatim. Off, and no

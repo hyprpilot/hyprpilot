@@ -259,13 +259,27 @@ impl Subscriptions {
     /// Deliver `notifications/resources/list_changed`. Same channel
     /// choice as [`Self::resource_updated`].
     pub(super) async fn resource_list_changed(&self, peer: Option<&rmcp::service::Peer<RoleServer>>) {
+        self.list_changed(peer, ListKind::Resources).await;
+    }
+
+    /// Deliver `notifications/prompts/list_changed`. Same channel choice
+    /// as [`Self::resource_updated`].
+    pub(super) async fn prompt_list_changed(&self, peer: Option<&rmcp::service::Peer<RoleServer>>) {
+        self.list_changed(peer, ListKind::Prompts).await;
+    }
+
+    async fn list_changed(&self, peer: Option<&rmcp::service::Peer<RoleServer>>, kind: ListKind) {
         let mut outcomes = Vec::new();
         for sink in &self.streams().await {
-            outcomes.push(match sink.notify_resource_list_changed().await {
+            let sent = match kind {
+                ListKind::Resources => sink.notify_resource_list_changed().await,
+                ListKind::Prompts => sink.notify_prompt_list_changed().await,
+            };
+            outcomes.push(match sent {
                 Ok(()) => StreamOutcome::Delivered,
                 Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => StreamOutcome::Declined,
                 Err(err) => {
-                    tracing::debug!(%err, "mcp::server: subscription send failed");
+                    tracing::debug!(%err, ?kind, "mcp::server: subscription send failed");
                     StreamOutcome::Broken
                 }
             });
@@ -276,10 +290,21 @@ impl Subscriptions {
         let Some(peer) = peer else {
             return;
         };
-        if let Err(err) = peer.notify_resource_list_changed().await {
-            tracing::debug!(%err, "mcp::server: resource list-changed notification failed");
+        let sent = match kind {
+            ListKind::Resources => peer.notify_resource_list_changed().await,
+            ListKind::Prompts => peer.notify_prompt_list_changed().await,
+        };
+        if let Err(err) = sent {
+            tracing::debug!(%err, ?kind, "mcp::server: list-changed notification failed");
         }
     }
+}
+
+/// Which listing a `list_changed` notification invalidates.
+#[derive(Debug, Clone, Copy)]
+enum ListKind {
+    Resources,
+    Prompts,
 }
 
 /// Accept a `subscriptions/listen` opt-in for the two categories the
@@ -303,104 +328,6 @@ pub(super) fn accept_resource_subscriptions(
         .map(|uris| uris.iter().filter(|uri| known_uri(uri)).cloned().collect());
 
     Some(accepted)
-}
-
-/// Answer `initialize`, recording the NEGOTIATED protocol version as the
-/// peer's — not the one it asked for.
-///
-/// rmcp's in-loop default records the REQUESTED version and never
-/// revisits it, while the pre-loop handshake we no longer use overwrote
-/// it with the negotiated one. Left alone, a client asking for a
-/// revision outside [`supported_protocol_versions`] is told we
-/// negotiated down and then served that revision's result shapes
-/// anyway — `resultType` on a session that agreed `2025-11-25`. That is
-/// the same failure the `ttlMs` stamp exists for: a client validating
-/// the revision it was handed rejects the payload, and the whole
-/// listing goes with it.
-///
-/// The negotiation rule mirrors rmcp's `negotiate_protocol_version`
-/// (`pub(crate)`, so it cannot be called): **sending `initialize` is
-/// itself the choice of legacy semantics**, whatever version the request
-/// names, because `2026-07-28` replaced the handshake with per-request
-/// metadata. So a legacy version we support is echoed, and anything else
-/// — a modern revision, or one we do not implement — negotiates down to
-/// the newest version in our set that still has a handshake.
-///
-/// Answering `2026-07-28` to an `initialize` would be the `ttlMs` bug
-/// from the other side: a handshake client told it agreed a revision
-/// whose result shapes it never asked to parse. Modern clients are
-/// unaffected — they open with `server/discover`, never `initialize`.
-pub(super) fn initialize_negotiated<H: ServerHandler>(
-    handler: &H,
-    request: rmcp::model::InitializeRequestParams,
-    context: &rmcp::service::RequestContext<RoleServer>,
-) -> rmcp::model::InitializeResult {
-    let supported = handler.supported_protocol_versions();
-    let mut info = handler.get_info();
-    info.protocol_version =
-        if is_legacy_version(&request.protocol_version) && supported.contains(&request.protocol_version) {
-            request.protocol_version.clone()
-        } else {
-            // Unwrap-free: `supported_protocol_versions` is the constant
-            // above, which carries four handshake revisions.
-            newest_legacy_version(&supported).unwrap_or(info.protocol_version)
-        };
-
-    let mut peer_info = request;
-    peer_info.protocol_version = info.protocol_version.clone();
-    context.peer.set_peer_info(peer_info);
-    info
-}
-
-/// Whether `version` predates `2026-07-28`, the revision that replaced
-/// the `initialize` handshake with per-request metadata.
-fn is_legacy_version(version: &ProtocolVersion) -> bool {
-    version.as_str() < ProtocolVersion::V_2026_07_28.as_str()
-}
-
-/// The newest of `versions` that still has an `initialize` handshake.
-fn newest_legacy_version(versions: &[ProtocolVersion]) -> Option<ProtocolVersion> {
-    versions
-        .iter()
-        .filter(|version| is_legacy_version(version))
-        .max_by_key(|version| version.as_str())
-        .cloned()
-}
-
-/// Start serving from the connection's FIRST byte, with no handshake
-/// phase of our own.
-///
-/// `ServiceExt::serve` runs rmcp's pre-loop handshake, which handles a
-/// non-`initialize` opener INLINE — `service.handle_request(..).await`
-/// completes before the serve loop is spawned. A long-lived opener
-/// therefore deadlocks the process: `subscriptions/listen` acknowledges
-/// through `Peer::send_notification`, which awaits a oneshot only the
-/// loop can fire, so the ack waits on a loop that is waiting on the ack.
-/// Nothing is read or written again, ever.
-///
-/// That is not a hypothetical ordering. Claude Code's v2 MCP runtime
-/// probes `server/discover` on a DISPOSABLE second process, then opens
-/// the real transport with `subscriptions/listen` as its first request —
-/// so the deadlock is the normal path for a server that implements
-/// subscriptions, and only for those. It reports `connected` (the throwaway
-/// probe succeeded) and then times out fetching tools.
-///
-/// `serve_directly` spawns the loop from byte zero, so every request —
-/// opener included — runs in its own task. `initialize` still negotiates
-/// against `supported_protocol_versions` and still records `peer_info`,
-/// but the in-loop default records the version the client ASKED for
-/// rather than the negotiated one — see `initialize_negotiated`, which
-/// every server overrides `initialize` to use.
-pub(super) fn serve_from_first_byte<H, T, E, A>(
-    handler: H,
-    transport: T,
-) -> rmcp::service::RunningService<RoleServer, H>
-where
-    H: ServerHandler,
-    T: rmcp::transport::IntoTransport<RoleServer, E, A>,
-    E: std::error::Error + Send + Sync + 'static,
-{
-    rmcp::service::serve_directly(handler, transport, None)
 }
 
 /// Return once the MCP transport closes or a termination signal
@@ -615,29 +542,6 @@ mod tests {
         );
     }
 
-    /// Sending `initialize` IS the choice of legacy semantics — the
-    /// revision it names does not override that, because `2026-07-28`
-    /// replaced the handshake with per-request metadata. So a handshake
-    /// naming a modern revision negotiates down rather than being
-    /// echoed, or the client is told it agreed result shapes it never
-    /// asked to parse. A modern client is unaffected: it opens with
-    /// `server/discover` and never reaches this rule.
-    #[test]
-    fn a_handshake_never_agrees_a_post_handshake_revision() {
-        let supported = supported_protocol_versions();
-
-        assert!(is_legacy_version(&ProtocolVersion::V_2025_11_25));
-        assert!(
-            !is_legacy_version(&ProtocolVersion::V_2026_07_28),
-            "the revision that retired the handshake is not a handshake revision"
-        );
-        assert_eq!(
-            newest_legacy_version(&supported),
-            Some(ProtocolVersion::V_2025_11_25),
-            "what an `initialize` naming anything newer has to come back with"
-        );
-    }
-
     /// The fields `2026-07-28` makes REQUIRED on a cacheable result.
     /// Omitting them is not a partial failure — a validating client
     /// rejects `tools/list` and the session comes up with no tools at
@@ -764,7 +668,7 @@ mod tests {
         requested.resource_subscriptions = Some(vec![
             "hyprpilot://sessions/abc".into(),
             "file:///etc/passwd".into(),
-            "hyprpilot://skills/git-commit".into(),
+            "skill://git-commit/SKILL.md".into(),
         ]);
 
         let accepted = accept_resource_subscriptions(&requested, |uri| uri.starts_with("hyprpilot://sessions/"))

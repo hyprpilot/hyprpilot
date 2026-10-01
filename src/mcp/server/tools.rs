@@ -15,10 +15,10 @@
 use clap::Args;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo, Tool,
+    ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::ServerHandler;
+use rmcp::{ServerHandler, ServiceExt};
 
 use crate::config::mcp::{DEFAULT_HARNESS_SERVER_NAME, DEFAULT_SKILLS_SERVER_NAME, DEFAULT_TOOLS_SERVER_NAME};
 
@@ -55,24 +55,14 @@ impl ServerHandler for ToolsServer {
         super::rpc::supported_protocol_versions()
     }
 
-    /// Record the negotiated protocol version as the peer's, per
-    /// `rpc::initialize_negotiated`.
-    async fn initialize(
-        &self,
-        request: rmcp::model::InitializeRequestParams,
-        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
-        Ok(super::rpc::initialize_negotiated(self, request, &context))
-    }
-
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut caps = ServerCapabilities::default();
         // Fixed for the life of the process.
         let mut tools = rmcp::model::ToolsCapability::default();
         tools.list_changed = Some(false);
         caps.tools = Some(tools);
 
-        ServerInfo::new(caps)
+        ServerConfig::new(caps)
             .with_server_info(Implementation::new(
                 DEFAULT_TOOLS_SERVER_NAME.to_string(),
                 env!("CARGO_PKG_VERSION").to_string(),
@@ -165,8 +155,7 @@ pub async fn run_tools(args: ToolsArgs, _config: super::ConfigSource) -> anyhow:
         return super::http::serve_http(handler, &args.serve, DEFAULT_TOOLS_SERVER_NAME).await;
     }
 
-    let (stdin, stdout) = rmcp::transport::io::stdio();
-    let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
+    let running = handler.serve(rmcp::transport::io::stdio()).await?;
 
     wait_for_shutdown(running).await;
 

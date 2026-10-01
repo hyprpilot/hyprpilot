@@ -11,7 +11,7 @@ The bare invocation **is** the launch — hyprpilot is one binary, there is no `
 hyprpilot [PROFILE] [flags] [-- <provider args>]
 hyprpilot profiles [--json]
 hyprpilot mcp serve                          # general tools (`open`)
-hyprpilot mcp skills [--skill-dir <json>]…   # the skill catalogue
+hyprpilot mcp skills [--skill-dir <json>]…   # the skill catalogue and prompts
 hyprpilot mcp harness [--max-sessions <n>]   # spawn/drive agent sessions
 hyprpilot mcp passthrough [--tool <json>]…   # declared tools forwarded to HTTP endpoints
 ```

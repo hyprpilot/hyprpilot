@@ -220,16 +220,6 @@ pub(crate) struct TurnRecord {
     /// and file paths are only recoverable from here — which is what a
     /// terminal SEP-2663 task needs to keep reporting the same bytes.
     pub provenance: Provenance,
-    /// Whether a SEP-2663 task handle was actually handed to the caller
-    /// for this turn.
-    ///
-    /// Recorded at mint time rather than re-derived when the turn ends,
-    /// because the two moments see different things: a request carries
-    /// per-request `_meta` capabilities, while the exit hook has only the
-    /// peer's `initialize` info. Deriving it late would silently skip the
-    /// completion push for a client that declared tasks the way the spec
-    /// actually documents — per request.
-    pub task_minted: bool,
     /// ISO 8601, captured when the turn started.
     ///
     /// Stored as the wire string rather than a `SystemTime` because that
@@ -484,7 +474,7 @@ impl SessionTable {
         handle: &str,
         mut command: SpawnCommand,
         provenance: Provenance,
-    ) -> std::result::Result<(), RespawnError> {
+    ) -> std::result::Result<u32, RespawnError> {
         let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let session = guard.get_mut(handle).ok_or(RespawnError::Unknown)?;
         if session.status() == SessionStatus::Running {
@@ -520,7 +510,6 @@ impl SessionTable {
             // previous turn's argv, model and prompt size, which is the
             // one thing a per-turn record exists to prevent.
             provenance: provenance.clone(),
-            task_minted: false,
             started_at: rmcp::task_manager::current_timestamp(),
             started_at_wall: now,
             pid: launched.pid,
@@ -534,7 +523,9 @@ impl SessionTable {
         session.done = launched.done;
         session.last_turn_at = now;
 
-        Ok(())
+        // Read under the same lock that assigned it: a second read after
+        // release could already see a later turn.
+        Ok(session.turn)
     }
 
     /// Drop a session from the table, removing its transcript directory.
@@ -617,7 +608,14 @@ impl SessionTable {
     /// unknown handle, `Some(was_running)` otherwise — killing an
     /// already-exited session is a no-op, not an error.
     pub(crate) async fn kill(&self, handle: &str) -> Option<bool> {
-        self.terminate(handle, TurnOutcome::Killed).await
+        self.terminate(handle, TurnOutcome::Killed, None).await
+    }
+
+    /// Terminate `turn` and nothing else — what `tasks/cancel` needs.
+    /// `Some(false)` when that turn has already ended, even if a later
+    /// one is running: a cancel addressed to turn N must never reach N+1.
+    pub(crate) async fn kill_turn(&self, handle: &str, turn: u32) -> Option<bool> {
+        self.terminate(handle, TurnOutcome::Killed, Some(turn)).await
     }
 
     /// The body both [`kill`] and [`interrupt`] run, differing only in
@@ -634,28 +632,38 @@ impl SessionTable {
     ///
     /// [`kill`]: SessionTable::kill
     /// [`interrupt`]: SessionTable::interrupt
-    async fn terminate(&self, handle: &str, stamp: TurnOutcome) -> Option<bool> {
-        // Clone the bits we need and drop the lock: this awaits.
-        let target = self.with(handle, |s| (s.pgid, s.completion(), s.handle.clone()))?;
-        let (pgid, mut done, handle) = target;
-        if done.borrow().is_some() {
+    async fn terminate(&self, handle: &str, stamp: TurnOutcome, expected: Option<u32>) -> Option<bool> {
+        // Clone the bits we need and drop the lock: this awaits. The
+        // turn is captured WITH its process group and watch, because they
+        // describe one turn and the lock is about to be released.
+        let target = self.with(handle, |s| (s.turn, s.pgid, s.completion(), s.handle.clone()))?;
+        let (turn, pgid, mut done, handle) = target;
+        if expected.is_some_and(|wanted| wanted != turn) || done.borrow().is_some() {
             return Some(false);
         }
-        // Stamp only a turn that is still Running, in ONE lock
-        // acquisition. Checking `done` and stamping under two separate
-        // locks let a session that exited naturally in between get marked
-        // `Killed` anyway — its task would then report `cancelled` for a
-        // turn that completed normally. Re-reading the outcome here, under
-        // the same lock that writes it, closes that window.
-        self.with_mut(&handle, |session| {
-            let current = session.turn;
-            if let Some(record) = session.turns.iter_mut().find(|r| r.turn == current) {
-                if record.outcome == TurnOutcome::Running && session.done.borrow().is_none() {
-                    record.outcome = stamp;
-                    record.finished_at = Some(rmcp::task_manager::current_timestamp());
+        // Stamp only THAT turn, only while it is still current and still
+        // running, in ONE lock acquisition. Between the capture above and
+        // here the turn can exit and a `session_send` can start the next
+        // one — stamping "whatever is current" then marked the NEW turn
+        // `Killed` while it ran, and `seal_turn` never overwrites a kill.
+        let still_ours = self
+            .with_mut(&handle, |session| {
+                if session.turn != turn || session.done.borrow().is_some() {
+                    return false;
                 }
-            }
-        });
+                match session.turns.iter_mut().find(|r| r.turn == turn) {
+                    Some(record) if record.outcome == TurnOutcome::Running => {
+                        record.outcome = stamp;
+                        record.finished_at = Some(rmcp::task_manager::current_timestamp());
+                        true
+                    }
+                    _ => false,
+                }
+            })
+            .unwrap_or(false);
+        if !still_ours {
+            return Some(false);
+        }
         signal_group(pgid, nix::sys::signal::Signal::SIGTERM);
         if await_exit(&mut done).await.is_err() {
             tracing::warn!(%handle, pgid, "mcp harness: session ignored SIGTERM; escalating to SIGKILL");
@@ -698,7 +706,7 @@ impl SessionTable {
             table: Some(Arc::clone(self)),
             handle: handle.to_string(),
         };
-        self.terminate(handle, TurnOutcome::Steered).await;
+        self.terminate(handle, TurnOutcome::Steered, Some(claim)).await;
 
         Ok((Some(claim), guard))
     }
@@ -765,7 +773,6 @@ impl SessionTable {
                 turn: 1,
                 outcome: TurnOutcome::Running,
                 provenance: provenance.clone(),
-                task_minted: false,
                 started_at: rmcp::task_manager::current_timestamp(),
                 started_at_wall: now,
                 pid,

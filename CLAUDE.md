@@ -104,14 +104,16 @@ Key `src/` modules:
   `harness_server.rs`
   (`mcp harness` — protocol + tool dispatch) over `harness.rs` (the
   session-driving logic) and `sessions/` (the owned-session store).
-  `skills/` = `SkillsRegistry` + the `SKILL.md` loader, plus
-  `wire_metadata.rs` / `wire_references.rs` / `wire_time.rs` (the MCP
-  wire-shape projection, beside the loader whose frontmatter they read
-  and whose `split_frontmatter` `wire_references` reuses for a
-  reference's own fence) — under `mcp/`
-  because everything it feeds exists for the skills server. `resolve`
-  builds one per launch solely to gate that server's injection (skills
-  is the only server also gated on content).
+  `skills/` = `SkillsRegistry` + the `SKILL.md` loader (whose `walk`
+  is the ONE tree walker discovery and bundle listing share), plus
+  `prompts.rs` (`PromptSources` + the prompt-file loader) and
+  `wire_files.rs` / `wire_metadata.rs` / `wire_references.rs` /
+  `wire_time.rs` (the MCP wire-shape projection, beside the loader whose
+  frontmatter they read and whose `split_frontmatter` `wire_references`
+  and `prompts` reuse) — under `mcp/` because everything it feeds exists
+  for the skills server. `resolve` builds the registry and the prompt
+  sources per launch solely to gate that server's injection (skills is
+  the only server also gated on content).
 - `profiles.rs` — the `profiles` subcommand.
 - `watch.rs` — general directory watching: `WatchRoot` in, debounced
   `WatchSignal` out. Knows nothing about skills (no slugs, no
@@ -156,7 +158,7 @@ hyprpilot review -- --resume    # everything after `--` is forwarded verbatim
 hyprpilot profiles              # table of configured profiles
 hyprpilot profiles --json       # machine-readable
 hyprpilot mcp serve             # general tools (`open`)
-hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[],"watch":true}'
+hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[],"watch":true}' --prompt-file ~/AGENTS.md
 hyprpilot mcp harness --max-sessions 64 --max-live-sessions 0
 hyprpilot mcp passthrough --tool '{"name":"decide","inputSchema":{"type":"object"},"url":"http://127.0.0.1:8080/decide"}'
 
@@ -464,10 +466,13 @@ current turn; `turnFinished` is what the ttl reads, because an earlier
 turn is immutable however the session is doing now. Guessing the boundary from the events was
 a live bug twice — a heuristic mis-attributed one turn's error to the
 next, then an unbounded slice swallowed every later turn — which is what
-the per-turn layout retires rather than patches. `resources/list` names the indexes and ONE entry per session,
-never one per view — four views across 64 retained sessions is 256 rows
-every client pays for on connect, the bloat the skills listing already
-measured and cut. The views ride a resource TEMPLATE instead.
+the per-turn layout retires rather than patches. `resources/list` names the two indexes and NOTHING else: 2026-07-28
+says a listing "MUST NOT vary … as a side effect of other requests", and a
+row per session appeared on `spawn` and embedded live status a turn start
+never announced. Sessions are found through `hyprpilot://sessions` and
+addressed through three TEMPLATES (`{handle}`, `{handle}/{view}`,
+`{handle}/turns/{turn}/{view}`), and the listing never changing is why
+the harness advertises `resources.listChanged: false`.
 Both INDEXES carry `ttlMs: 0`: `hyprpilot://sessions` embeds live per-session status and nothing fires `resources/updated` for the index URI, and for profiles, config is
 re-read per call and nothing watches that file, so there is no signal to
 invalidate it with. `done.json` and the breadcrumb are deliberately NOT
@@ -499,36 +504,30 @@ view is refused rather than read as the status — the subscription filter
 is built on the same parser, so accepting one would acknowledge a URI
 that can never be served.
 
-**All four serve from the connection's FIRST byte**
-(`rpc::serve_from_first_byte`, wrapping rmcp's `serve_directly`), never
-`ServiceExt::serve`. `serve` runs a pre-loop handshake that handles a
-non-`initialize` opener INLINE — `handle_request().await` completes
-before the serve loop is spawned — so a LONG-LIVED opener deadlocks the
+**All four serve through rmcp's own `ServiceExt::serve`**, which needs
+3.4 or later. Before 3.4 its pre-loop handshake handled a
+non-`initialize` opener INLINE — `handle_request().await` completed
+before the serve loop was spawned — so a LONG-LIVED opener deadlocked the
 process: `subscriptions/listen` acknowledges through
 `Peer::send_notification`, which awaits a oneshot only the loop can
-fire, and the loop does not exist yet. Nothing is read or written
-again, ever. That is not hypothetical: Claude Code's v2 MCP runtime
-probes `server/discover` on a DISPOSABLE second process, then opens the
-real transport with `subscriptions/listen` as its first request — so
-for a server implementing subscriptions this ordering is the NORMAL
-path. It reported `connected` (the throwaway probe succeeded) and then
-`tools fetch failed`, on one account only, because the runtime is
-gated per-account. `mcp serve` was immune twice over: it advertises no
-`listChanged`, so no listen is opened, and it does not override
-`accepted_subscription_filter`, so rmcp answers `-32601` before
-`establish`. Negotiation still runs against
-`supported_protocol_versions`, but rmcp's in-loop `initialize` records
-the version the client ASKED for rather than the negotiated one — so
-every server overrides `initialize` to use
-`rpc::initialize_negotiated`. Without it a client told `2025-11-25` is
-still served `2026-07-28` result shapes, which is the `ttlMs` failure
-again from the other side. Requests now also run CONCURRENTLY, so a
-client that pipelines past `initialize` can be answered before that
-version is recorded; the spec forbids it, and nothing is owed to a
-client that does. Tests drive every opener
-(`initialize`-first, `discover`-first, `listen`-first) because rmcp
-gives the first request its own code path; a smoke that only opens
-with `initialize` covers one of three.
+fire, and the loop did not exist yet. That was not hypothetical: Claude
+Code's v2 MCP runtime probes `server/discover` on a DISPOSABLE second
+process, then opens the real transport with `subscriptions/listen` as
+its first request — so for a server implementing subscriptions this
+ordering is the NORMAL path. It reported `connected` (the throwaway probe
+succeeded) and then `tools fetch failed`. rmcp 3.4 (rust-sdk #1263) now
+hands that opener to the loop as its first message, and its handshake
+records the NEGOTIATED version as the peer's, so the in-tree
+`serve_directly` wrapper and the `initialize` override that patched the
+version are gone. Two consequences: `serve` returns only once the first
+request arrives, so the skills watcher relay and the harness exit hook
+start then (an edit before it is queued on the armed channel, not lost);
+and a test must write its opener before awaiting `serve`. Tests drive
+every opener (`initialize`-first, `discover`-first, `listen`-first)
+because rmcp gives the first request its own code path; a smoke that
+only opens with `initialize` covers one of three. Sending `initialize`
+is itself the choice of legacy semantics — one naming `2026-07-28`
+negotiates down to `2025-11-25`, pinned by the same tests.
 
 `server/rpc.rs` owns the plumbing all four import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
@@ -549,10 +548,15 @@ negotiates down.
 **Every cacheable result MUST carry `ttlMs` + `cacheScope`**
 (`Transport::result_ttl_ms` / `rpc::RESULT_CACHE_SCOPE`, stamped at
 all THIRTEEN `with_ttl_ms` sites: `tools/list` on each server, plus
-`resources/list`, `resources/templates/list` and both `resources/read`
-arms on skills, plus the harness's two indexes and its session views —
-ten of which take the transport's ttl and three of which are already
-`0` or computed).
+`resources/list`, `resources/templates/list`, `resources/read` and
+`prompts/list` on skills, plus the harness's two indexes and its session
+views — ten of which take the transport's ttl and three of which are
+already `0` or computed). The skills server's SEP-2640 results
+(`skills/list`, `skills/get`, `resources/directory/read`) are hand-built
+`CustomResult`s stamped by `skills_server::custom_result` instead, which
+also adds `resultType: "complete"` ONLY for a peer at `2026-07-28` or
+later: rmcp strips that field from its own result types for an older
+peer but passes a custom result through untouched.
 `2026-07-28` makes them REQUIRED — `ListToolsResult extends
 PaginatedResult, CacheableResult`, and `CacheableResult` declares both
 without `?` — while rmcp models them `Option` for back-compat and
@@ -607,18 +611,26 @@ to a `2025-11-25` client that does receive the broadcasts.
 the watcher's on a debounced filesystem event, or `reload`'s on
 demand — DIFFS the catalogue (`CatalogueDelta`) rather than firing
 blind: any change emits `resources/list_changed` plus
-`resources/updated` per changed slug and for the catalogue index, and a
+`resources/updated` for each changed skill's `SKILL.md` URI, each
+changed bundle file's `skill://` URI and the catalogue index, and a
 rescan that changed nothing emits **nothing**. Firing spuriously would
 make every rescan cost a full re-fetch and teach clients to ignore us.
-A changed reference FINGERPRINT updates every citing skill but NOT the
-index, which renders a reference count and never a reference's content.
+A changed reference FINGERPRINT updates that reference's own `file://`
+URI — never its citers, whose raw `SKILL.md` did not change — and NOT
+the index, which renders a reference count and never a reference's
+content. A changed prompt fires `prompts/list_changed` (MCP has no
+per-prompt update, so a body edit IS a list change) plus `updated` for
+its `hyprpilot://prompts/<name>`. A file shared by a skill and the skill
+nested in it is one path, announced once. The watcher drops `Access`
+events (opens and closes): the rescan's own walk OPENS every watched
+directory, so counting them armed the next rescan every quiet window,
+forever. Changes under hidden entries never signal either.
 Both callers reach the wire only through `announce()`, so the watcher
 and the tool cannot drift into announcing different things for one
 delta. On the harness, a turn
-starting emits `resources/updated` for its session; a turn ending emits
-`updated` AND `list_changed`, because the listing embeds live status;
-`spawn` emits `list_changed`, and `session_kill` emits both. The session
-listing mutates, so under this ttl it has to say so. The exit hook is installed
+starting emits `resources/updated` for its session's views; a turn ending
+emits `updated` for the session's views and that turn's; `session_kill`
+emits `updated`. No `list_changed` — the listing is fixed. The exit hook is installed
 UNCONDITIONALLY: `notifyOnComplete` names the Claude channel push alone,
 and gating the whole hook on it also skipped `seal_turn` and the session
 `resources/updated`, which are correctness rather than noise.
@@ -645,7 +657,10 @@ Skills reach the agent **only** through the skills server.
   folded via patches.
 - **Per-server blocks** each carry `enabled`, `name`,
   `autoAcceptTools`, `autoRejectTools`, plus their own fields:
-  `[mcp.skills].dirs` (`Vec<SkillEntry { dir, include, ignore, watch }>`,
+  `[mcp.skills].dirs` / `prompts` (both `Vec<SkillEntry { dir, include,
+  ignore, watch }>`) and `system_prompts` (seeded `true` like `watch`,
+  pinned by `defaults_seed_the_system_prompt_passthrough`, snake_case in
+  the seed for the duplicate-key reason below). `dirs`
   default seed `~/.config/hyprpilot/skills` with `watch = true`. Like
   the harness ceilings, `watch` is SEEDED in `defaults.toml` rather than
   left to Rust: `[mcp.skills]` is nested, so the resolver never
@@ -683,7 +698,7 @@ Skills reach the agent **only** through the skills server.
   survive verbatim. Consequence: patches merge by KEY STRING before
   anything is typed, so writing a `defaults.toml`-seeded key
   (`maxDepth` / `maxSessions` / `maxLiveSessions` /
-  `notifyOnComplete`) in the OTHER
+  `notifyOnComplete` / `systemPrompts` / `timeoutSeconds`) in the OTHER
   spelling reaches serde as a duplicate field and fails config load.
   Loud, pinned by a test, and the reason to write a seeded key the way
   the seed writes it.
@@ -721,34 +736,78 @@ Skills reach the agent **only** through the skills server.
   captain edits. The Rust constants remain only for a `Config` carrying
   no patches, and `defaults_seed_the_harness_ceilings` pins the pair
   equal so they cannot drift.
-- Each skill root is a flat directory of `<slug>/SKILL.md` bundles
-  plus optional per-root `include` (allow-list) and `ignore` glob
-  lists, the same pair `[[mcps]]` entries carry — ignore beats include,
-  and an empty or absent `include` means no allow-list rather than
-  "allow nothing". `SkillsRegistry`
-  scans + first-slug-wins on collision; missing roots warn + skip.
+- **A skill is any directory under a root holding a `SKILL.md`, at any
+  depth** (`loader::walk`, ripgrep's `ignore` walker: hidden and
+  `.gitignore`d entries skipped, symlinks never followed). Its SLUG is
+  its path under the root — `git-commit`, `acme/billing/refunds` — and
+  that path is the identity on every tool and the `<skill-path>` of its
+  `skill://` URIs. The final segment follows the Agent Skills naming
+  rule and MUST equal the frontmatter `name`; a missing `name` or
+  `description`, unparseable frontmatter or a mismatch skips the skill
+  with a warning, because the frontmatter is served verbatim and a
+  SEP-2640 host refuses all of those. Prefix segments are lowercase
+  because the first becomes a URI authority. Per-root `include` /
+  `ignore` globs match the whole path (`*` crosses `/`), ignore beats
+  include, an empty or absent `include` means no allow-list, and
+  ignoring a skill does NOT ignore skills nested in it.
+  `SkillsRegistry` scans + first-path-wins on collision; missing roots
+  warn + skip.
+- **Prompts ride the same server.** `PromptSources { files, dirs }` —
+  the profile's `system_prompt` files when `[mcp.skills]
+  .system_prompts` (all entries, `inject = false` too: that flag decides
+  what is BAKED IN, and a prompt kept out of the launch is the one worth
+  invoking on demand) plus every `*.md` directly inside a
+  `[[mcp.skills.prompts]]` dir. Name = frontmatter `name`, else stem,
+  `[A-Za-z0-9_.-]{1,128}`; files before dirs, first wins. Served as MCP
+  prompts (`prompts.listChanged: true`) AND as `hyprpilot://prompts/
+  <name>` resources, because clients split: Claude Code and opencode
+  make prompts slash commands, Hermes makes them model tools, Codex
+  ignores them — while every one of the four reaches resources. A
+  prompt FILE is watched through its PARENT, non-recursively: an
+  editor's atomic save replaces the inode and a file watch would die
+  with it.
 - **Auto-inject** (`resolve::build_mcp_registry_with` +
   `mcp::auto_inject`, one `build_*_definition` per server): under the
   `[mcp].enabled` master gate, each server injects a stdio entry when
   its own block is enabled. The reserved name replaces any same-named
   configured server. Auto-inject is independent of `mcps` — `mcps = []`
   does not suppress it. **Skills is the only one also gated on
-  content**: an empty registry means nothing to serve, so nothing is
-  injected. Its entry spawns `hyprpilot mcp skills --skill-dir <json> …`
-  (one `--skill-dir` per root, each carrying that root's include and ignore
-  lists and `watch` flag as JSON; `watch` defaults ON when absent, so a
-  hand-written catalogue entry predating the flag still gets a watched
-  root).
-- **`hyprpilot mcp skills`** (`mcp/server/skills_server.rs`): an `rmcp` stdio
-  server. Resources: `hyprpilot://skills` (the catalogue index —
-  markdown; the bare form cannot collide with a slug because every slug
-  URI carries a `skills/` prefix) and `hyprpilot://skills/<slug>` (body
-  **plus a manifest footer**). That is the WHOLE resource surface —
-  there is no reference URI; see the `resources/list` bullet below.
-  Tools: `list_skills`, `read_skill`, `list_skill_references`,
-  `read_skill_references`, `reload` (force a rescan — the FALLBACK for
-  a root the watcher reports degraded or off, and for a reference file
-  outside every root).
+  content**: no skill AND no loadable prompt means nothing to serve, so
+  nothing is injected — and a profile with a `system_prompt` gets the
+  server even with no skills. Its entry spawns `hyprpilot mcp skills
+  --skill-dir <json> … --prompt-dir <json> … --prompt-file <path> …`
+  (each dir JSON carrying that root's include and ignore lists and
+  `watch` flag; `watch` defaults ON when absent, so a hand-written
+  catalogue entry still gets a watched root).
+- **`hyprpilot mcp skills`** (`mcp/server/skills_server.rs`) implements
+  **SEP-2640** (`io.modelcontextprotocol/skills`, `directoryRead:
+  true`): every bundle file is a resource at `skill://<skill-path>/
+  <file>`, served RAW from bytes cached at scan time — a host verifies
+  the bytes against the listed sha256 digest and re-parses the
+  frontmatter against the listing, so the old rendered body + footer
+  would fail both, and re-reading the disk at serve time could hand back
+  bytes matching nothing inside the debounce window or follow a
+  post-scan symlink swap. Custom methods via `on_custom_request`:
+  `skills/list` (every `{ uri, frontmatter, resources: [{ uri, digest,
+  size }] }`, single page, a cursor is refused), `skills/get { uri }`,
+  `resources/directory/read { uri }` (direct children of ANY directory
+  in the namespace — skill root, subdirectory, organizational prefix;
+  derived from the BTreeMap of full file paths, so a directory's
+  children are one range). Unknown uri = `-32602`. Entries also carry a
+  top-level `digest` (the `SKILL.md` one): not in the final SEP, read by
+  Claude Code 2.1.286's dark-launched client (flag `tengu_mcp_skills`,
+  caps a server at 100 skills). opencode, Codex and Hermes implement no
+  SEP-2640 — the TOOLS remain the universal path. A bundle past the SEP
+  limits (512 files / 16 MiB, `wire_files::MAX_*`) is not served.
+  Resources listed: `hyprpilot://skills` (the catalogue index),
+  `skill://<path>/SKILL.md` per skill, `hyprpilot://prompts/<name>` per
+  prompt. Readable but never listed: every other bundle file and each
+  declared reference as `file://<canonical path>`. Tools:
+  `list_skills`, `read_skill` (body with the fence stripped, plus a
+  reference manifest and a `files` manifest, both also as text
+  footers), `list_skill_references`, `read_skill_references`,
+  `read_skill_files { uris }` (bundle files for tool-only and HTTP
+  clients), `reload`.
 - **A reference is addressed by its canonical PATH**, not a slug or a
   name. A path is what the citation IS; a slug-and-name is one of many
   addresses for one shared file, which is exactly what makes double
@@ -777,10 +836,14 @@ Skills reach the agent **only** through the skills server.
   always-bundle default re-sent conventions already in context —
   `read_skill git-commit` was ~34 KB, now 12.6 KB. The manifest is what
   keeps the flipped default from being a silent gap, which is why it
-  also rides the RESOURCE path as a text FOOTER: a resource read returns
-  text plus `_meta`, and many clients never surface `_meta` to the
-  model, so an attached skill would otherwise lose its references with
-  no in-context signal at all.
+  also rides `read_skill`'s TEXT as a footer: many clients never surface
+  structured content to the model. The raw `SKILL.md` resource carries
+  no footer — it is the file verbatim — but its frontmatter still lists
+  `references:`, so an attached skill is not silently reference-less.
+  A reference is NOT part of a skill's SEP `resources` set: the SEP
+  addresses files inside one skill, and these live outside every
+  bundle. Its resource form is `file://` over the canonical path, so the
+  address stays the identity; a manifest row carries it as `uri`.
 - **`list_skill_references { slug }` takes a REQUIRED slug.** A
   whole-catalogue scan was a six-figure payload — the single largest
   thing this server could produce — and per-skill listing answers the
@@ -788,9 +851,9 @@ Skills reach the agent **only** through the skills server.
   skill in hand. `list_skills` does NOT resolve references either (it
   reports `referenceCount`, served purely from cache); resolving there
   would read every declared file of every skill on every catalogue call.
-- **`resources/list` is the catalogue and skill bodies, NOTHING else.**
-  There is no reference URI at all — not per-skill, not per-reference.
-  This is measured, not stylistic: on a 127-skill root the listing is
+- **`resources/list` is the catalogue, one `SKILL.md` per skill and one
+  entry per prompt, NOTHING else.** Supporting files and references are
+  readable by URI but never enumerated. This is measured, not stylistic: on a 127-skill root the listing is
   128 entries / ~105 KB (~26k tokens); adding one bundle entry per skill
   took it to 231 / ~170 KB, 48% of it `_meta`, each bundle entry
   repeating its OWN skill's block verbatim. Enumerating all 479
@@ -852,7 +915,7 @@ Skills reach the agent **only** through the skills server.
   WATCHED, so an edit is rescanned and announced without a tool call.
   **The watcher contract:** armed BEFORE the startup scan (so an edit
   between the scan and the first drain is queued, not lost); the relay
-  is spawned AFTER `serve_from_first_byte` with
+  is spawned AFTER `serve` returns, with
   `running.peer().clone()`, mirroring the harness exit hook, and is
   never an opener and never on a request path — so it cannot
   reintroduce the pre-loop deadlock. Rescans are serialised by a
@@ -911,9 +974,9 @@ verified — check it by hand when you touch it.
   order of how easy they are to miss: `resources/updated` still reaches
   every open `subscriptions/listen` stream (the sinks carry their own
   peer and the registry is shared by every clone); the BROADCAST
-  fallback is gone; `notifications/claude/channel` and
-  `notifications/tasks` are gone; and SEP-2663 tasks are minted only
-  for a client that attaches `clientCapabilities` per request, since
+  fallback is gone; `notifications/claude/channel` is gone (and not
+  advertised there); and SEP-2663 tasks are minted only for a client
+  that attaches `clientCapabilities` per request, since
   `peer_info_for_stateless_request` synthesizes an empty set.
 - **So `ttlMs` is `0` over HTTP** (`Transport::result_ttl_ms`). The 24h
   stdio value is honest only because every mutable surface fires an
@@ -1093,7 +1156,13 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   and `sessions/` stays rmcp-free — it takes a bare `ExitHook` closure
   built in `harness.rs`. **The content is a fixed template**: never
   interpolate agent output, or a spawned agent writes into its parent's
-  context through a path the parent never called.
+  context through a path the parent never called — the outcome is
+  `turn_label`'s fixed vocabulary (`turn N exited C` / `killed` /
+  `steered`). Advertised on stdio ONLY: over HTTP no peer outlives a
+  request, so it could never be sent. It is a deliberate exception to
+  2026-07-28's "no notification the client did not request on a stream":
+  Claude Code opts into it through its own capability, and it is the only
+  completion push any client turns into model context.
 - **Bounded retention counts FINISHED sessions only.** `maxSessions`
   (default 64, `0` retains everything) evicts the oldest *finished*
   ones; a running session is never evicted AND never counted. Counting
@@ -1144,9 +1213,15 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   stream verbatim and must stay unedited.
 - **SEP-2663 Tasks ride alongside, never instead.** `spawn` /
   `session_send` return a `CallToolResponse::Task` **only** when the peer
-  declared `io.modelcontextprotocol/tasks`; every other client gets the
-  exact result it got before, and rmcp independently rejects a task sent
-  to a non-declaring peer. Only the `Ok` arm can become a task — a
+  declared `io.modelcontextprotocol/tasks` AND the request negotiated
+  `2026-07-28` or later (`harness_server::tasks_enabled`); every other
+  client gets the exact result it got before. The version half is ours to
+  check — rmcp's gate reads `initialize` capabilities for an older peer,
+  and SEP-2663 says a server "MUST NOT treat this capability as enabling
+  tasks under that protocol version" — and `tasks/get|update|cancel`
+  answer such a peer `-32021`, as for one that never declared. A task
+  caller gets its task when the turn STARTS: `wait` is ignored in task
+  mode. Only the `Ok` arm can become a task — a
   refused launch stays a `tool_error`, because a task id for work that
   never started can never resolve. The one ungated part is the
   `extensions` key in `initialize`, which is required for `tasks/*` to
@@ -1159,37 +1234,56 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   replaces the `done` watch wholesale, so a previous turn's exit code is
   otherwise unreachable. The session handle rides `CreateTaskResult._meta`
   (`io.hyprpilot/session`) so a caller never has to PARSE the task id.
-- **A terminal task's payload must not MOVE**, so every field of
-  `sessionInfo` is read off the turn's own `TurnRecord` — its
-  `provenance` (model / effort / mode / argv), `pid`, `turnStartedAt`
-  and its file paths. The session's copies of all of those are
+- **A terminal task's payload must not MOVE**, so `describe` reads the
+  turn's `status` and `exitCode` from its own `TurnRecord` — the live
+  session reads `running` once turn N+1 starts — and every field of
+  `sessionInfo` comes off the record too: its `provenance` (model /
+  effort / mode / argv), `pid`, `turnStartedAt` and its file paths. A
+  finished turn also carries `answer` (`transcript::extract`, what
+  `/result` serves) on the synchronous result and the task alike, since
+  the front-capped `text` can miss a long turn's answer. The task is
+  minted from the turn number `respawn` returns from INSIDE its lock,
+  via `sessionInfo.files.turn`, and seeded from the record — a turn that
+  already ended is minted terminal, never `working`. The session's copies of all of those are
   overwritten by the next turn, which is what made a re-polled finished
   task hand back a later turn's answer. Any NEW `sessionInfo` field has
   to come off the record too; sourcing one from the live session is
   invisible until a caller re-polls.
-- **`TurnOutcome::Killed` is stamped in `SessionTable::kill`, not
+- **`TurnOutcome::Killed` is stamped in `SessionTable::terminate`, not
   derived.** The waiter stores `status.code().unwrap_or(-1)` and `code()`
   is `None` for signal death, so a kill, an external signal and a wait
-  error are indistinguishable after the fact. Stamped only past the
-  already-exited early return — reaping a session that finished normally
-  must not report its turn cancelled.
-- **`notifications/tasks` is DOUBLE-GATED**: the peer declared tasks AND
-  a task exists for that turn. The exit hook fires for every turn of
-  every session, so an ungated push would reach a client that opted into
-  nothing. It rides `Peer::send_notification` directly because rmcp
-  refuses to route task notifications through `subscriptions/listen`
-  (`SubscriptionFilter` has no `taskIds` field) — only
-  `resources/list_changed` and `resources/updated` are routable there.
+  error are indistinguishable after the fact. `terminate` captures the
+  TURN with its pgid and watch, and stamps only that turn, only while it
+  is still current and running, in one lock acquisition — stamping
+  "whatever is current" let a turn that ended in between hand its kill to
+  the turn that replaced it, and `seal_turn` never overwrites a kill.
+  `kill_turn` (what `tasks/cancel` uses) passes the expected turn, so a
+  cancel for turn N never reaches N+1.
+- **There is no `notifications/tasks` push.** 2026-07-28 allows it only
+  on a `subscriptions/listen` stream filtered by task id, rmcp's
+  `SubscriptionFilter` has no `taskIds`, and tasks are served to no
+  older revision — so no legal channel exists. Task clients poll
+  `tasks/get` at `pollIntervalMs`; re-add the push when rmcp can route
+  it. `tasks/update` acknowledges a known task (nothing to apply — no
+  `input_required` is ever emitted) and refuses an unknown one `-32602`.
+- **Tools carry annotations and titles** (`harness_tools`): read-only +
+  idempotent on `list_profiles` / `session_list` / `session_status` /
+  `session_read`, destructive on the rest. Codex's approval and Hermes'
+  trust gate read them, so a missing hint is a prompt on every call.
 - **Launches are DETACHED by default.** `wait` defaults to **false** on
   `spawn` / `session_send` (`wait_flag`), so both return as soon as the
   turn starts. Waiting never guaranteed a finished answer — a turn past
   `timeout_seconds` comes back `running` regardless — so it only cost
   the caller its ability to do anything meanwhile; `session_status` is
   the cheap poll that replaces it. `timeout_seconds` is inert unless
-  `wait: true`. Consequence: `session_send`'s lazy `harvest` is
-  load-bearing on the DEFAULT path now, not just an opt-in one — a
-  detached first turn never runs the waiting path, so without it no
-  session could ever be resumed.
+  `wait: true`, and defaults to 45 (`DEFAULT_TIMEOUT_SECS`): opencode
+  abandons a tool call at 60 s and Codex and Hermes at 300 s, so a
+  longer wait only loses the result. Consequence: `session_send`'s lazy
+  `harvest` is load-bearing on the DEFAULT path now, not just an opt-in
+  one — a detached first turn never runs the waiting path, so without it
+  no session could ever be resumed. A harvest is a READ: it never moves
+  `last_turn_at`, which orders `session_list` and eviction, and
+  `tasks/get` does not harvest at all.
 - **Streaming** rides `notifications/progress` when the caller supplies
   a progressToken; a follow ends on session exit, client cancellation,
   or a caller-set limit. MCP tool results are single-shot, so the result
@@ -1514,11 +1608,17 @@ Baseline smokes:
   non-2xx or a dead port.
 - `mcp skills` over a `subscriptions/listen` stream announces a disk
   edit with no `reload`: editing a `SKILL.md` fires
-  `resources/updated` for that slug plus `resources/list_changed`;
-  editing a declared reference fires `updated` for every CITING slug
-  and NOT for the catalogue index; an editor temp file fires nothing.
+  `resources/updated` for its `skill://…/SKILL.md` plus
+  `resources/list_changed`; editing a declared reference fires `updated`
+  for its `file://` URI and NOT for its citers or the catalogue index;
+  editing a prompt file fires `prompts/list_changed`; an editor temp
+  file fires nothing, and an idle sidecar stays idle (no rescan loop).
   A root pointed at a missing directory reports `watch.active: false`
   with `state: degraded` and still answers `tools/list`.
+- `mcp skills` answers `skills/list` with digests that the bytes of a
+  `resources/read` of each listed `skill://` URI hash to, `resultType`
+  only for a `2026-07-28` request, and `resources/directory/read` on an
+  organizational prefix.
 - `hyprpilot profiles` lists configured profiles (empty config →
   validation error naming the empty `[[profiles]]` list).
 - A deliberately broken `config.toml` aborts with a readable garde

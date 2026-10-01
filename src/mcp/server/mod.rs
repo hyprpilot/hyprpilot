@@ -74,8 +74,9 @@ pub enum McpSubcommand {
     Serve(tools::ToolsArgs),
 
     /// Serve the skills catalog. Spawned by the agent vendor when the
-    /// launcher auto-injects the skills entry; resolved skill roots are
-    /// passed as `--skill-dir` args at spawn time.
+    /// launcher auto-injects the skills entry; resolved skill roots and
+    /// prompt sources are passed as `--skill-dir` / `--prompt-dir` /
+    /// `--prompt-file` args at spawn time.
     Skills(skills_server::SkillsArgs),
 
     /// Serve the agent harness — `list_profiles` / `spawn` /

@@ -100,7 +100,8 @@ fn main() -> Result<ExitCode> {
             // The sidecar honors none of the launch flags — reject
             // `--with-config` too (`allow_with_config = false`).
             cli.launch.reject_launch_only_args("mcp", false)?;
-            // The MCP sidecar consumes only its own `--skill-dir` args —
+            // The MCP sidecar consumes only its own argv (`--skill-dir`,
+            // `--prompt-dir`, `--prompt-file`, …) —
             // it never touches the launch/profile config — so
             // `validate()` is skipped deliberately: an invalid launch
             // config (e.g. an empty `[[profiles]]` list) must NOT kill

@@ -1,5 +1,5 @@
-//! Skill loader — parses `<root>/<slug>/SKILL.md` bundles across
-//! every configured root and exposes them via `SkillsRegistry`.
+//! Skill loader — parses every `SKILL.md` bundle under each configured
+//! root, at any depth, and exposes them via `SkillsRegistry`.
 //! Rescans are driven by `crate::watch` (the MCP server watches every
 //! root) and forced by its `reload` tool. Watching was once dropped
 //! because editor and git noise out-ran the debouncer; what makes it
@@ -15,10 +15,12 @@
 //! serve before injecting it.
 
 mod loader;
+pub mod prompts;
 /// Wire-shape projection for the MCP skills server — kept beside the
 /// loader because it reads the frontmatter the loader parsed, and
 /// named `wire_*` so the MCP-facing half stays visibly distinct from
 /// the launcher-facing registry.
+pub mod wire_files;
 pub mod wire_metadata;
 pub mod wire_references;
 pub mod wire_time;
@@ -32,37 +34,55 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 use yaml_serde::Value as YamlValue;
 
-/// Directory-name slug. Constructor enforces the
-/// `[a-z0-9][a-z0-9_-]*` shape so filesystem + RPC lookups share one
-/// ground truth — a string that doesn't parse can't live in the
-/// registry.
+/// A skill's path within its root: the `/`-joined directories leading to
+/// its `SKILL.md`, so `git-commit` for a top-level skill and
+/// `acme/billing/refunds` for a nested one. It is the skill's identity
+/// on every surface and the `<skill-path>` of its `skill://` URIs.
+///
+/// The FINAL segment is the skill's name and follows the Agent Skills
+/// naming rule (1-64 of `[a-z0-9-]`, no leading, trailing or doubled
+/// hyphen), because SEP-2640 makes the URI's last segment equal the
+/// frontmatter `name`. Leading segments are an organizational prefix and
+/// only need to be safe path segments.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SkillSlug(String);
 
 impl SkillSlug {
-    /// Validate `raw` as a skill slug. Rejects empty, path separators,
-    /// `..`, and anything outside `[a-z0-9_-]` (must also start with
-    /// alphanum).
     pub fn parse(raw: &str) -> Result<Self, SlugError> {
         if raw.is_empty() {
             return Err(SlugError::Empty);
         }
-        if raw == "." || raw == ".." {
-            return Err(SlugError::Reserved);
-        }
-        if raw.contains('/') || raw.contains('\\') {
+        if raw.contains('\\') {
             return Err(SlugError::Separator);
         }
-        let mut chars = raw.chars();
-        let first = chars.next().expect("non-empty");
-        if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
-            return Err(SlugError::BadLead);
-        }
-        for c in chars {
-            let ok = c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_';
-            if !ok {
+        let mut segments: Vec<&str> = raw.split('/').collect();
+        let name = segments.pop().expect("split yields at least one segment");
+        for segment in segments {
+            if segment.is_empty() || segment.starts_with('.') {
+                return Err(SlugError::BadSegment(segment.to_owned()));
+            }
+            // Lowercase only: the first segment is a URI authority, which
+            // RFC 3986 compares case-insensitively, so `Acme/x` and
+            // `acme/x` could collapse into one skill in a normalizing
+            // client.
+            if let Some(c) = segment
+                .chars()
+                .find(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.')))
+            {
                 return Err(SlugError::BadChar(c));
             }
+        }
+        if name.is_empty() || name.len() > 64 {
+            return Err(SlugError::NameLength);
+        }
+        if let Some(c) = name
+            .chars()
+            .find(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-'))
+        {
+            return Err(SlugError::BadChar(c));
+        }
+        if name.starts_with('-') || name.ends_with('-') || name.contains("--") {
+            return Err(SlugError::BadHyphen);
         }
         Ok(Self(raw.to_owned()))
     }
@@ -70,6 +90,12 @@ impl SkillSlug {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The final segment — what the frontmatter `name` must equal.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.0.rsplit('/').next().expect("rsplit yields at least one segment")
     }
 }
 
@@ -103,14 +129,16 @@ impl<'de> Deserialize<'de> for SkillSlug {
 pub enum SlugError {
     #[error("slug is empty")]
     Empty,
-    #[error("slug cannot be '.' or '..'")]
-    Reserved,
-    #[error("slug cannot contain path separators")]
+    #[error("slug cannot contain '\\'")]
     Separator,
-    #[error("slug must start with [a-z0-9]")]
-    BadLead,
-    #[error("slug contains invalid character '{0}' — must match [a-z0-9_-]")]
+    #[error("path segment '{0}' is empty or hidden")]
+    BadSegment(String),
+    #[error("skill name must be 1-64 characters")]
+    NameLength,
+    #[error("slug contains invalid character '{0}' — a skill name is [a-z0-9-]")]
     BadChar(char),
+    #[error("skill name cannot start or end with '-' or contain '--'")]
+    BadHyphen,
 }
 
 /// One loaded skill. Carries the full body + frontmatter so the MCP
@@ -275,7 +303,7 @@ mod tests {
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            format!("---\ndescription: {desc}\n---\n\n# {slug}\n\n{body}\n"),
+            format!("---\nname: {slug}\ndescription: {desc}\n---\n\n# {slug}\n\n{body}\n"),
         )
         .unwrap();
     }
@@ -330,13 +358,31 @@ mod tests {
         assert!(SkillSlug::parse("").is_err());
         assert!(SkillSlug::parse(".").is_err());
         assert!(SkillSlug::parse("..").is_err());
-        assert!(SkillSlug::parse("foo/bar").is_err());
+        assert!(SkillSlug::parse("../escape").is_err());
+        assert!(SkillSlug::parse(".hidden/skill").is_err());
+        assert!(SkillSlug::parse("a//b").is_err());
         assert!(SkillSlug::parse("Foo").is_err());
         assert!(SkillSlug::parse("-leading").is_err());
+        assert!(SkillSlug::parse("trailing-").is_err());
+        assert!(SkillSlug::parse("double--hyphen").is_err());
+        assert!(SkillSlug::parse("under_score").is_err());
         assert!(SkillSlug::parse("has space").is_err());
+        assert!(SkillSlug::parse(&"x".repeat(65)).is_err());
         assert!(SkillSlug::parse("ok").is_ok());
-        assert!(SkillSlug::parse("my-skill_v2").is_ok());
         assert!(SkillSlug::parse("1leading-digit").is_ok());
+    }
+
+    /// Only the final segment is a skill NAME; the rest is an
+    /// organizational prefix the spec leaves to the server.
+    #[test]
+    fn a_nested_slug_names_its_final_segment() {
+        let slug = SkillSlug::parse("acme/billing_v2/refunds").unwrap();
+        assert_eq!(slug.name(), "refunds");
+        assert!(
+            SkillSlug::parse("Acme/refunds").is_err(),
+            "an authority is case-insensitive"
+        );
+        assert_eq!(SkillSlug::parse("git-commit").unwrap().name(), "git-commit");
     }
 
     #[test]
