@@ -466,10 +466,13 @@ current turn; `turnFinished` is what the ttl reads, because an earlier
 turn is immutable however the session is doing now. Guessing the boundary from the events was
 a live bug twice — a heuristic mis-attributed one turn's error to the
 next, then an unbounded slice swallowed every later turn — which is what
-the per-turn layout retires rather than patches. `resources/list` names the indexes and ONE entry per session,
-never one per view — four views across 64 retained sessions is 256 rows
-every client pays for on connect, the bloat the skills listing already
-measured and cut. The views ride a resource TEMPLATE instead.
+the per-turn layout retires rather than patches. `resources/list` names the two indexes and NOTHING else: 2026-07-28
+says a listing "MUST NOT vary … as a side effect of other requests", and a
+row per session appeared on `spawn` and embedded live status a turn start
+never announced. Sessions are found through `hyprpilot://sessions` and
+addressed through three TEMPLATES (`{handle}`, `{handle}/{view}`,
+`{handle}/turns/{turn}/{view}`), and the listing never changing is why
+the harness advertises `resources.listChanged: false`.
 Both INDEXES carry `ttlMs: 0`: `hyprpilot://sessions` embeds live per-session status and nothing fires `resources/updated` for the index URI, and for profiles, config is
 re-read per call and nothing watches that file, so there is no signal to
 invalidate it with. `done.json` and the breadcrumb are deliberately NOT
@@ -625,10 +628,9 @@ forever. Changes under hidden entries never signal either.
 Both callers reach the wire only through `announce()`, so the watcher
 and the tool cannot drift into announcing different things for one
 delta. On the harness, a turn
-starting emits `resources/updated` for its session; a turn ending emits
-`updated` AND `list_changed`, because the listing embeds live status;
-`spawn` emits `list_changed`, and `session_kill` emits both. The session
-listing mutates, so under this ttl it has to say so. The exit hook is installed
+starting emits `resources/updated` for its session's views; a turn ending
+emits `updated` for the session's views and that turn's; `session_kill`
+emits `updated`. No `list_changed` — the listing is fixed. The exit hook is installed
 UNCONDITIONALLY: `notifyOnComplete` names the Claude channel push alone,
 and gating the whole hook on it also skipped `seal_turn` and the session
 `resources/updated`, which are correctness rather than noise.
@@ -972,9 +974,9 @@ verified — check it by hand when you touch it.
   order of how easy they are to miss: `resources/updated` still reaches
   every open `subscriptions/listen` stream (the sinks carry their own
   peer and the registry is shared by every clone); the BROADCAST
-  fallback is gone; `notifications/claude/channel` and
-  `notifications/tasks` are gone; and SEP-2663 tasks are minted only
-  for a client that attaches `clientCapabilities` per request, since
+  fallback is gone; `notifications/claude/channel` is gone (and not
+  advertised there); and SEP-2663 tasks are minted only for a client
+  that attaches `clientCapabilities` per request, since
   `peer_info_for_stateless_request` synthesizes an empty set.
 - **So `ttlMs` is `0` over HTTP** (`Transport::result_ttl_ms`). The 24h
   stdio value is honest only because every mutable surface fires an
@@ -1154,7 +1156,13 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   and `sessions/` stays rmcp-free — it takes a bare `ExitHook` closure
   built in `harness.rs`. **The content is a fixed template**: never
   interpolate agent output, or a spawned agent writes into its parent's
-  context through a path the parent never called.
+  context through a path the parent never called — the outcome is
+  `turn_label`'s fixed vocabulary (`turn N exited C` / `killed` /
+  `steered`). Advertised on stdio ONLY: over HTTP no peer outlives a
+  request, so it could never be sent. It is a deliberate exception to
+  2026-07-28's "no notification the client did not request on a stream":
+  Claude Code opts into it through its own capability, and it is the only
+  completion push any client turns into model context.
 - **Bounded retention counts FINISHED sessions only.** `maxSessions`
   (default 64, `0` retains everything) evicts the oldest *finished*
   ones; a running session is never evicted AND never counted. Counting
@@ -1205,9 +1213,15 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   stream verbatim and must stay unedited.
 - **SEP-2663 Tasks ride alongside, never instead.** `spawn` /
   `session_send` return a `CallToolResponse::Task` **only** when the peer
-  declared `io.modelcontextprotocol/tasks`; every other client gets the
-  exact result it got before, and rmcp independently rejects a task sent
-  to a non-declaring peer. Only the `Ok` arm can become a task — a
+  declared `io.modelcontextprotocol/tasks` AND the request negotiated
+  `2026-07-28` or later (`harness_server::tasks_enabled`); every other
+  client gets the exact result it got before. The version half is ours to
+  check — rmcp's gate reads `initialize` capabilities for an older peer,
+  and SEP-2663 says a server "MUST NOT treat this capability as enabling
+  tasks under that protocol version" — and `tasks/get|update|cancel`
+  answer such a peer `-32021`, as for one that never declared. A task
+  caller gets its task when the turn STARTS: `wait` is ignored in task
+  mode. Only the `Ok` arm can become a task — a
   refused launch stays a `tool_error`, because a task id for work that
   never started can never resolve. The one ungated part is the
   `extensions` key in `initialize`, which is required for `tasks/*` to
@@ -1220,37 +1234,56 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   replaces the `done` watch wholesale, so a previous turn's exit code is
   otherwise unreachable. The session handle rides `CreateTaskResult._meta`
   (`io.hyprpilot/session`) so a caller never has to PARSE the task id.
-- **A terminal task's payload must not MOVE**, so every field of
-  `sessionInfo` is read off the turn's own `TurnRecord` — its
-  `provenance` (model / effort / mode / argv), `pid`, `turnStartedAt`
-  and its file paths. The session's copies of all of those are
+- **A terminal task's payload must not MOVE**, so `describe` reads the
+  turn's `status` and `exitCode` from its own `TurnRecord` — the live
+  session reads `running` once turn N+1 starts — and every field of
+  `sessionInfo` comes off the record too: its `provenance` (model /
+  effort / mode / argv), `pid`, `turnStartedAt` and its file paths. A
+  finished turn also carries `answer` (`transcript::extract`, what
+  `/result` serves) on the synchronous result and the task alike, since
+  the front-capped `text` can miss a long turn's answer. The task is
+  minted from the turn number `respawn` returns from INSIDE its lock,
+  via `sessionInfo.files.turn`, and seeded from the record — a turn that
+  already ended is minted terminal, never `working`. The session's copies of all of those are
   overwritten by the next turn, which is what made a re-polled finished
   task hand back a later turn's answer. Any NEW `sessionInfo` field has
   to come off the record too; sourcing one from the live session is
   invisible until a caller re-polls.
-- **`TurnOutcome::Killed` is stamped in `SessionTable::kill`, not
+- **`TurnOutcome::Killed` is stamped in `SessionTable::terminate`, not
   derived.** The waiter stores `status.code().unwrap_or(-1)` and `code()`
   is `None` for signal death, so a kill, an external signal and a wait
-  error are indistinguishable after the fact. Stamped only past the
-  already-exited early return — reaping a session that finished normally
-  must not report its turn cancelled.
-- **`notifications/tasks` is DOUBLE-GATED**: the peer declared tasks AND
-  a task exists for that turn. The exit hook fires for every turn of
-  every session, so an ungated push would reach a client that opted into
-  nothing. It rides `Peer::send_notification` directly because rmcp
-  refuses to route task notifications through `subscriptions/listen`
-  (`SubscriptionFilter` has no `taskIds` field) — only
-  `resources/list_changed` and `resources/updated` are routable there.
+  error are indistinguishable after the fact. `terminate` captures the
+  TURN with its pgid and watch, and stamps only that turn, only while it
+  is still current and running, in one lock acquisition — stamping
+  "whatever is current" let a turn that ended in between hand its kill to
+  the turn that replaced it, and `seal_turn` never overwrites a kill.
+  `kill_turn` (what `tasks/cancel` uses) passes the expected turn, so a
+  cancel for turn N never reaches N+1.
+- **There is no `notifications/tasks` push.** 2026-07-28 allows it only
+  on a `subscriptions/listen` stream filtered by task id, rmcp's
+  `SubscriptionFilter` has no `taskIds`, and tasks are served to no
+  older revision — so no legal channel exists. Task clients poll
+  `tasks/get` at `pollIntervalMs`; re-add the push when rmcp can route
+  it. `tasks/update` acknowledges a known task (nothing to apply — no
+  `input_required` is ever emitted) and refuses an unknown one `-32602`.
+- **Tools carry annotations and titles** (`harness_tools`): read-only +
+  idempotent on `list_profiles` / `session_list` / `session_status` /
+  `session_read`, destructive on the rest. Codex's approval and Hermes'
+  trust gate read them, so a missing hint is a prompt on every call.
 - **Launches are DETACHED by default.** `wait` defaults to **false** on
   `spawn` / `session_send` (`wait_flag`), so both return as soon as the
   turn starts. Waiting never guaranteed a finished answer — a turn past
   `timeout_seconds` comes back `running` regardless — so it only cost
   the caller its ability to do anything meanwhile; `session_status` is
   the cheap poll that replaces it. `timeout_seconds` is inert unless
-  `wait: true`. Consequence: `session_send`'s lazy `harvest` is
-  load-bearing on the DEFAULT path now, not just an opt-in one — a
-  detached first turn never runs the waiting path, so without it no
-  session could ever be resumed.
+  `wait: true`, and defaults to 45 (`DEFAULT_TIMEOUT_SECS`): opencode
+  abandons a tool call at 60 s and Codex and Hermes at 300 s, so a
+  longer wait only loses the result. Consequence: `session_send`'s lazy
+  `harvest` is load-bearing on the DEFAULT path now, not just an opt-in
+  one — a detached first turn never runs the waiting path, so without it
+  no session could ever be resumed. A harvest is a READ: it never moves
+  `last_turn_at`, which orders `session_list` and eviction, and
+  `tasks/get` does not harvest at all.
 - **Streaming** rides `notifications/progress` when the caller supplies
   a progressToken; a follow ends on session exit, client cancellation,
   or a caller-set limit. MCP tool results are single-shot, so the result

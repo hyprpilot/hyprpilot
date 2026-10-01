@@ -131,7 +131,9 @@ Vendors mint their own session ids too — and hyprpilot captures one, because i
 
 ### Tasks (SEP-2663) — the opt-in parallel path
 
-The harness speaks the MCP Tasks extension **alongside** its own tools, never instead of them. A client that declares `io.modelcontextprotocol/tasks` gets a task handle from `spawn` / `session_send` and polls `tasks/get`; every other client gets exactly the result it always got. There is no config switch — the client's own declaration is the entire gate, and rmcp independently refuses to send a task to a peer that did not declare one.
+The harness speaks the MCP Tasks extension **alongside** its own tools, never instead of them. A client that declares `io.modelcontextprotocol/tasks` **on protocol `2026-07-28` or later** gets a task handle from `spawn` / `session_send` and polls `tasks/get`; every other client gets exactly the result it always got. There is no config switch — the client's own declaration is the entire gate. A client on an older revision gets no task even if it declared the extension in `initialize`, as SEP-2663 requires, and its `tasks/*` calls are answered `-32021`, as for a client that never declared.
+
+A task caller gets its task **when the turn starts**: `wait` is ignored in task mode, since blocking first would hand back a task for work already done. The task is minted from the turn's real state — a turn that already failed is minted `completed`, never `working`.
 
 ```jsonc
 // spawn, from a declaring client
@@ -139,22 +141,25 @@ The harness speaks the MCP Tasks extension **alongside** its own tools, never in
   "resultType": "task",
   "taskId": "1a3615c8-5dfa-4613-892b-fe27f25e0f9d:1",
   "status": "working",
+  "statusMessage": "turn 1 running",
   "pollIntervalMs": 2000,
   "_meta": { "io.hyprpilot/session": "1a3615c8-5dfa-4613-892b-fe27f25e0f9d" }
 }
 ```
 
+`statusMessage` names the turn and its outcome — `turn 2 exited 0`, `turn 2 killed`, `turn 2 steered`. A completed task's result is what the same call returns synchronously, read from that turn's own record so it never changes once final, including the `answer` field described under [the launch parameters](#spawn--session_send-parameters).
+
 **A task names one TURN, not the session.** The spec makes `completed` / `failed` / `cancelled` terminal — once reached, a task's state never changes — while a session handle is reused across turns and cycles `exited → running → exited`. Keyed by the handle alone, starting turn 2 would rewrite turn 1's finished task. So the id is `<session-handle>:<turn>`, and a completed turn keeps reporting `completed` however far the conversation moves on.
 
 The session handle rides `_meta` rather than being parsed out of the task id: every other tool here takes the handle, and an id you have to take apart is not opaque.
 
-`tasks/cancel` cancels **that turn**, not the session. Terminal states are immutable, so cancelling a task that already finished is a no-op — deliberately, because routing it through `session_kill` (which reaps an already-finished session) meant a spec-legal cancel of a completed task killed the running turn and deleted the transcript. An unknown handle is `-32602`, matching `tasks/get`.
+`tasks/cancel` cancels **that turn**, not the session, checked under the same lock that stops it — so a cancel for turn 1 that lands after turn 2 started leaves turn 2 alone. Terminal states are immutable, so cancelling a task that already finished is a no-op; routing it through `session_kill` would reap the finished session and delete the transcript. An unknown handle is `-32602`, matching `tasks/get`.
 
-**Task ids do not outlive the sidecar.** SEP-2663 presents a task id as a durable handle you can resume polling after a client restart; that assumption does not hold here. Sessions die with `hyprpilot mcp harness`, and finished ones are also dropped by `max_sessions` eviction and by `session_kill`. `ttl_ms` is `null` because retention is bounded by count and by process lifetime, not by a duration — any number would be a stronger promise than we can keep. `tasks/update` is unimplemented (`-32601`): the harness never emits `input_required`, so no task can have outstanding `inputRequests`.
+**Task ids do not outlive the sidecar.** SEP-2663 presents a task id as a durable handle you can resume polling after a client restart; that assumption does not hold here. Sessions die with `hyprpilot mcp harness`, and finished ones are also dropped by `max_sessions` eviction and by `session_kill`. `ttl_ms` is `null` because retention is bounded by count and by process lifetime, not by a duration — any number would be a stronger promise than we can keep. `tasks/update` acknowledges a task that exists and answers `-32602` for one that does not: the harness never emits `input_required`, so there is never an outstanding `inputRequests` to apply.
 
-**What this does not give you.** `notifications/tasks` is pushed when a turn ends, but rmcp will not route task notifications through `subscriptions/listen` (`SubscriptionFilter` has no `taskIds` field yet), so a client that does not handle the method drops it silently — the same contract as the Claude channel. Polling `tasks/get` is the supported path today.
+**There is no task status push — poll `tasks/get`.** Under `2026-07-28` a server may push `notifications/tasks` only on a `subscriptions/listen` stream filtered by task id, and rmcp cannot express that filter yet. Tasks are served to no older revision, so there is no legal channel left; `pollIntervalMs` says how often to poll.
 
-**Which clients?** None of the three vendor CLIs declares the extension as of claude 2.1.220, codex 0.146.0 and opencode 1.18.11 — measured against a real handshake. This exists so that the day one does, hyprpilot already speaks the standard protocol.
+**Which clients?** As of October 2026 Claude Code 2.1.286 has a tasks client behind a feature flag that is off by default; opencode, Codex and Hermes do not implement the extension. This exists so that the day one does, hyprpilot already speaks the standard protocol.
 
 ### `session_status`
 
@@ -263,9 +268,17 @@ The **un-turned** forms are the shortcut to the current turn: `…/<handle>/resu
 
 Every view is also addressable **per turn** — `hyprpilot://sessions/<handle>/turns/<n>/result` and the same for `status`, `transcript`, `stderr`. This is how an earlier turn's answer stays reachable once later turns have run. Turn numbers are 1-based; one the session never reached is an error, not an empty read. A turn-scoped `status` describes **that** turn, down to its `files` and its cacheability — an earlier turn is immutable however the session is doing now.
 
-`resources/list` names the two indexes and **one entry per session**, not one per view. The views are advertised as the template `hyprpilot://sessions/{handle}/{view}` instead — four views across 64 retained sessions would be 256 rows every client pays for on connect.
+`resources/list` names the two indexes and **nothing else**. A row per session would make the listing change as a side effect of `spawn`, which `2026-07-28` forbids for `resources/list`, so sessions are found through the `hyprpilot://sessions` index or `session_list` and addressed through three templates:
 
-Both indexes carry `ttlMs: 0`. `hyprpilot://sessions` embeds each session's live status and nothing fires `resources/updated` for the index URI — `list_changed` invalidates `resources/list`, not this read. `hyprpilot://profiles` comes from config re-read per call and **nothing watches that file**. A surface that cannot signal must not claim freshness.
+| Template                                            | Reads                                                                    |
+| --------------------------------------------------- | ------------------------------------------------------------------------ |
+| `hyprpilot://sessions/{handle}`                     | the session's status                                                     |
+| `hyprpilot://sessions/{handle}/{view}`              | one view of the current turn: `status`, `result`, `transcript`, `stderr` |
+| `hyprpilot://sessions/{handle}/turns/{turn}/{view}` | the same views of one turn, by number                                    |
+
+The listing never changes, so the server advertises `resources.listChanged: false`.
+
+Both indexes carry `ttlMs: 0`. `hyprpilot://sessions` embeds each session's live status and nothing fires `resources/updated` for the index URI. `hyprpilot://profiles` comes from config re-read per call and **nothing watches that file**. A surface that cannot signal must not claim freshness.
 
 `done.json` and the crash breadcrumb are deliberately not resources. The status view answers what `done.json` answers, and `done.json` exists precisely as the one signal a shell watcher can reach without MCP. The breadcrumb is orphan-debugging plumbing.
 
@@ -291,11 +304,11 @@ A finished session's views carry the 24-hour TTL. A **running** session's carry 
 
 :::
 
-`resources/list` enumerates sessions as handle / profile / status. Useful for recovering a handle, but the point is subscribing to one you already hold.
+`hyprpilot://sessions` lists sessions as handle / profile / status. Useful for recovering a handle, but the point is subscribing to one you already hold.
 
-**Every older mechanism still works, unchanged.** `notifications/claude/channel` still fires for Claude Code, `notifications/tasks` still pushes to clients that took a task handle, `session_status` is still the cheap poll, and `done.json` is still there for shell watchers. The subscription is an addition, not a replacement — a client that opts into nothing behaves exactly as before.
+**The other mechanisms still work.** `notifications/claude/channel` still fires for Claude Code, `session_status` is still the cheap poll, and `done.json` is still there for shell watchers. The subscription is an addition, not a replacement.
 
-Results carry `ttlMs` of 24 hours — longer than a sidecar lives — so a client that honours it re-fetches only when notified. Every change that invalidates a cached read is announced: a turn starting or ending, a `spawn` or a reap moving the list.
+Results carry `ttlMs` of 24 hours — longer than a sidecar lives — so a client that honours it re-fetches only when notified. Every change that invalidates a cached read is announced as `resources/updated` on the views it changed: a turn starting or ending, and a kill or a reap.
 
 **Two delivery channels, chosen per notification.** With a `subscriptions/listen` stream open, notifications ride that stream — filtered to the URIs you subscribed to and tagged with `io.modelcontextprotocol/subscriptionId`, which is what a conforming client correlates on. With no stream, they are sent as plain unsolicited notifications, which is the only channel a client on an older revision has and exactly what it received before.
 
@@ -339,9 +352,11 @@ Arm it on `turnDir` from the call that started the turn. A marker can no longer 
 When a turn's process exits the harness pushes a `notifications/claude/channel` event, which Claude Code turns into a `<channel source="hyprpilot-harness">` block in the lead agent's next turn:
 
 ```txt
-content: hyprpilot harness session 4670d5aa… finished (exit 0). Read its output with session_read.
-meta:    { session: "4670d5aa…", exit_code: "0" }
+content: hyprpilot harness session 4670d5aa…: turn 2 exited 0. Read its output with session_read.
+meta:    { session: "4670d5aa…", turn: "2", exit_code: "0" }
 ```
+
+A killed or steered turn is named as one — `turn 2 killed`, `turn 2 steered` — from the same fixed vocabulary as a task's `statusMessage`.
 
 On by default. It is safe to leave on — a client that has not registered the channel drops the notification silently, and unknown capabilities are ignored per the MCP spec, so nothing errors anywhere. The knob exists for **noise**: a session is `exited` after every _turn_, so a ten-turn conversation emits ten events.
 
@@ -353,9 +368,10 @@ mcp:
 
 Resolved by the **launcher**, from the profile it picked, and passed to the sidecar as a flag — the same way `max_sessions` arrives. A sidecar cannot work out which profile spawned it, so it cannot read this from config itself.
 
-Two things worth knowing:
+Three things worth knowing:
 
-- **Registering the channel is the client's job, not hyprpilot's.** Claude Code only listens for channels it was launched with; that is your own launch configuration. hyprpilot declares the capability and pushes the event — where channels are unavailable, the push is dropped.
+- **Registering the channel is the client's job, not hyprpilot's.** Claude Code only listens for channels it was launched with (`--channels`, or the development-channel flag); that is your own launch configuration. hyprpilot declares the capability — on stdio only, since over HTTP it can never be sent — and pushes the event; where channels are unavailable, the push is dropped.
+- **It is a deliberate exception.** `2026-07-28` allows no notification a client did not request through a subscription, and this push arrives outside one. It stays because Claude Code opts into it through its own capability and it is the only completion push any client turns into model context.
 - **The content is a fixed template.** Transcript bytes and agent output are never interpolated into it — that would let a spawned agent write into its parent's context through a path the parent never called. Everything variable rides `meta`, whose keys must be `[A-Za-z0-9_]` (a hyphen is silently dropped, which is why it is `exit_code`).
 
 ### `spawn` / `session_send` parameters
@@ -371,8 +387,12 @@ The two tools share one parameter set:
 | `with_config`     | array of objects | `[]`          | Ad-hoc profile overlays. **Restricted to `model`, `effort` and `mode`** — see below.                          |
 | `args`            | string[]         | `[]`          | Extra arguments forwarded verbatim to the vendor CLI — the tool equivalent of the CLI's trailing `-- <args>`. |
 | `wait`            | bool             | `false`       | Block until the turn finishes. Left off, the call returns as soon as the turn starts — poll `session_status`. |
-| `timeout_seconds` | integer          | `300`         | Seconds to wait when `wait` is true. On timeout the agent keeps running; the result reports status `running`. |
+| `timeout_seconds` | integer          | `45`          | Seconds to wait when `wait` is true. On timeout the agent keeps running; the result reports status `running`. |
 | `steer`           | bool             | `false`       | **`session_send` only.** Interrupt the turn in flight and make this prompt the next turn — see below.         |
+
+**Keep a `wait` under your client's own cut-off.** opencode abandons a tool call at 60 seconds and Codex and Hermes at 300, whatever the server is still doing — which is why the default is 45. Past it the call comes back `running` and you poll; the agent keeps working either way. Detached plus `session_status` is the only flow that works in every client.
+
+A finished turn's result carries **`answer`**: the agent's final reply, extracted the way the `/result` view extracts it. `text` is the transcript from the turn's first byte, capped, so a long turn's answer — which comes last — can fall outside it; `answer` never does.
 
 Exactly one of `prompt` / `file` is required on both — the same mutual exclusion the CLI's `-p`/`-f` enforce. `spawn` additionally requires `profile` (an id from `list_profiles`). `session_send` additionally requires `session` (a handle from `spawn` or `session_list`) and has **no** `profile` parameter — the profile is inherited from the original spawn, so a conversation can't switch profiles mid-stream.
 
@@ -463,7 +483,7 @@ The sweep only reclaims sessions whose **owning sidecar is gone**. Each breadcru
 | Spawn nesting depth            | 1 (`max_depth`)               | `HYPRPILOT_SPAWN_DEPTH` env, stamped on every launch. At the cap no harness is injected, and `spawn` is refused.                                   |
 | Transcript read per call       | 60,000 bytes                  | Caps `session_read` and an inline `spawn`/`session_send` result.                                                                                   |
 | Default tail                   | 200 lines                     | `session_read`'s default when `cursor` is omitted.                                                                                                 |
-| Default turn timeout           | 300 seconds                   | How long `spawn`/`session_send` block when asked to `wait: true`, before reporting status `running`. Inert by default.                             |
+| Default turn timeout           | 45 seconds                    | How long `spawn`/`session_send` block when asked to `wait: true`, before reporting status `running`. Inert by default.                             |
 | Retained **finished** sessions | 64 (`max_sessions`)           | Past this, the oldest are evicted (with their transcripts) and logged. A running session is never evicted and never counted. `0` retains them all. |
 
 Only distinct `spawn`s grow the table — a conversation reuses its session however many turns it runs — so the retention limit bounds a long-lived server's memory and temp directories without a tool you have to remember to call. Raise `max_sessions` on a busy gateway that wants deeper history; lower it where temp space is tight.
