@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.24.0](https://github.com/hyprpilot/hyprpilot/compare/v3.23.1...v3.24.0) (2026-10-01)
+
+
+### Features
+
+* **skills:** serve skills over SEP-2640, nested, with prompts ([#270](https://github.com/hyprpilot/hyprpilot/issues/270)) ([f377d77](https://github.com/hyprpilot/hyprpilot/commit/f377d77cc70fb2ad1170443e48b43ad906be8e82))
+
 ## [3.23.1](https://github.com/hyprpilot/hyprpilot/compare/v3.23.0...v3.23.1) (2026-09-30)
 
 
