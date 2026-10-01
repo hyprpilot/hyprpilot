@@ -1,10 +1,12 @@
-//! File-system loader for `<skills_dir>/<slug>/SKILL.md` bundles:
-//! enumerate every direct subdirectory, parse YAML frontmatter +
-//! markdown body out of `SKILL.md`, skip bad entries with a warn log
-//! instead of failing the whole registry.
+//! File-system loader for skill bundles: every directory under a root
+//! that holds a `SKILL.md` is a skill, at any depth, so
+//! `<root>/acme/billing/refunds/SKILL.md` is the skill `acme/billing/
+//! refunds` and a skill may nest inside another. Parses YAML
+//! frontmatter + markdown body out of each `SKILL.md`, and skips a bad
+//! entry with a warn log instead of failing the whole registry.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path};
 
 use anyhow::Result;
 use tracing::warn;
@@ -12,68 +14,74 @@ use yaml_serde::Value as YamlValue;
 
 use super::{Skill, SkillSlug};
 
-/// Walk `dir` looking for `<slug>/SKILL.md`. Missing dir / unreadable
-/// entries log and return an empty list; a bad individual skill logs
-/// and is skipped. Always returns `Ok` — a bad skill root never
-/// aborts the registry build.
+/// The one walker every skill-tree scan goes through — discovery here
+/// and the bundle file listing the sidecar serves — so the two can never
+/// disagree about which files exist.
+///
+/// Hidden entries and anything `.gitignore`d are skipped, which is what
+/// keeps a script's `.venv` from becoming hundreds of served files.
+/// `require_git(false)` honours an ignore file outside a repository too.
+/// Symlinks are not followed: a link could point a skill at any file on
+/// the host.
+pub(crate) fn walk(dir: &Path) -> ignore::Walk {
+    ignore::WalkBuilder::new(dir)
+        .require_git(false)
+        .follow_links(false)
+        .sort_by_file_name(std::ffi::OsStr::cmp)
+        .build()
+}
+
+/// Walk `dir` for every `SKILL.md` below it. A missing root yields an
+/// empty list; a bad individual skill logs and is skipped. Always
+/// returns `Ok` — a bad skill root never aborts the registry build.
 pub(crate) fn load_skills(dir: &Path) -> Result<Vec<Skill>> {
-    let entries = match fs::read_dir(dir) {
-        Ok(it) => it,
-        Err(err) => {
-            warn!(dir = %dir.display(), %err, "skills loader: read_dir failed — empty registry");
-            return Ok(Vec::new());
-        }
-    };
-
     let mut out: Vec<Skill> = Vec::new();
-    let mut names: Vec<(String, PathBuf)> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        // symlink_metadata doesn't follow the link, so a dangling or
-        // loop-forming symlink to a directory never hits is_dir().
-        match entry.file_type() {
-            Ok(ft) if ft.is_symlink() => {
-                warn!(path = %path.display(), "skills loader: symlink entry — skipping");
-                continue;
-            }
-            Ok(_) => {}
+    for entry in walk(dir) {
+        let entry = match entry {
+            Ok(entry) => entry,
             Err(err) => {
-                warn!(path = %path.display(), %err, "skills loader: file_type failed — skipping");
-                continue;
-            }
-        }
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(name_os) = path.file_name() else {
-            continue;
-        };
-        let Some(name) = name_os.to_str() else {
-            continue;
-        };
-        names.push((name.to_owned(), path));
-    }
-    names.sort_by(|a, b| a.0.cmp(&b.0));
-
-    for (name, skill_dir) in names {
-        let slug = match SkillSlug::parse(&name) {
-            Ok(s) => s,
-            Err(err) => {
-                warn!(name, %err, "skills loader: invalid slug — skipping");
+                warn!(dir = %dir.display(), %err, "skills loader: walk error — skipping entry");
                 continue;
             }
         };
-        let md = skill_dir.join("SKILL.md");
-        if !md.is_file() {
+        if entry.file_name() != "SKILL.md" || !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
-        match parse_skill(&md, slug.clone()) {
+        let md = entry.path();
+        let Some(slug) = slug_for(dir, md) else {
+            continue;
+        };
+        match parse_skill(md, slug) {
             Ok(Some(skill)) => out.push(skill),
             Ok(None) => {}
             Err(err) => warn!(path = %md.display(), %err, "skills loader: parse failed — skipping"),
         }
     }
+    out.sort_by(|a, b| a.slug.as_str().cmp(b.slug.as_str()));
     Ok(out)
+}
+
+/// The slug a `SKILL.md` at `md` gets under `root`: its directory's
+/// path relative to the root. `None`, with the reason logged, when that
+/// is not a valid slug — including a `SKILL.md` at the root itself,
+/// which would be a skill with no name.
+fn slug_for(root: &Path, md: &Path) -> Option<SkillSlug> {
+    let rel = md.parent()?.strip_prefix(root).ok()?;
+    let mut segments = Vec::new();
+    for component in rel.components() {
+        let Component::Normal(segment) = component else {
+            return None;
+        };
+        segments.push(segment.to_str()?);
+    }
+    let raw = segments.join("/");
+    match SkillSlug::parse(&raw) {
+        Ok(slug) => Some(slug),
+        Err(err) => {
+            warn!(path = %md.display(), %err, "skills loader: invalid skill path — skipping");
+            None
+        }
+    }
 }
 
 fn parse_skill(path: &Path, slug: SkillSlug) -> Result<Option<Skill>> {
@@ -84,13 +92,33 @@ fn parse_skill(path: &Path, slug: SkillSlug) -> Result<Option<Skill>> {
         warn!(path = %path.display(), "skills loader: empty body — skipping");
         return Ok(None);
     }
+    // SEP-2640 serves the frontmatter verbatim, requires `name` and
+    // `description` in it, and makes the URI's last segment equal `name`
+    // — a host refuses anything else, so serving it would only move the
+    // failure somewhere the author cannot see it. Unparseable
+    // frontmatter arrives here as `Null` and fails the same check.
+    let Some(name) = frontmatter_str(&frontmatter, "name") else {
+        warn!(path = %path.display(), "skills loader: no frontmatter `name` — skipping");
+        return Ok(None);
+    };
+    if name != slug.name() {
+        warn!(
+            path = %path.display(),
+            name,
+            expected = slug.name(),
+            "skills loader: frontmatter `name` differs from its directory — skipping"
+        );
+        return Ok(None);
+    }
+    let Some(description) = frontmatter_str(&frontmatter, "description").filter(|d| !d.trim().is_empty()) else {
+        warn!(path = %path.display(), "skills loader: no frontmatter `description` — skipping");
+        return Ok(None);
+    };
+    let description = description.to_owned();
     let title = frontmatter_str(&frontmatter, "title")
         .map(str::to_owned)
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
-    let description = frontmatter_str(&frontmatter, "description")
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("Guidance for {}", slug.as_str()));
     Ok(Some(Skill {
         slug,
         title,
@@ -162,17 +190,25 @@ mod tests {
         fs::write(skill_dir.join("SKILL.md"), body).unwrap();
     }
 
+    fn valid(name: &str) -> String {
+        format!("---\nname: {name}\ndescription: about {name}\n---\n\nbody of {name}\n")
+    }
+
+    fn slugs(skills: &[Skill]) -> Vec<&str> {
+        skills.iter().map(|s| s.slug.as_str()).collect()
+    }
+
     #[test]
     fn empty_dir_returns_empty_vec() {
         let tmp = TempDir::new().unwrap();
-        let skills = load_skills(tmp.path()).unwrap();
-        assert!(skills.is_empty());
+        assert!(load_skills(tmp.path()).unwrap().is_empty());
     }
 
     #[test]
     fn missing_dir_returns_empty_vec() {
-        let skills = load_skills(Path::new("/nonexistent-skills-dir-xyz")).unwrap();
-        assert!(skills.is_empty());
+        assert!(load_skills(Path::new("/nonexistent-skills-dir-xyz"))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -204,138 +240,112 @@ Body. See [README](../README.md) for more.
     #[test]
     fn missing_title_field_resolves_to_empty_string() {
         let tmp = TempDir::new().unwrap();
-        write_skill(
-            tmp.path(),
-            "no-title",
-            r#"---
-description: no title field
----
-
-# Body Heading
-
-Body content.
-"#,
-        );
-        let skills = load_skills(tmp.path()).unwrap();
-        assert_eq!(skills.len(), 1);
-        // No `title` in frontmatter → empty string. Authors must
-        // declare `title` explicitly; the H1 fallback was deleted.
-        assert_eq!(skills[0].title, "");
+        write_skill(tmp.path(), "no-title", &valid("no-title"));
+        assert_eq!(load_skills(tmp.path()).unwrap()[0].title, "");
     }
 
     #[test]
     fn skips_directory_without_skill_md() {
         let tmp = TempDir::new().unwrap();
         fs::create_dir_all(tmp.path().join("no-skill")).unwrap();
-        let skills = load_skills(tmp.path()).unwrap();
-        assert!(skills.is_empty());
+        assert!(load_skills(tmp.path()).unwrap().is_empty());
     }
 
     #[test]
     fn skips_empty_body() {
         let tmp = TempDir::new().unwrap();
-        write_skill(
-            tmp.path(),
-            "empty",
-            r#"---
-description: nothing here
----
-
-"#,
-        );
-        let skills = load_skills(tmp.path()).unwrap();
-        assert!(skills.is_empty());
+        write_skill(tmp.path(), "empty", "---\nname: empty\ndescription: d\n---\n\n");
+        assert!(load_skills(tmp.path()).unwrap().is_empty());
     }
 
+    /// The frontmatter is served verbatim and a SEP-2640 host refuses an
+    /// entry without `name` and `description`, so neither an absent field
+    /// nor a block that failed to parse may reach the catalogue.
     #[test]
-    fn bad_frontmatter_falls_back_to_empty_and_still_loads_body() {
+    fn a_skill_the_spec_would_refuse_is_skipped() {
         let tmp = TempDir::new().unwrap();
+        write_skill(tmp.path(), "no-name", "---\ndescription: d\n---\n\nbody\n");
+        write_skill(tmp.path(), "no-description", "---\nname: no-description\n---\n\nbody\n");
         write_skill(
             tmp.path(),
             "broken",
-            r#"---
-: this is not
-  : valid yaml
----
-
-# Broken but still usable
-
-Body kept.
-"#,
+            "---\n: this is not\n  : valid yaml\n---\n\nbody\n",
         );
-        let skills = load_skills(tmp.path()).unwrap();
-        assert_eq!(skills.len(), 1);
-        let s = &skills[0];
-        assert_eq!(s.slug.as_str(), "broken");
-        assert!(s.body.contains("Body kept."));
+        write_skill(tmp.path(), "no-fence", "# just markdown\n");
+        write_skill(tmp.path(), "kept", &valid("kept"));
+        assert_eq!(slugs(&load_skills(tmp.path()).unwrap()), ["kept"]);
+    }
+
+    /// The URI's last segment IS the name, so a mismatch is two names
+    /// for one skill and no host can load it.
+    #[test]
+    fn a_name_that_differs_from_its_directory_is_skipped() {
+        let tmp = TempDir::new().unwrap();
+        write_skill(tmp.path(), "dir-name", &valid("other-name"));
+        assert!(load_skills(tmp.path()).unwrap().is_empty());
     }
 
     #[test]
     fn invalid_slug_name_is_skipped() {
         let tmp = TempDir::new().unwrap();
-        write_skill(
-            tmp.path(),
-            "Invalid_CAPS",
-            r#"---
-description: irrelevant
----
-# Title
-body
-"#,
-        );
-        write_skill(
-            tmp.path(),
-            "ok-slug",
-            r#"---
-description: kept
----
-# Title
-body
-"#,
-        );
-        let skills = load_skills(tmp.path()).unwrap();
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].slug.as_str(), "ok-slug");
+        write_skill(tmp.path(), "Invalid_CAPS", &valid("Invalid_CAPS"));
+        write_skill(tmp.path(), "ok-slug", &valid("ok-slug"));
+        assert_eq!(slugs(&load_skills(tmp.path()).unwrap()), ["ok-slug"]);
     }
 
     #[test]
     fn skills_are_sorted_by_slug() {
         let tmp = TempDir::new().unwrap();
         for name in ["zzz-last", "aaa-first", "mmm-middle"] {
-            write_skill(
-                tmp.path(),
-                name,
-                &format!(
-                    r#"---
-description: {name}
----
-
-body
-"#
-                ),
-            );
+            write_skill(tmp.path(), name, &valid(name));
         }
-        let skills = load_skills(tmp.path()).unwrap();
-        let order: Vec<&str> = skills.iter().map(|s| s.slug.as_str()).collect();
-        assert_eq!(order, ["aaa-first", "mmm-middle", "zzz-last"]);
+        assert_eq!(
+            slugs(&load_skills(tmp.path()).unwrap()),
+            ["aaa-first", "mmm-middle", "zzz-last"]
+        );
     }
 
+    /// A category directory is an organizational prefix, and a skill may
+    /// sit inside another — both are discovered under their full path.
     #[test]
-    fn description_falls_back_when_missing() {
+    fn nested_skills_are_discovered_under_their_path() {
         let tmp = TempDir::new().unwrap();
-        write_skill(
-            tmp.path(),
-            "nodesc",
-            r#"---
-name: nodesc
----
-
-# Heading
-
-body
-"#,
+        write_skill(tmp.path(), "acme/billing/refunds", &valid("refunds"));
+        write_skill(tmp.path(), "outer", &valid("outer"));
+        write_skill(tmp.path(), "outer/inner", &valid("inner"));
+        assert_eq!(
+            slugs(&load_skills(tmp.path()).unwrap()),
+            ["acme/billing/refunds", "outer", "outer/inner"]
         );
-        let skills = load_skills(tmp.path()).unwrap();
-        assert_eq!(skills[0].description, "Guidance for nodesc");
+    }
+
+    /// A `.venv` or editor directory must never be a source of skills,
+    /// and neither may anything the tree's own ignore files exclude.
+    #[test]
+    fn hidden_and_gitignored_trees_are_never_skills() {
+        let tmp = TempDir::new().unwrap();
+        write_skill(tmp.path(), ".hidden/sneaky", &valid("sneaky"));
+        write_skill(tmp.path(), "vendored/thing", &valid("thing"));
+        fs::write(tmp.path().join(".gitignore"), "vendored/\n").unwrap();
+        write_skill(tmp.path(), "kept", &valid("kept"));
+        assert_eq!(slugs(&load_skills(tmp.path()).unwrap()), ["kept"]);
+    }
+
+    /// A `SKILL.md` at the root would be a skill with no name.
+    #[test]
+    fn a_skill_md_at_the_root_is_ignored() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("SKILL.md"), valid("root")).unwrap();
+        assert!(load_skills(tmp.path()).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_skill_is_not_followed() {
+        let tmp = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        write_skill(elsewhere.path(), "linked", &valid("linked"));
+        std::os::unix::fs::symlink(elsewhere.path().join("linked"), tmp.path().join("linked")).unwrap();
+        assert!(load_skills(tmp.path()).unwrap().is_empty());
     }
 }

@@ -125,12 +125,12 @@ Each server entry takes an optional `hyprpilot` block for tool visibility and ap
 
 hyprpilot ships **four** in-tree MCP servers. Each is its own subcommand, its own process, and its own catalogue entry, so each can be enabled, renamed, and given a tool policy independently:
 
-| Server        | Subcommand                  | Default name            | Serves                                                                                      | Default    |
-| ------------- | --------------------------- | ----------------------- | ------------------------------------------------------------------------------------------- | ---------- |
-| General tools | `hyprpilot mcp serve`       | `hyprpilot`             | `open`                                                                                      | enabled    |
-| Skills        | `hyprpilot mcp skills`      | `hyprpilot-skills`      | `list_skills` / `read_skill` / `list_skill_references` / `read_skill_references` / `reload` | enabled    |
-| Agent harness | `hyprpilot mcp harness`     | `hyprpilot-harness`     | `list_profiles` / `spawn` / `session_*`                                                     | _disabled_ |
-| Passthrough   | `hyprpilot mcp passthrough` | `hyprpilot-passthrough` | the tools `mcp.passthrough.tools` declares                                                  | _disabled_ |
+| Server        | Subcommand                  | Default name            | Serves                                                     | Default    |
+| ------------- | --------------------------- | ----------------------- | ---------------------------------------------------------- | ---------- |
+| General tools | `hyprpilot mcp serve`       | `hyprpilot`             | `open`                                                     | enabled    |
+| Skills        | `hyprpilot mcp skills`      | `hyprpilot-skills`      | skills (tools, resources, SEP-2640 `skills/*`) and prompts | enabled    |
+| Agent harness | `hyprpilot mcp harness`     | `hyprpilot-harness`     | `list_profiles` / `spawn` / `session_*`                    | _disabled_ |
+| Passthrough   | `hyprpilot mcp passthrough` | `hyprpilot-passthrough` | the tools `mcp.passthrough.tools` declares                 | _disabled_ |
 
 The `mcp` block gates and configures all four:
 
@@ -153,6 +153,9 @@ mcp:
           - '*-experimental'
       - dir: /mnt/nfs/team-skills
         watch: false
+    prompts:
+      - dir: ~/.config/hyprpilot/prompts
+    system_prompts: true
 
   harness:
     enabled: true
@@ -172,7 +175,7 @@ mcp:
 
 A profile's `mcp` field wholesale-replaces this block. `autoAcceptTools` / `autoRejectTools` are glob-validated at config load (like the `ignore` lists) — a malformed glob errors at startup with a field-path message instead of silently failing at match time.
 
-Every per-server block accepts `enabled`, `name`, `autoAcceptTools`, and `autoRejectTools`. The default names in the table above are not compiled in — they are seeded as `mcp.serve.name` / `mcp.skills.name` / `mcp.harness.name` / `mcp.passthrough.name` in the shipped `[[patches]]`, and the injector reads that field and nothing else, so a rename is a config edit. `name` is what the vendor prefixes tool calls with, so renaming the skills server to `docs` turns `mcp__hyprpilot-skills__read_skill` into `mcp__docs__read_skill` — anything that addresses a tool by name (a skill file, a system prompt) has to follow. The `hyprpilot://` resource URIs are a fixed scheme and never change. A per-server `autoAcceptTools` overrides the block-level default rather than merging with it.
+Every per-server block accepts `enabled`, `name`, `autoAcceptTools`, and `autoRejectTools`. The default names in the table above are not compiled in — they are seeded as `mcp.serve.name` / `mcp.skills.name` / `mcp.harness.name` / `mcp.passthrough.name` in the shipped `[[patches]]`, and the injector reads that field and nothing else, so a rename is a config edit. `name` is what the vendor prefixes tool calls with, so renaming the skills server to `docs` turns `mcp__hyprpilot-skills__read_skill` into `mcp__docs__read_skill` — anything that addresses a tool by name (a skill file, a system prompt) has to follow. The `skill://` and `hyprpilot://` resource URIs are fixed schemes and never change. A per-server `autoAcceptTools` overrides the block-level default rather than merging with it.
 
 ### `mcp.serve`
 
@@ -180,19 +183,23 @@ The general-tools server — the surface for things that are neither a skills re
 
 ### `mcp.skills`
 
-| Field  | Type                                   | Default  | What it does                                                                     |
-| ------ | -------------------------------------- | -------- | -------------------------------------------------------------------------------- |
-| `dirs` | `{ dir, include?, ignore?, watch? }[]` | XDG root | Skill roots — flat directories of `<slug>/SKILL.md` bundles. Watched by default. |
+| Field            | Type                                   | Default  | What it does                                                                                                     |
+| ---------------- | -------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `dirs`           | `{ dir, include?, ignore?, watch? }[]` | XDG root | Skill roots — trees of `SKILL.md` bundles, at any depth. Watched by default.                                     |
+| `prompts`        | `{ dir, include?, ignore?, watch? }[]` | `[]`     | Prompt directories — every `*.md` directly inside is served as an MCP prompt. Globs match the prompt name.       |
+| `system_prompts` | bool                                   | `true`   | Also serve the launched profile's own `system_prompt` files as prompts, so an edited one can be re-invoked live. |
 
-Unlike the other two, this server is also gated on having something to serve: if `dirs` resolves to no skills at all, nothing is injected. The root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry rather than a compiled default, so a user layer's `patches` extends the seed instead of replacing it.
+This server is also gated on having something to serve: with no skill and no loadable prompt, nothing is injected — and a profile with a `system_prompt` gets it even with no skills, because that prompt is served. See [Skills & the hyprpilot MCP Server](../runtime/skills) for what it exposes.
+
+`system_prompts` is seeded `snake_case`; override it in the same spelling (see the warning under `mcp.harness`). The root defaults to `~/.config/hyprpilot/skills`, seeded through an unscoped [`patches`](./patches) entry rather than a compiled default, so a user layer's `patches` extends the seed instead of replacing it.
 
 #### `dirs` entries
 
 | Field     | Type             | Default | What it does                                                                                                                                                                                                                           |
 | --------- | ---------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dir`     | path             | —       | Skill root to scan. Missing roots warn and are skipped.                                                                                                                                                                                |
-| `include` | string[] (globs) | unset   | When set, only slugs matching a pattern load from this root. An empty or absent list applies no allow-list.                                                                                                                            |
-| `ignore`  | string[] (globs) | `[]`    | Slugs matching any pattern are skipped. Beats `include` on overlap. First root wins on slug collision.                                                                                                                                 |
+| `include` | string[] (globs) | unset   | When set, only skill paths matching a pattern load from this root (`*` crosses `/`). An empty or absent list applies no allow-list.                                                                                                    |
+| `ignore`  | string[] (globs) | `[]`    | Skill paths matching any pattern are skipped. Beats `include` on overlap. First root wins on path collision.                                                                                                                           |
 | `watch`   | bool             | `true`  | Watch this root and announce changes. Seeded on for the default root. Turn it off for a root on a filesystem that cannot deliver events (NFS, SSHFS, most FUSE) — those accept the watch and never fire, so edits there need `reload`. |
 
 ### `mcp.harness`
@@ -211,7 +218,7 @@ Unlike the other two, this server is also gated on having something to serve: if
 
 ::: warning Write a seeded key the way the seed writes it
 
-Config keys accept both `snake_case` and `camelCase`, but patches merge by **key string** before anything is typed. These four are seeded `snake_case`, so overriding one as `maxDepth` / `maxSessions` / `maxLiveSessions` / `notifyOnComplete` arrives as a second key and fails config load with `duplicate field`. Every other key is unaffected — nothing seeds them, so there is nothing to collide with.
+Config keys accept both `snake_case` and `camelCase`, but patches merge by **key string** before anything is typed. These four are seeded `snake_case`, so overriding one as `maxDepth` / `maxSessions` / `maxLiveSessions` / `notifyOnComplete` arrives as a second key and fails config load with `duplicate field`. The same holds for the other seeded multi-word keys, `mcp.skills.system_prompts` and `mcp.passthrough.timeout_seconds`. Every unseeded key is unaffected — there is nothing to collide with.
 
 :::
 

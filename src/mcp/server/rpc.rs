@@ -259,13 +259,27 @@ impl Subscriptions {
     /// Deliver `notifications/resources/list_changed`. Same channel
     /// choice as [`Self::resource_updated`].
     pub(super) async fn resource_list_changed(&self, peer: Option<&rmcp::service::Peer<RoleServer>>) {
+        self.list_changed(peer, ListKind::Resources).await;
+    }
+
+    /// Deliver `notifications/prompts/list_changed`. Same channel choice
+    /// as [`Self::resource_updated`].
+    pub(super) async fn prompt_list_changed(&self, peer: Option<&rmcp::service::Peer<RoleServer>>) {
+        self.list_changed(peer, ListKind::Prompts).await;
+    }
+
+    async fn list_changed(&self, peer: Option<&rmcp::service::Peer<RoleServer>>, kind: ListKind) {
         let mut outcomes = Vec::new();
         for sink in &self.streams().await {
-            outcomes.push(match sink.notify_resource_list_changed().await {
+            let sent = match kind {
+                ListKind::Resources => sink.notify_resource_list_changed().await,
+                ListKind::Prompts => sink.notify_prompt_list_changed().await,
+            };
+            outcomes.push(match sent {
                 Ok(()) => StreamOutcome::Delivered,
                 Err(rmcp::service::SubscriptionSendError::NotificationNotAccepted(_)) => StreamOutcome::Declined,
                 Err(err) => {
-                    tracing::debug!(%err, "mcp::server: subscription send failed");
+                    tracing::debug!(%err, ?kind, "mcp::server: subscription send failed");
                     StreamOutcome::Broken
                 }
             });
@@ -276,10 +290,21 @@ impl Subscriptions {
         let Some(peer) = peer else {
             return;
         };
-        if let Err(err) = peer.notify_resource_list_changed().await {
-            tracing::debug!(%err, "mcp::server: resource list-changed notification failed");
+        let sent = match kind {
+            ListKind::Resources => peer.notify_resource_list_changed().await,
+            ListKind::Prompts => peer.notify_prompt_list_changed().await,
+        };
+        if let Err(err) = sent {
+            tracing::debug!(%err, ?kind, "mcp::server: list-changed notification failed");
         }
     }
+}
+
+/// Which listing a `list_changed` notification invalidates.
+#[derive(Debug, Clone, Copy)]
+enum ListKind {
+    Resources,
+    Prompts,
 }
 
 /// Accept a `subscriptions/listen` opt-in for the two categories the
@@ -643,7 +668,7 @@ mod tests {
         requested.resource_subscriptions = Some(vec![
             "hyprpilot://sessions/abc".into(),
             "file:///etc/passwd".into(),
-            "hyprpilot://skills/git-commit".into(),
+            "skill://git-commit/SKILL.md".into(),
         ]);
 
         let accepted = accept_resource_subscriptions(&requested, |uri| uri.starts_with("hyprpilot://sessions/"))

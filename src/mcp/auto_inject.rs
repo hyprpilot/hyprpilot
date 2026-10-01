@@ -3,9 +3,10 @@
 //! One `build_*_definition` per server. Under the `[mcp].enabled`
 //! master gate the launcher prepends a stdio entry for each server its
 //! own block enables, and the vendor spawns those sidecars itself.
-//! Skills is the only one ALSO gated on content — an empty
-//! `SkillsRegistry` means nothing to serve — and the only one that
-//! passes state on the command line (`--skill-dir <json>` per root).
+//! Skills is the only one ALSO gated on content — no skill and no
+//! prompt means nothing to serve — and passes its state on the command
+//! line (`--skill-dir <json>` per root, `--prompt-dir` / `--prompt-file`
+//! per prompt source).
 //!
 //! References declared in each skill's frontmatter resolve relative
 //! to the skill's own bundle directory at read time — the sidecar
@@ -27,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::McpConfig;
+use crate::mcp::skills::prompts::PromptSources;
 use crate::mcp::skills::SkillsRegistry;
 use crate::mcp::{HyprpilotExtension, MCPDefinition};
 
@@ -269,14 +271,16 @@ pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf, spawn_depth: u
 #[must_use]
 pub fn build_skills_definition(
     skills: &Arc<SkillsRegistry>,
+    prompts: &PromptSources,
     cfg: &McpConfig,
     source: PathBuf,
 ) -> Option<MCPDefinition> {
-    // Gate on dirs having at least one loaded skill — if the
-    // directories are empty or all skills match the ignore globs,
-    // there's nothing to serve.
+    // Gate on content: at least one loaded skill or one loadable prompt.
+    // Empty roots, or globs that filter everything out, leave nothing to
+    // serve. A profile with a `system_prompt` therefore gets the server
+    // even with no skills, because that prompt is served.
     let skills_cfg = cfg.skills.clone().unwrap_or_default();
-    if !skills_cfg.is_enabled() || skills.list().is_empty() {
+    if !skills_cfg.is_enabled() || (skills.list().is_empty() && prompts.load().is_empty()) {
         return None;
     }
     let exe = std::env::current_exe().ok()?;
@@ -284,9 +288,9 @@ pub fn build_skills_definition(
     // Pass directories + de-duplicated ignore globs instead of
     // enumerating individual `--skill slug=path` entries. The sidecar
     // scans dirs with the same `SkillsRegistry` discovery code the
-    // launcher uses — adding a new `<slug>/SKILL.md` to a configured
-    // directory is immediately visible on the next `reload` without
-    // restarting the session.
+    // launcher uses — adding a new `SKILL.md` anywhere under a configured
+    // directory is picked up by the next rescan without restarting the
+    // session.
     // Each directory is serialized as a JSON object so per-dir ignore
     // lists survive the CLI round-trip without flattening — the sidecar
     // can reconstruct the exact same `ResolvedSkillEntry` set the
@@ -304,6 +308,22 @@ pub fn build_skills_definition(
         });
         args.push("--skill-dir".to_string());
         args.push(json.to_string());
+    }
+    // Same JSON shape as a skill root, so the sidecar decodes both with
+    // one parser.
+    for entry in &prompts.dirs {
+        let json = serde_json::json!({
+            "dir": entry.dir.display().to_string(),
+            "ignore": entry.ignore_patterns,
+            "include": entry.include_patterns,
+            "watch": entry.watch,
+        });
+        args.push("--prompt-dir".to_string());
+        args.push(json.to_string());
+    }
+    for file in &prompts.files {
+        args.push("--prompt-file".to_string());
+        args.push(file.display().to_string());
     }
     let raw = serde_json::json!({
         "command": exe.display().to_string(),
@@ -355,7 +375,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bundle = dir.path().join("alpha");
         std::fs::create_dir_all(&bundle).unwrap();
-        std::fs::write(bundle.join("SKILL.md"), "---\ndescription: d\n---\n\nbody\n").unwrap();
+        std::fs::write(
+            bundle.join("SKILL.md"),
+            "---\nname: alpha\ndescription: d\n---\n\nbody\n",
+        )
+        .unwrap();
 
         for watch in [true, false] {
             let registry = Arc::new(SkillsRegistry::new(vec![crate::config::ResolvedSkillEntry {
@@ -367,8 +391,13 @@ mod tests {
                 watch,
             }]));
             registry.reload().unwrap();
-            let def = build_skills_definition(&registry, &default_cfg(), PathBuf::from("<test>"))
-                .expect("a root with a skill injects");
+            let def = build_skills_definition(
+                &registry,
+                &PromptSources::default(),
+                &default_cfg(),
+                PathBuf::from("<test>"),
+            )
+            .expect("a root with a skill injects");
             let args = def.raw["args"].as_array().expect("argv");
             let json = args
                 .iter()
@@ -442,7 +471,56 @@ mod tests {
 
     #[test]
     fn empty_registry_skips_injection() {
-        assert!(build_skills_definition(&empty_registry(), &default_cfg(), PathBuf::from("<test>")).is_none());
+        assert!(build_skills_definition(
+            &empty_registry(),
+            &PromptSources::default(),
+            &default_cfg(),
+            PathBuf::from("<test>")
+        )
+        .is_none());
+    }
+
+    /// A prompt is content too: a profile with a `system_prompt` and no
+    /// skills still gets the server, carrying the file and the prompt
+    /// directory on argv for the sidecar to load and watch.
+    #[test]
+    fn a_prompt_alone_injects_the_server_and_rides_argv() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("AGENTS.md");
+        std::fs::write(&file, "be terse").unwrap();
+        let prompts = PromptSources {
+            files: vec![file.clone()],
+            dirs: vec![crate::config::ResolvedSkillEntry {
+                dir: dir.path().join("prompts"),
+                ignore_patterns: vec!["draft-*".into()],
+                ignore: None,
+                include_patterns: Vec::new(),
+                include: None,
+                watch: true,
+            }],
+        };
+
+        let def = build_skills_definition(&empty_registry(), &prompts, &default_cfg(), PathBuf::from("<test>"))
+            .expect("a loadable prompt injects");
+        let args: Vec<&str> = def.raw["args"]
+            .as_array()
+            .expect("argv")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let at = |flag: &str| args[args.iter().position(|a| *a == flag).expect(flag) + 1];
+        assert_eq!(at("--prompt-file"), file.display().to_string());
+        let parsed: serde_json::Value = serde_json::from_str(at("--prompt-dir")).unwrap();
+        assert_eq!(parsed["ignore"], serde_json::json!(["draft-*"]));
+
+        let missing = PromptSources {
+            files: vec![dir.path().join("missing.md")],
+            dirs: Vec::new(),
+        };
+        assert!(
+            build_skills_definition(&empty_registry(), &missing, &default_cfg(), PathBuf::from("<test>")).is_none(),
+            "a prompt that cannot load is no content"
+        );
     }
 
     /// The security-relevant default. `spawn` runs a profile's

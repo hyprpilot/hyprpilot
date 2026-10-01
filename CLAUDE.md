@@ -104,14 +104,16 @@ Key `src/` modules:
   `harness_server.rs`
   (`mcp harness` — protocol + tool dispatch) over `harness.rs` (the
   session-driving logic) and `sessions/` (the owned-session store).
-  `skills/` = `SkillsRegistry` + the `SKILL.md` loader, plus
-  `wire_metadata.rs` / `wire_references.rs` / `wire_time.rs` (the MCP
-  wire-shape projection, beside the loader whose frontmatter they read
-  and whose `split_frontmatter` `wire_references` reuses for a
-  reference's own fence) — under `mcp/`
-  because everything it feeds exists for the skills server. `resolve`
-  builds one per launch solely to gate that server's injection (skills
-  is the only server also gated on content).
+  `skills/` = `SkillsRegistry` + the `SKILL.md` loader (whose `walk`
+  is the ONE tree walker discovery and bundle listing share), plus
+  `prompts.rs` (`PromptSources` + the prompt-file loader) and
+  `wire_files.rs` / `wire_metadata.rs` / `wire_references.rs` /
+  `wire_time.rs` (the MCP wire-shape projection, beside the loader whose
+  frontmatter they read and whose `split_frontmatter` `wire_references`
+  and `prompts` reuse) — under `mcp/` because everything it feeds exists
+  for the skills server. `resolve` builds the registry and the prompt
+  sources per launch solely to gate that server's injection (skills is
+  the only server also gated on content).
 - `profiles.rs` — the `profiles` subcommand.
 - `watch.rs` — general directory watching: `WatchRoot` in, debounced
   `WatchSignal` out. Knows nothing about skills (no slugs, no
@@ -156,7 +158,7 @@ hyprpilot review -- --resume    # everything after `--` is forwarded verbatim
 hyprpilot profiles              # table of configured profiles
 hyprpilot profiles --json       # machine-readable
 hyprpilot mcp serve             # general tools (`open`)
-hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[],"watch":true}'
+hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[],"watch":true}' --prompt-file ~/AGENTS.md
 hyprpilot mcp harness --max-sessions 64 --max-live-sessions 0
 hyprpilot mcp passthrough --tool '{"name":"decide","inputSchema":{"type":"object"},"url":"http://127.0.0.1:8080/decide"}'
 
@@ -543,10 +545,15 @@ negotiates down.
 **Every cacheable result MUST carry `ttlMs` + `cacheScope`**
 (`Transport::result_ttl_ms` / `rpc::RESULT_CACHE_SCOPE`, stamped at
 all THIRTEEN `with_ttl_ms` sites: `tools/list` on each server, plus
-`resources/list`, `resources/templates/list` and both `resources/read`
-arms on skills, plus the harness's two indexes and its session views —
-ten of which take the transport's ttl and three of which are already
-`0` or computed).
+`resources/list`, `resources/templates/list`, `resources/read` and
+`prompts/list` on skills, plus the harness's two indexes and its session
+views — ten of which take the transport's ttl and three of which are
+already `0` or computed). The skills server's SEP-2640 results
+(`skills/list`, `skills/get`, `resources/directory/read`) are hand-built
+`CustomResult`s stamped by `skills_server::custom_result` instead, which
+also adds `resultType: "complete"` ONLY for a peer at `2026-07-28` or
+later: rmcp strips that field from its own result types for an older
+peer but passes a custom result through untouched.
 `2026-07-28` makes them REQUIRED — `ListToolsResult extends
 PaginatedResult, CacheableResult`, and `CacheableResult` declares both
 without `?` — while rmcp models them `Option` for back-compat and
@@ -601,11 +608,20 @@ to a `2025-11-25` client that does receive the broadcasts.
 the watcher's on a debounced filesystem event, or `reload`'s on
 demand — DIFFS the catalogue (`CatalogueDelta`) rather than firing
 blind: any change emits `resources/list_changed` plus
-`resources/updated` per changed slug and for the catalogue index, and a
+`resources/updated` for each changed skill's `SKILL.md` URI, each
+changed bundle file's `skill://` URI and the catalogue index, and a
 rescan that changed nothing emits **nothing**. Firing spuriously would
 make every rescan cost a full re-fetch and teach clients to ignore us.
-A changed reference FINGERPRINT updates every citing skill but NOT the
-index, which renders a reference count and never a reference's content.
+A changed reference FINGERPRINT updates that reference's own `file://`
+URI — never its citers, whose raw `SKILL.md` did not change — and NOT
+the index, which renders a reference count and never a reference's
+content. A changed prompt fires `prompts/list_changed` (MCP has no
+per-prompt update, so a body edit IS a list change) plus `updated` for
+its `hyprpilot://prompts/<name>`. A file shared by a skill and the skill
+nested in it is one path, announced once. The watcher drops `Access`
+events (opens and closes): the rescan's own walk OPENS every watched
+directory, so counting them armed the next rescan every quiet window,
+forever. Changes under hidden entries never signal either.
 Both callers reach the wire only through `announce()`, so the watcher
 and the tool cannot drift into announcing different things for one
 delta. On the harness, a turn
@@ -639,7 +655,10 @@ Skills reach the agent **only** through the skills server.
   folded via patches.
 - **Per-server blocks** each carry `enabled`, `name`,
   `autoAcceptTools`, `autoRejectTools`, plus their own fields:
-  `[mcp.skills].dirs` (`Vec<SkillEntry { dir, include, ignore, watch }>`,
+  `[mcp.skills].dirs` / `prompts` (both `Vec<SkillEntry { dir, include,
+  ignore, watch }>`) and `system_prompts` (seeded `true` like `watch`,
+  pinned by `defaults_seed_the_system_prompt_passthrough`, snake_case in
+  the seed for the duplicate-key reason below). `dirs`
   default seed `~/.config/hyprpilot/skills` with `watch = true`. Like
   the harness ceilings, `watch` is SEEDED in `defaults.toml` rather than
   left to Rust: `[mcp.skills]` is nested, so the resolver never
@@ -677,7 +696,7 @@ Skills reach the agent **only** through the skills server.
   survive verbatim. Consequence: patches merge by KEY STRING before
   anything is typed, so writing a `defaults.toml`-seeded key
   (`maxDepth` / `maxSessions` / `maxLiveSessions` /
-  `notifyOnComplete`) in the OTHER
+  `notifyOnComplete` / `systemPrompts` / `timeoutSeconds`) in the OTHER
   spelling reaches serde as a duplicate field and fails config load.
   Loud, pinned by a test, and the reason to write a seeded key the way
   the seed writes it.
@@ -715,34 +734,78 @@ Skills reach the agent **only** through the skills server.
   captain edits. The Rust constants remain only for a `Config` carrying
   no patches, and `defaults_seed_the_harness_ceilings` pins the pair
   equal so they cannot drift.
-- Each skill root is a flat directory of `<slug>/SKILL.md` bundles
-  plus optional per-root `include` (allow-list) and `ignore` glob
-  lists, the same pair `[[mcps]]` entries carry — ignore beats include,
-  and an empty or absent `include` means no allow-list rather than
-  "allow nothing". `SkillsRegistry`
-  scans + first-slug-wins on collision; missing roots warn + skip.
+- **A skill is any directory under a root holding a `SKILL.md`, at any
+  depth** (`loader::walk`, ripgrep's `ignore` walker: hidden and
+  `.gitignore`d entries skipped, symlinks never followed). Its SLUG is
+  its path under the root — `git-commit`, `acme/billing/refunds` — and
+  that path is the identity on every tool and the `<skill-path>` of its
+  `skill://` URIs. The final segment follows the Agent Skills naming
+  rule and MUST equal the frontmatter `name`; a missing `name` or
+  `description`, unparseable frontmatter or a mismatch skips the skill
+  with a warning, because the frontmatter is served verbatim and a
+  SEP-2640 host refuses all of those. Prefix segments are lowercase
+  because the first becomes a URI authority. Per-root `include` /
+  `ignore` globs match the whole path (`*` crosses `/`), ignore beats
+  include, an empty or absent `include` means no allow-list, and
+  ignoring a skill does NOT ignore skills nested in it.
+  `SkillsRegistry` scans + first-path-wins on collision; missing roots
+  warn + skip.
+- **Prompts ride the same server.** `PromptSources { files, dirs }` —
+  the profile's `system_prompt` files when `[mcp.skills]
+  .system_prompts` (all entries, `inject = false` too: that flag decides
+  what is BAKED IN, and a prompt kept out of the launch is the one worth
+  invoking on demand) plus every `*.md` directly inside a
+  `[[mcp.skills.prompts]]` dir. Name = frontmatter `name`, else stem,
+  `[A-Za-z0-9_.-]{1,128}`; files before dirs, first wins. Served as MCP
+  prompts (`prompts.listChanged: true`) AND as `hyprpilot://prompts/
+  <name>` resources, because clients split: Claude Code and opencode
+  make prompts slash commands, Hermes makes them model tools, Codex
+  ignores them — while every one of the four reaches resources. A
+  prompt FILE is watched through its PARENT, non-recursively: an
+  editor's atomic save replaces the inode and a file watch would die
+  with it.
 - **Auto-inject** (`resolve::build_mcp_registry_with` +
   `mcp::auto_inject`, one `build_*_definition` per server): under the
   `[mcp].enabled` master gate, each server injects a stdio entry when
   its own block is enabled. The reserved name replaces any same-named
   configured server. Auto-inject is independent of `mcps` — `mcps = []`
   does not suppress it. **Skills is the only one also gated on
-  content**: an empty registry means nothing to serve, so nothing is
-  injected. Its entry spawns `hyprpilot mcp skills --skill-dir <json> …`
-  (one `--skill-dir` per root, each carrying that root's include and ignore
-  lists and `watch` flag as JSON; `watch` defaults ON when absent, so a
-  hand-written catalogue entry predating the flag still gets a watched
-  root).
-- **`hyprpilot mcp skills`** (`mcp/server/skills_server.rs`): an `rmcp` stdio
-  server. Resources: `hyprpilot://skills` (the catalogue index —
-  markdown; the bare form cannot collide with a slug because every slug
-  URI carries a `skills/` prefix) and `hyprpilot://skills/<slug>` (body
-  **plus a manifest footer**). That is the WHOLE resource surface —
-  there is no reference URI; see the `resources/list` bullet below.
-  Tools: `list_skills`, `read_skill`, `list_skill_references`,
-  `read_skill_references`, `reload` (force a rescan — the FALLBACK for
-  a root the watcher reports degraded or off, and for a reference file
-  outside every root).
+  content**: no skill AND no loadable prompt means nothing to serve, so
+  nothing is injected — and a profile with a `system_prompt` gets the
+  server even with no skills. Its entry spawns `hyprpilot mcp skills
+  --skill-dir <json> … --prompt-dir <json> … --prompt-file <path> …`
+  (each dir JSON carrying that root's include and ignore lists and
+  `watch` flag; `watch` defaults ON when absent, so a hand-written
+  catalogue entry still gets a watched root).
+- **`hyprpilot mcp skills`** (`mcp/server/skills_server.rs`) implements
+  **SEP-2640** (`io.modelcontextprotocol/skills`, `directoryRead:
+  true`): every bundle file is a resource at `skill://<skill-path>/
+  <file>`, served RAW from bytes cached at scan time — a host verifies
+  the bytes against the listed sha256 digest and re-parses the
+  frontmatter against the listing, so the old rendered body + footer
+  would fail both, and re-reading the disk at serve time could hand back
+  bytes matching nothing inside the debounce window or follow a
+  post-scan symlink swap. Custom methods via `on_custom_request`:
+  `skills/list` (every `{ uri, frontmatter, resources: [{ uri, digest,
+  size }] }`, single page, a cursor is refused), `skills/get { uri }`,
+  `resources/directory/read { uri }` (direct children of ANY directory
+  in the namespace — skill root, subdirectory, organizational prefix;
+  derived from the BTreeMap of full file paths, so a directory's
+  children are one range). Unknown uri = `-32602`. Entries also carry a
+  top-level `digest` (the `SKILL.md` one): not in the final SEP, read by
+  Claude Code 2.1.286's dark-launched client (flag `tengu_mcp_skills`,
+  caps a server at 100 skills). opencode, Codex and Hermes implement no
+  SEP-2640 — the TOOLS remain the universal path. A bundle past the SEP
+  limits (512 files / 16 MiB, `wire_files::MAX_*`) is not served.
+  Resources listed: `hyprpilot://skills` (the catalogue index),
+  `skill://<path>/SKILL.md` per skill, `hyprpilot://prompts/<name>` per
+  prompt. Readable but never listed: every other bundle file and each
+  declared reference as `file://<canonical path>`. Tools:
+  `list_skills`, `read_skill` (body with the fence stripped, plus a
+  reference manifest and a `files` manifest, both also as text
+  footers), `list_skill_references`, `read_skill_references`,
+  `read_skill_files { uris }` (bundle files for tool-only and HTTP
+  clients), `reload`.
 - **A reference is addressed by its canonical PATH**, not a slug or a
   name. A path is what the citation IS; a slug-and-name is one of many
   addresses for one shared file, which is exactly what makes double
@@ -771,10 +834,14 @@ Skills reach the agent **only** through the skills server.
   always-bundle default re-sent conventions already in context —
   `read_skill git-commit` was ~34 KB, now 12.6 KB. The manifest is what
   keeps the flipped default from being a silent gap, which is why it
-  also rides the RESOURCE path as a text FOOTER: a resource read returns
-  text plus `_meta`, and many clients never surface `_meta` to the
-  model, so an attached skill would otherwise lose its references with
-  no in-context signal at all.
+  also rides `read_skill`'s TEXT as a footer: many clients never surface
+  structured content to the model. The raw `SKILL.md` resource carries
+  no footer — it is the file verbatim — but its frontmatter still lists
+  `references:`, so an attached skill is not silently reference-less.
+  A reference is NOT part of a skill's SEP `resources` set: the SEP
+  addresses files inside one skill, and these live outside every
+  bundle. Its resource form is `file://` over the canonical path, so the
+  address stays the identity; a manifest row carries it as `uri`.
 - **`list_skill_references { slug }` takes a REQUIRED slug.** A
   whole-catalogue scan was a six-figure payload — the single largest
   thing this server could produce — and per-skill listing answers the
@@ -782,9 +849,9 @@ Skills reach the agent **only** through the skills server.
   skill in hand. `list_skills` does NOT resolve references either (it
   reports `referenceCount`, served purely from cache); resolving there
   would read every declared file of every skill on every catalogue call.
-- **`resources/list` is the catalogue and skill bodies, NOTHING else.**
-  There is no reference URI at all — not per-skill, not per-reference.
-  This is measured, not stylistic: on a 127-skill root the listing is
+- **`resources/list` is the catalogue, one `SKILL.md` per skill and one
+  entry per prompt, NOTHING else.** Supporting files and references are
+  readable by URI but never enumerated. This is measured, not stylistic: on a 127-skill root the listing is
   128 entries / ~105 KB (~26k tokens); adding one bundle entry per skill
   took it to 231 / ~170 KB, 48% of it `_meta`, each bundle entry
   repeating its OWN skill's block verbatim. Enumerating all 479
@@ -1508,11 +1575,17 @@ Baseline smokes:
   non-2xx or a dead port.
 - `mcp skills` over a `subscriptions/listen` stream announces a disk
   edit with no `reload`: editing a `SKILL.md` fires
-  `resources/updated` for that slug plus `resources/list_changed`;
-  editing a declared reference fires `updated` for every CITING slug
-  and NOT for the catalogue index; an editor temp file fires nothing.
+  `resources/updated` for its `skill://…/SKILL.md` plus
+  `resources/list_changed`; editing a declared reference fires `updated`
+  for its `file://` URI and NOT for its citers or the catalogue index;
+  editing a prompt file fires `prompts/list_changed`; an editor temp
+  file fires nothing, and an idle sidecar stays idle (no rescan loop).
   A root pointed at a missing directory reports `watch.active: false`
   with `state: degraded` and still answers `tools/list`.
+- `mcp skills` answers `skills/list` with digests that the bytes of a
+  `resources/read` of each listed `skill://` URI hash to, `resultType`
+  only for a `2026-07-28` request, and `resources/directory/read` on an
+  organizational prefix.
 - `hyprpilot profiles` lists configured profiles (empty config →
   validation error naming the empty `[[profiles]]` list).
 - A deliberately broken `config.toml` aborts with a readable garde

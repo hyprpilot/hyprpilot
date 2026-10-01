@@ -2218,7 +2218,7 @@ mod tests {
     /// scheme is not a session, and an empty handle addresses nothing.
     #[test]
     fn a_foreign_uri_is_not_mistaken_for_a_session() {
-        assert_eq!(session_handle_from_uri("hyprpilot://skills/git-commit"), None);
+        assert_eq!(session_handle_from_uri("skill://git-commit/SKILL.md"), None);
         assert_eq!(session_handle_from_uri(SESSION_URI_PREFIX), None);
         assert_eq!(session_handle_from_uri("file:///etc/passwd"), None);
     }

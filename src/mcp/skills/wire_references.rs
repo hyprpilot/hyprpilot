@@ -190,6 +190,7 @@ impl ReferenceEntry {
         let mut row = Map::new();
         if let Some(path) = &self.path {
             row.insert("path".into(), Value::String(path.clone()));
+            row.insert("uri".into(), Value::String(file_uri(path)));
         }
         row.insert("name".into(), Value::String(self.name.clone()));
         self.stat.extend(&mut row);
@@ -316,6 +317,52 @@ pub fn append_references(body: &str, slug: &str, count: usize, bundle: &str) -> 
     ));
     out.push_str(bundle);
     out
+}
+
+/// A reference's resource URI: `file://` over its canonical path.
+///
+/// A reference lives OUTSIDE every skill bundle, so SEP-2640's
+/// `skill://` scheme — which addresses files inside one skill — cannot
+/// name it. `file://` is the URI a path already is, so the address stays
+/// the identity and two citations of one file are still one URI.
+/// Readable through `resources/read` for paths some skill declares, and
+/// never listed: enumerating every shared file is the listing bloat the
+/// manifest exists to avoid.
+#[must_use]
+pub fn file_uri(path: &str) -> String {
+    let mut out = String::from("file://");
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The path a `file://` URI names, percent-decoded. `None` for any other
+/// scheme, a host-qualified URI, or an encoding that is not UTF-8.
+#[must_use]
+pub fn path_from_file_uri(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let bytes = rest.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// Canonicalize a caller-supplied path so it can be compared against
@@ -579,5 +626,18 @@ mod tests {
     #[test]
     fn append_is_a_noop_without_references() {
         assert_eq!(append_references("skill body", "solo", 0, ""), "skill body");
+    }
+
+    /// The URI is the path, so it round-trips exactly — including the
+    /// characters a URI cannot carry raw.
+    #[test]
+    fn a_file_uri_round_trips_its_path() {
+        for path in ["/a/references/output-diff.md", "/with space/x#1%.md", "/ünï/code.md"] {
+            let uri = file_uri(path);
+            assert!(!uri[7..].contains([' ', '#']), "{uri}");
+            assert_eq!(path_from_file_uri(&uri).as_deref(), Some(path));
+        }
+        assert_eq!(path_from_file_uri("file://host/x"), None);
+        assert_eq!(path_from_file_uri("skill://a/SKILL.md"), None);
     }
 }

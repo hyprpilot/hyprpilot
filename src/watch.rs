@@ -1,8 +1,8 @@
 //! Watch directory trees and report that something under them changed.
 //!
 //! Deliberately knows nothing about what the files ARE. A caller names
-//! roots, optionally with per-root ignore globs, and gets one coalesced
-//! signal per quiet window — never a description of the change, because
+//! roots and gets one coalesced signal per quiet window — never a
+//! description of the change, because
 //! a consumer that rescans from scratch cannot use one and a consumer
 //! that could would need a different filter anyway. `mcp skills` is the
 //! first consumer, not the shape this is built around.
@@ -17,8 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use globset::GlobSet;
-use notify_debouncer_full::notify::{self, Event, RecommendedWatcher, RecursiveMode};
+use notify_debouncer_full::notify::{self, Event, EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
@@ -34,17 +33,24 @@ pub const DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// One tree to watch.
 ///
-/// `ignore` is matched against the FIRST path component under `dir`,
-/// which is the same scope a skill root applies to a slug. A consumer
-/// with no such notion leaves it `None`.
+/// Changes under a HIDDEN entry never signal — a `.venv`, a
+/// `.pytest_cache` or an editor's swap file churns constantly and is
+/// never content. There is deliberately no per-root glob filter: a
+/// consumer's own include/ignore rules can name nested paths a
+/// path-component filter cannot evaluate, and getting one wrong drops a
+/// real change for good, while a spurious signal costs one rescan that
+/// diffs to nothing.
 #[derive(Debug, Clone)]
 pub struct WatchRoot {
     pub dir: PathBuf,
-    pub ignore: Option<GlobSet>,
     /// `false` leaves the root unarmed and reported [`WatchState::Off`].
     /// The one honest use is a filesystem that cannot deliver events at
     /// all — see [`WatchState`].
     pub watch: bool,
+    /// `false` watches `dir` itself and not its subtree — for a flat
+    /// directory, or the parent of a single file, where descending would
+    /// arm a watch on every unrelated tree beside it.
+    pub recursive: bool,
 }
 
 /// Why coverage was lost. A closed set, so a consumer can branch on it
@@ -248,7 +254,12 @@ pub fn arm(roots: &[WatchRoot], debounce: Duration) -> Armed {
 
     let mut armed_any = false;
     for root in armable {
-        let state = match debouncer.watch(&root.dir, RecursiveMode::Recursive) {
+        let mode = if root.recursive {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        };
+        let state = match debouncer.watch(&root.dir, mode) {
             Ok(()) => {
                 armed_any = true;
                 tracing::debug!(dir = %root.dir.display(), "watch: armed");
@@ -317,8 +328,14 @@ fn relevant(event: &Event, roots: &[WatchRoot]) -> bool {
     if event.need_rescan() {
         return true;
     }
-    // Any path suffices: a rename out of an ignored slug into a live one
-    // is a change to the live one.
+    // An open, a read or a close changes nothing — a write also arrives
+    // as `Create` / `Modify` — and a walk of the tree (the consumer's
+    // own rescan included) opens every directory in it.
+    if matches!(event.kind, EventKind::Access(_)) {
+        return false;
+    }
+    // Any path suffices: a rename out of a hidden scratch file into a
+    // live one is a change to the live one.
     event
         .paths
         .iter()
@@ -329,18 +346,9 @@ fn covers(root: &WatchRoot, path: &Path) -> bool {
     let Ok(rest) = path.strip_prefix(&root.dir) else {
         return false;
     };
-    let Some(ignore) = &root.ignore else {
-        return true;
-    };
-    // Match the first component only. Deeper components are a slug's
-    // own contents, and a root's globs name slugs — matching deeper
-    // would let a glob written for a slug silently suppress a file
-    // inside an unrelated one.
-    // `map_or(true, ..)` rather than `is_none_or`: the crate's MSRV is
-    // 1.77 and that helper landed in 1.82.
-    rest.components()
-        .next()
-        .map_or(true, |first| !ignore.is_match(first.as_os_str()))
+    !rest
+        .components()
+        .any(|component| component.as_os_str().to_string_lossy().starts_with('.'))
 }
 
 /// Map a backend error onto the closed set, keeping its own words only
@@ -357,21 +365,12 @@ fn classify(err: &notify::Error) -> Degradation {
 mod tests {
     use super::*;
     use notify_debouncer_full::notify::event::Flag;
-    use notify_debouncer_full::notify::EventKind;
 
-    fn globs(patterns: &[&str]) -> Option<GlobSet> {
-        let mut builder = globset::GlobSetBuilder::new();
-        for pat in patterns {
-            builder.add(globset::Glob::new(pat).unwrap());
-        }
-        builder.build().ok()
-    }
-
-    fn root(dir: &str, ignore: &[&str]) -> WatchRoot {
+    fn root(dir: &str) -> WatchRoot {
         WatchRoot {
             dir: PathBuf::from(dir),
-            ignore: globs(ignore),
             watch: true,
+            recursive: true,
         }
     }
 
@@ -387,36 +386,38 @@ mod tests {
     fn a_rescan_flag_is_always_relevant() {
         let event = Event::new(EventKind::Other).set_flag(Flag::Rescan);
         assert!(event.paths.is_empty());
-        assert!(relevant(&event, &[root("/skills", &[])]));
+        assert!(relevant(&event, &[root("/skills")]));
     }
 
+    /// A script's `.venv`, a test cache or an editor swap file churns on
+    /// every run and is never content.
     #[test]
-    fn an_event_under_an_ignored_first_component_is_dropped() {
-        let roots = [root("/skills", &["work-*"])];
-        assert!(!relevant(&touched(&["/skills/work-internal/SKILL.md"]), &roots));
-        assert!(relevant(&touched(&["/skills/git-commit/SKILL.md"]), &roots));
+    fn an_event_under_a_hidden_entry_is_dropped() {
+        let roots = [root("/skills")];
+        assert!(!relevant(&touched(&["/skills/tool/scripts/.venv/lib/x.py"]), &roots));
+        assert!(!relevant(&touched(&["/skills/alpha/.SKILL.md.swp"]), &roots));
+        assert!(relevant(&touched(&["/skills/acme/billing/refunds/SKILL.md"]), &roots));
     }
 
-    /// The globs name slugs, so a captain's `*-laravel` must not reach
-    /// into a live slug's contents and suppress a file there.
+    /// Only components BELOW the root count, so a root that itself lives
+    /// under a dot-directory (`~/.config/...`) still fires.
     #[test]
-    fn an_ignore_glob_matches_the_first_component_only() {
-        let roots = [root("/skills", &["*-laravel"])];
-        assert!(!relevant(&touched(&["/skills/cluster-laravel/SKILL.md"]), &roots));
-        assert!(relevant(&touched(&["/skills/references/scm/x-laravel"]), &roots));
+    fn a_hidden_ancestor_of_the_root_does_not_hide_it() {
+        let roots = [root("/home/c/.config/skills")];
+        assert!(relevant(&touched(&["/home/c/.config/skills/alpha/SKILL.md"]), &roots));
     }
 
     #[test]
     fn an_event_outside_every_root_is_dropped() {
-        assert!(!relevant(&touched(&["/elsewhere/a.md"]), &[root("/skills", &[])]));
+        assert!(!relevant(&touched(&["/elsewhere/a.md"]), &[root("/skills")]));
     }
 
-    /// A rename out of an ignored slug into a live one changes the live
-    /// one, so either path being relevant is enough.
+    /// A rename out of a hidden scratch file into a live one changes the
+    /// live one, so either path being relevant is enough.
     #[test]
     fn a_rename_is_relevant_when_either_path_is() {
-        let roots = [root("/skills", &["work-*"])];
-        let event = touched(&["/skills/work-internal/SKILL.md", "/skills/live/SKILL.md"]);
+        let roots = [root("/skills")];
+        let event = touched(&["/skills/alpha/.SKILL.md.tmp", "/skills/alpha/SKILL.md"]);
         assert!(relevant(&event, &roots));
     }
 
@@ -425,11 +426,11 @@ mod tests {
         let live = tempfile::tempdir().unwrap();
         let armed = arm(
             &[
-                root("/nonexistent-hyprpilot-watch-probe", &[]),
+                root("/nonexistent-hyprpilot-watch-probe"),
                 WatchRoot {
                     dir: live.path().to_path_buf(),
-                    ignore: None,
                     watch: true,
+                    recursive: true,
                 },
             ],
             Duration::from_millis(50),
@@ -451,8 +452,8 @@ mod tests {
         let armed = arm(
             &[WatchRoot {
                 dir: dir.path().to_path_buf(),
-                ignore: None,
                 watch: false,
+                recursive: true,
             }],
             Duration::from_millis(50),
         );
@@ -499,8 +500,8 @@ mod tests {
         let mut armed = arm(
             &[WatchRoot {
                 dir: dir.path().to_path_buf(),
-                ignore: None,
                 watch: true,
+                recursive: true,
             }],
             Duration::from_millis(50),
         );
@@ -514,26 +515,64 @@ mod tests {
         assert_eq!(signal, Some(WatchSignal::Changed));
     }
 
-    /// An ignored slug must not wake the consumer at all - the filter
-    /// runs before the channel, so a noisy suppressed tree costs
-    /// nothing.
+    /// The consumer's own rescan walks the tree, and a walk OPENS every
+    /// directory in it — were opens relevant, each rescan would arm the
+    /// next one, every quiet window, forever.
+    #[test]
+    fn an_access_event_is_never_relevant() {
+        let roots = [root("/skills")];
+        let open = Event::new(EventKind::Access(notify::event::AccessKind::Open(
+            notify::event::AccessMode::Any,
+        )))
+        .add_path(PathBuf::from("/skills/alpha"));
+        assert!(!relevant(&open, &roots));
+    }
+
+    /// A hidden tree must not wake the consumer at all - the filter runs
+    /// before the channel, so a `.venv` rebuilding costs nothing.
     #[tokio::test]
-    async fn an_edit_under_an_ignored_slug_never_signals() {
+    async fn an_edit_under_a_hidden_tree_never_signals() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("work-internal")).unwrap();
+        std::fs::create_dir_all(dir.path().join("tool/.venv")).unwrap();
         let mut armed = arm(
             &[WatchRoot {
                 dir: dir.path().to_path_buf(),
-                ignore: globs(&["work-*"]),
                 watch: true,
+                recursive: true,
             }],
             Duration::from_millis(50),
         );
 
-        std::fs::write(dir.path().join("work-internal/SKILL.md"), "body").unwrap();
+        std::fs::write(dir.path().join("tool/.venv/pyvenv.cfg"), "body").unwrap();
 
         let quiet = tokio::time::timeout(Duration::from_millis(750), armed.signals.recv()).await;
-        assert!(quiet.is_err(), "an ignored slug woke the consumer");
+        assert!(quiet.is_err(), "a hidden tree woke the consumer: {quiet:?}");
+    }
+
+    /// A flat root is the parent of a watched FILE, so its subtree is
+    /// somebody else's and must not wake the consumer.
+    #[tokio::test]
+    async fn a_flat_root_signals_for_its_own_entries_only() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("nested")).unwrap();
+        let mut armed = arm(
+            &[WatchRoot {
+                dir: dir.path().to_path_buf(),
+                watch: true,
+                recursive: false,
+            }],
+            Duration::from_millis(50),
+        );
+
+        std::fs::write(dir.path().join("nested/deep.md"), "body").unwrap();
+        let quiet = tokio::time::timeout(Duration::from_millis(750), armed.signals.recv()).await;
+        assert!(quiet.is_err(), "a write below a flat root woke the consumer");
+
+        std::fs::write(dir.path().join("prompt.md"), "body").unwrap();
+        let signal = tokio::time::timeout(Duration::from_secs(5), armed.signals.recv())
+            .await
+            .expect("no watch signal within 5s");
+        assert_eq!(signal, Some(WatchSignal::Changed));
     }
 
     #[test]
@@ -597,7 +636,7 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         dispatch(
             &tx,
-            &[root("/skills", &[])],
+            &[root("/skills")],
             Err(vec![notify::Error::new(notify::ErrorKind::MaxFilesWatch)]),
         );
         let signal = rx.try_recv().unwrap();

@@ -54,5 +54,5 @@ Validation failures abort startup with a readable field-path error, so a broken 
 | ------------------------------------------------- | --------------------------------------- |
 | `~/.config/hyprpilot/config.{toml,json,yaml,yml}` | Global config.                          |
 | `~/.config/hyprpilot/profiles/*.{ext}`            | Named config-layer overlays.            |
-| `~/.config/hyprpilot/skills/<slug>/SKILL.md`      | Skill bundles (default catalogue root). |
+| `~/.config/hyprpilot/skills/<path>/SKILL.md`      | Skill bundles (default catalogue root). |
 | `~/.config/hyprpilot/mcps/*.json`                 | MCP catalogue files (your convention).  |

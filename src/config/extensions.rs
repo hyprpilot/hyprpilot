@@ -103,7 +103,9 @@ fn validate_mcp_source<'a>(
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct SkillEntry {
-    /// Path to a directory containing `<slug>/SKILL.md` bundles.
+    /// Path to a skill root (a tree of `SKILL.md` bundles, at any depth)
+    /// or, under `[[mcp.skills.prompts]]`, a flat directory of `*.md`
+    /// prompts.
     /// `~` and `$VAR` expand at consume time.
     /// Empty paths fall through to "directory not found" warnings at
     /// load time; no garde-level check needed.

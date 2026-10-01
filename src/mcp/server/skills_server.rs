@@ -13,78 +13,57 @@
 //! a watch cannot cover — a root the watcher reports degraded or off,
 //! or a reference file outside every root.
 //!
-//! Current surface:
-//! - Resources — the catalogue and skill bodies, and NOTHING else
-//!   - `hyprpilot://skills` — the catalogue index (markdown)
-//!   - `hyprpilot://skills/<slug>` — full SKILL.md body, followed by a
-//!     manifest footer naming every reference it declares and the PATH
-//!     that fetches each
-//!   - Both carry ONE namespaced `_meta` key, `io.hyprpilot/skill`:
-//!     the verbatim frontmatter MINUS `title`/`description` (already
-//!     carried by the spec `Resource` fields) and MINUS `references`
-//!     (superseded by the resolved manifest) PLUS the runtime-derived
-//!     `path`, `bundleDir`, `size`, `modified`, `created`. Nothing in
-//!     that block repeats a spec-compliant `Resource` field. See
-//!     `skills/wire_metadata.rs`.
-//!   - There is deliberately NO reference URI. A reference's identity is
-//!     its path, not a slug-and-name, so a resource scheme would be a
-//!     second address for something the manifest already addresses
-//!     better — and enumerating one per reference would have cost more
-//!     context than the skills themselves.
-//! - Tools
-//!   - `list_skills` — `{ skills: [{ slug, title, description, uri,
-//!     referenceCount, metadata }] }`. Served purely from cache; it
-//!     does NOT resolve references, which would mean reading every
-//!     declared file of every skill on every call.
-//!   - `read_skill { slug, bundle? }` — `{ uri, body, references: [manifest],
-//!     bundle, metadata }`. Reference BODIES are opt-in (`bundle: true`);
-//!     the manifest addressing each one always rides along, so declining
-//!     a body is never a silent gap.
-//!   - `list_skill_references { slug }` — one skill's reference metadata,
-//!     no bodies. Each row carries the canonical `path`: the address to
-//!     load it, and the identity that says whether you already hold it.
-//!   - `read_skill_references { references: [path] }` — bodies by PATH,
-//!     validated against the set some skill actually declares. Paths
-//!     address files rather than skills, so one call spans skills, a
-//!     shared file is fetched once, and repeats collapse.
-//!   - `reload` — force a rescan. The watcher does this on its own for
-//!     any change under a root, and BOTH callers announce through one
-//!     `announce()`, so they cannot disagree about a delta. Skills back
-//!     the resource list; the tool list is fixed for a given process,
-//!     so no tool-list-changed fires
+//! A skill is any directory under a root holding a `SKILL.md`, at any
+//! depth, identified by its PATH (`git-commit`, `acme/billing/refunds`).
+//!
+//! Surfaces:
+//! - SEP-2640 (`io.modelcontextprotocol/skills`, `directoryRead`):
+//!   `skills/list`, `skills/get` and `resources/directory/read`, with
+//!   every file of a bundle served RAW as `skill://<skill-path>/<file>`
+//!   and listed with its sha256 digest and size. Raw because a host
+//!   verifies the bytes against the digest and re-parses the frontmatter
+//!   against the listing — a rendered body would fail both.
+//! - Resources: the `hyprpilot://skills` catalogue index, one
+//!   `skill://<path>/SKILL.md` per skill, one `hyprpilot://prompts/<name>`
+//!   per prompt. Supporting files and shared references are readable but
+//!   NOT listed — enumerating them is the listing bloat measured before.
+//! - Shared references (frontmatter `references:`, files outside every
+//!   bundle) stay addressed by canonical PATH, readable as `file://`
+//!   resources for declared paths only. `skill://` cannot name them: the
+//!   SEP scheme addresses files inside one skill.
+//! - Prompts: the profile's `system_prompt` files and every `*.md` in a
+//!   `[[mcp.skills.prompts]]` directory, served through `prompts/list` /
+//!   `prompts/get` and as resources.
+//! - Tools, for clients that reach the model only through tools:
+//!   `list_skills`, `read_skill` (rendered body plus a manifest of its
+//!   references and files), `list_skill_references`,
+//!   `read_skill_references` (bodies by path), `read_skill_files`
+//!   (bundle files by `skill://` URI) and `reload`.
 //!
 //! The harness tools (`spawn` / `session_*`) live on a SEPARATE server
-//! — `hyprpilot mcp harness`, see `super::harness_server`. They were
-//! once gated onto this one behind a `--with-harness` flag; splitting
-//! them into their own process makes the gate structural (this server
-//! cannot serve a harness tool because it does not implement one)
-//! rather than a name check that had to be remembered in both
-//! `list_tools` and `call_tool`.
-//!
-//! The tool list is fixed for the process, which is why
-//! `tools.list_changed` stays `false` rather than being advertised as
-//! dynamic.
+//! — `hyprpilot mcp harness`, see `super::harness_server`, which makes
+//! the gate structural: this server cannot serve a harness tool because
+//! it does not implement one. The tool list is fixed for the process,
+//! which is why `tools.list_changed` stays `false`.
 //!
 //! Metadata is de-duplicated to a SINGLE block (`metadata` in tool
 //! output, `io.hyprpilot/skill` in resource `_meta`): the WHOLE parsed
 //! YAML frontmatter projected losslessly to JSON, minus the keys another
-//! field already carries — `title`/`description` (the spec fields, byte
-//! for byte) and `references` (the resolved manifest) — plus the
-//! runtime-derived `path`, `bundleDir`, `size`, `modified` and
-//! `created`. An author can add any new frontmatter key and it reaches
-//! the agent verbatim with zero server changes.
-//! `skills/wire_metadata.rs` owns the conversion + the merge + the
-//! `_meta` namespacing; this module wires it into the cache + the wire
-//! shapes.
+//! field already carries, plus the runtime-derived `path`, `bundleDir`,
+//! `size`, `modified` and `created`. `skills/list` carries the
+//! frontmatter itself verbatim, as the SEP requires.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Args;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, ResourceContents, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CustomRequest, CustomResult, ErrorCode, GetPromptRequestParams,
+    GetPromptResponse, GetPromptResult, Implementation, ListPromptsResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, PromptMessage, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents, Role, ServerCapabilities,
+    ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ServerHandler, ServiceExt};
@@ -92,6 +71,8 @@ use tokio::sync::RwLock;
 
 use crate::config::mcp::DEFAULT_SKILLS_SERVER_NAME;
 use crate::config::ResolvedSkillEntry;
+use crate::mcp::skills::prompts::{Prompt, PromptSources};
+use crate::mcp::skills::wire_files::{read_bundle, BundleFile};
 use crate::mcp::skills::SkillsRegistry;
 
 /// The receiver half `arm_watch` hands the relay.
@@ -102,54 +83,83 @@ use super::rpc::{
 };
 use crate::mcp::skills::wire_metadata::{frontmatter_json, skill_block, skill_meta};
 use crate::mcp::skills::wire_references::{
-    self, append_references, frontmatter_references, FrontmatterRefs, ReferenceEntry,
+    self, append_references, file_uri, frontmatter_references, path_from_file_uri, FrontmatterRefs, ReferenceEntry,
 };
+
+/// The SEP-2640 extension identifier, declared under
+/// `capabilities.extensions`.
+const SKILLS_EXTENSION_ID: &str = "io.modelcontextprotocol/skills";
 
 /// Args for `hyprpilot mcp skills`. Skills are discovered by directory
 /// scan — the launcher passes `--skill-dir <json>` once per configured
-/// root, each carrying that root's ignore globs. This mirrors how the
-/// launcher's own `SkillsRegistry` works and preserves each
-/// directory's own ignore list — a skill slug suppressed in one root
-/// is still visible when it appears in another root with no ignore for
-/// that pattern.
+/// root, each carrying that root's globs — and prompts the same way,
+/// plus one `--prompt-file` per `system_prompt` file the profile passes
+/// through.
 #[derive(Debug, Args, Clone)]
 pub struct SkillsArgs {
     #[command(flatten)]
     pub serve: super::serve_args::ServeArgs,
 
     /// JSON-encoded skill root entry. Repeatable — directories are
-    /// searched in declaration order; first-slug-wins on collision.
+    /// searched in declaration order; first path wins on collision.
     ///
-    /// Shape: `{ "dir": "<abs-path>", "ignore": ["glob1", "glob2"] }`
-    ///
-    /// Encoding per-dir ignore globs inside the same arg keeps each
-    /// entry self-contained: the launcher serializes its resolved
-    /// `ResolvedSkillEntry` set as JSON objects, the sidecar
-    /// deserializes and builds a matching `SkillsRegistry` that
-    /// applies each root's ignore list independently.
-    #[arg(long = "skill-dir", value_parser = parse_skill_dir_arg)]
+    /// Shape: `{ "dir": "<abs-path>", "include": [...], "ignore": [...], "watch": true }`
+    #[arg(long = "skill-dir", value_parser = parse_dir_arg)]
     pub skill_dirs: Vec<SkillDirEntry>,
+
+    /// JSON-encoded prompt directory, the `--skill-dir` shape. Every
+    /// `*.md` directly inside is served as a prompt.
+    #[arg(long = "prompt-dir", value_parser = parse_dir_arg)]
+    pub prompt_dirs: Vec<SkillDirEntry>,
+
+    /// A single prompt file, served as a prompt named by its frontmatter
+    /// `name` or its stem. Repeatable; earlier files win a name.
+    #[arg(long = "prompt-file")]
+    pub prompt_files: Vec<PathBuf>,
 }
 
-/// One decoded `--skill-dir` entry. The launcher serializes
-/// `ResolvedSkillEntry` as JSON; the sidecar deserializes back.
+/// One decoded `--skill-dir` / `--prompt-dir` entry. The launcher
+/// serializes `ResolvedSkillEntry` as JSON; the sidecar deserializes
+/// back.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct SkillDirEntry {
     pub dir: PathBuf,
     #[serde(default)]
     pub ignore: Vec<String>,
-    /// Allow-list globs. Absent (the pre-include JSON shape) decodes
-    /// as empty, which means "no allow-list" — never "allow nothing".
+    /// Allow-list globs. Absent decodes as empty, which means "no
+    /// allow-list" — never "allow nothing".
     #[serde(default)]
     pub include: Vec<String>,
-    /// Defaults ON, so a hand-written MCP catalogue entry carrying the
-    /// pre-watcher JSON shape still gets a watched root.
+    /// Defaults ON, so a hand-written MCP catalogue entry that omits it
+    /// still gets a watched root.
     #[serde(default = "watch_default")]
     pub watch: bool,
 }
 
 fn watch_default() -> bool {
     true
+}
+
+impl SkillDirEntry {
+    /// Rebuild the launcher's `ResolvedSkillEntry`, globs compiled.
+    fn resolve(self) -> ResolvedSkillEntry {
+        let ignore = compile_arg_globs(&self.ignore, &self.dir, "ignore");
+        let include = compile_arg_globs(&self.include, &self.dir, "include");
+        ResolvedSkillEntry {
+            // Absolutized here because notify joins a relative watch
+            // path onto the process cwd while we would keep the relative
+            // form — every event would then fail `strip_prefix` and be
+            // dropped, which reads as a root that is watched and never
+            // fires. The launcher already absolutizes (`resolve_user`),
+            // so this only covers a hand-written catalogue entry.
+            dir: crate::paths::resolve_user(&self.dir.to_string_lossy()),
+            ignore_patterns: self.ignore,
+            ignore,
+            include_patterns: self.include,
+            include,
+            watch: self.watch,
+        }
+    }
 }
 
 /// Compile one `--skill-dir` glob list. An empty list is `None` — no
@@ -180,16 +190,20 @@ fn compile_arg_globs(patterns: &[String], dir: &std::path::Path, kind: &str) -> 
     builder.build().ok()
 }
 
-fn parse_skill_dir_arg(raw: &str) -> Result<SkillDirEntry, String> {
-    serde_json::from_str::<SkillDirEntry>(raw).map_err(|e| {
-        format!("--skill-dir must be a JSON object `{{\"dir\":\"...\",\"include\":[...],\"ignore\":[...]}}`: {e}")
-    })
+fn parse_dir_arg(raw: &str) -> Result<SkillDirEntry, String> {
+    serde_json::from_str::<SkillDirEntry>(raw)
+        .map_err(|e| format!("must be a JSON object `{{\"dir\":\"...\",\"include\":[...],\"ignore\":[...]}}`: {e}"))
 }
 
 /// Run the rmcp stdio server in the foreground. Returns when the
 /// vendor closes the pipe (or on init error).
 pub async fn run_skills(args: SkillsArgs, config: super::ConfigSource) -> anyhow::Result<()> {
-    tracing::info!(dirs = args.skill_dirs.len(), "mcp: starting the skills server");
+    tracing::info!(
+        dirs = args.skill_dirs.len(),
+        prompt_dirs = args.prompt_dirs.len(),
+        prompt_files = args.prompt_files.len(),
+        "mcp: starting the skills server"
+    );
     let serve = args.serve.clone();
     run(SkillsServer::new(args, config)?, &serve).await
 }
@@ -230,10 +244,7 @@ async fn run(handler: SkillsServer, serve: &super::serve_args::ServeArgs) -> any
     let relay = tokio::spawn(relay_server.relay_watch(signals, Some(running.peer().clone())));
 
     // Race the transport against SIGTERM/SIGHUP. Without this a
-    // supervisor stopping the sidecar would skip every destructor and
-    // strand live sessions — `PR_SET_PDEATHSIG` still covers the
-    // SIGKILL case, but only after the kernel notices, and it cannot
-    // remove the session directories.
+    // supervisor stopping the sidecar would skip every destructor.
     wait_for_shutdown(running).await;
 
     // Stop notifying before the transport is gone, then release the
@@ -249,7 +260,7 @@ async fn run(handler: SkillsServer, serve: &super::serve_args::ServeArgs) -> any
 
 #[derive(Debug, Default)]
 struct SkillsCache {
-    skills: std::collections::HashMap<String, LoadedSkill>,
+    skills: HashMap<String, LoadedSkill>,
     order: Vec<String>,
     /// Every canonical path some skill declares, with the skills citing
     /// it and the fingerprint the manifest serves for it.
@@ -263,10 +274,65 @@ struct SkillsCache {
     /// from silence. Bodies stay uncached deliberately — they resolve
     /// per call so `modified` is always live — but `modified` is a
     /// SERVED manifest field, so a fingerprint change IS a change in
-    /// served content. That makes the diff exact rather than a
-    /// heuristic, at one `metadata()` per unique declared file per
-    /// rescan.
-    declared: std::collections::HashMap<String, DeclaredReference>,
+    /// served content.
+    declared: HashMap<String, DeclaredReference>,
+    /// Every served bundle file, keyed by its full skill path
+    /// (`<skill-path>/<file-path>`, the URI minus its scheme). A nested
+    /// skill's files are also its enclosing skill's, and land here once.
+    /// Ordered, so a directory's children are one contiguous range.
+    files: BTreeMap<String, BundleFile>,
+    prompts: Vec<Prompt>,
+}
+
+impl SkillsCache {
+    /// The file a `skill://` URI's path names.
+    fn file(&self, path: &str) -> Option<&BundleFile> {
+        self.files.get(path)
+    }
+
+    fn prompt(&self, name: &str) -> Option<&Prompt> {
+        self.prompts.iter().find(|p| p.name == name)
+    }
+
+    /// The direct children of the directory `path` names, as resource
+    /// descriptors: files with their own metadata, subdirectories as
+    /// `inode/directory`. `None` when no served file lives under it —
+    /// which covers both an unknown path and one naming a file.
+    ///
+    /// Every directory counts: a skill's root, any subdirectory, and the
+    /// organizational prefixes above a nested skill (`skill://acme`).
+    fn directory(&self, path: &str) -> Option<Vec<rmcp::model::Resource>> {
+        let prefix = format!("{path}/");
+        let mut children: BTreeMap<&str, Option<&BundleFile>> = BTreeMap::new();
+        for (full, file) in self.files.range(prefix.clone()..) {
+            let Some(rest) = full.strip_prefix(&prefix) else { break };
+            match rest.split_once('/') {
+                None => {
+                    children.insert(rest, Some(file));
+                }
+                Some((dir, _)) => {
+                    children.entry(dir).or_insert(None);
+                }
+            }
+        }
+        if children.is_empty() {
+            return None;
+        }
+        Some(
+            children
+                .into_iter()
+                .map(|(name, file)| {
+                    let uri = format!("skill://{prefix}{name}");
+                    match file {
+                        Some(file) => rmcp::model::Resource::new(uri, name)
+                            .with_mime_type(file.mime_type())
+                            .with_size(file.size()),
+                        None => rmcp::model::Resource::new(uri, name).with_mime_type("inode/directory"),
+                    }
+                })
+                .collect(),
+        )
+    }
 }
 
 /// One declared reference path, as the cache remembers it.
@@ -287,15 +353,18 @@ pub(crate) struct LoadedSkill {
     path: PathBuf,
     title: String,
     description: String,
+    /// The frontmatter, verbatim, as `skills/list` must serve it.
+    frontmatter: serde_json::Map<String, serde_json::Value>,
     /// The single de-duplicated metadata block, built once here (not
-    /// per request): verbatim frontmatter MINUS `title`/`description`
-    /// (carried by the spec `Resource` fields) PLUS runtime `path` +
-    /// `bundleDir`. Serves both the tool `metadata` field and the
-    /// resource `_meta` (`io.hyprpilot/skill`) — see
-    /// `skills::wire_metadata::{skill_block, skill_meta}`.
+    /// per request) — see `skills::wire_metadata::{skill_block,
+    /// skill_meta}`.
     pub(crate) meta_block: serde_json::Map<String, serde_json::Value>,
+    /// The `SKILL.md` body with its frontmatter fence stripped — the
+    /// RENDERED view the tools serve. The raw file is in `files`.
     body: String,
     refs: FrontmatterRefs,
+    /// Every file of the bundle, `SKILL.md` included, in walk order.
+    files: Vec<BundleFile>,
 }
 
 impl LoadedSkill {
@@ -307,11 +376,10 @@ impl LoadedSkill {
     /// name, timestamps, and its own frontmatter.
     ///
     /// Resolved from disk per call rather than cached alongside the
-    /// body: `reload` is the body's invalidation point, but a reference
-    /// is edited far more often than the skill that declares it, and
-    /// caching here would serve a stale convention — and a stale mtime,
-    /// which is the one thing these fields exist to report — until an
-    /// unrelated reload happened to clear it.
+    /// body: a reference is edited far more often than the skill that
+    /// declares it, and caching here would serve a stale convention —
+    /// and a stale mtime — until an unrelated reload happened to clear
+    /// it.
     fn references(&self) -> Vec<ReferenceEntry> {
         if self.refs.references.is_empty() {
             return Vec::new();
@@ -320,6 +388,44 @@ impl LoadedSkill {
             .map(|dir| wire_references::resolve(dir, &self.refs))
             .unwrap_or_default()
     }
+
+    fn uri(&self) -> String {
+        skill_md_uri(&self.slug)
+    }
+
+    fn skill_md(&self) -> Option<&BundleFile> {
+        self.files.iter().find(|f| f.rel == "SKILL.md")
+    }
+
+    /// Supporting files — everything but `SKILL.md`.
+    fn supporting(&self) -> impl Iterator<Item = &BundleFile> {
+        self.files.iter().filter(|f| f.rel != "SKILL.md")
+    }
+
+    /// The SEP-2640 entry `skills/list` and `skills/get` return.
+    ///
+    /// `digest` at the top level is not in the final spec — it is the
+    /// SKILL.md digest Claude Code's client (2.1.286) reads from an
+    /// earlier draft. A result is an open map, so it costs a conforming
+    /// host nothing.
+    fn entry(&self) -> serde_json::Value {
+        serde_json::json!({
+            "uri": self.uri(),
+            "frontmatter": self.frontmatter,
+            "resources": self.files.iter().map(|f| serde_json::json!({
+                "uri": skill_file_uri(&self.slug, &f.rel),
+                "digest": f.digest,
+                "size": f.size(),
+            })).collect::<Vec<_>>(),
+            "digest": self.skill_md().map(|f| f.digest.clone()),
+        })
+    }
+}
+
+/// What one scan read off disk, before the cache is built from it.
+struct Scan {
+    skills: Vec<(crate::mcp::skills::Skill, Vec<BundleFile>)>,
+    prompts: Vec<Prompt>,
 }
 
 // ── Server ────────────────────────────────────────────────────────────
@@ -327,6 +433,7 @@ impl LoadedSkill {
 #[derive(Clone)]
 struct SkillsServer {
     registry: Arc<SkillsRegistry>,
+    prompts: Arc<PromptSources>,
     skills_cache: Arc<RwLock<SkillsCache>>,
     /// The client's `subscriptions/listen` stream, when it opened one.
     subscriptions: super::rpc::Subscriptions,
@@ -349,40 +456,19 @@ struct SkillsServer {
 impl SkillsServer {
     fn new(args: SkillsArgs, _config: super::ConfigSource) -> anyhow::Result<Self> {
         let transport = args.serve.transport;
-        // Build one `ResolvedSkillEntry` per decoded `--skill-dir`
-        // JSON entry. Each entry carries its OWN ignore list so the
-        // sidecar replicates the launcher's per-dir suppression exactly —
-        // a slug ignored in one root is still visible from another
-        // root that doesn't suppress it. A bad glob is logged + skipped
-        // rather than aborting startup (graceful degradation).
-        let entries: Vec<ResolvedSkillEntry> = args
-            .skill_dirs
-            .into_iter()
-            .map(|entry| {
-                let ignore = compile_arg_globs(&entry.ignore, &entry.dir, "ignore");
-                let include = compile_arg_globs(&entry.include, &entry.dir, "include");
-                ResolvedSkillEntry {
-                    // Absolutized here because notify joins a relative
-                    // watch path onto the process cwd while we would
-                    // keep the relative form — every event would then
-                    // fail `strip_prefix` and be dropped, which reads as
-                    // a root that is watched and never fires. The
-                    // launcher already absolutizes (`resolve_user`), so
-                    // this only covers a hand-written catalogue entry,
-                    // which is exactly the case with no launcher to fix
-                    // it.
-                    dir: crate::paths::resolve_user(&entry.dir.to_string_lossy()),
-                    ignore_patterns: entry.ignore,
-                    ignore,
-                    include_patterns: entry.include,
-                    include,
-                    watch: entry.watch,
-                }
-            })
-            .collect();
+        let entries: Vec<ResolvedSkillEntry> = args.skill_dirs.into_iter().map(SkillDirEntry::resolve).collect();
+        let prompts = PromptSources {
+            files: args
+                .prompt_files
+                .iter()
+                .map(|f| crate::paths::resolve_user(&f.to_string_lossy()))
+                .collect(),
+            dirs: args.prompt_dirs.into_iter().map(SkillDirEntry::resolve).collect(),
+        };
 
         Ok(Self {
             registry: Arc::new(SkillsRegistry::new(entries)),
+            prompts: Arc::new(prompts),
             skills_cache: Arc::new(RwLock::new(SkillsCache::default())),
             subscriptions: super::rpc::Subscriptions::default(),
             reload_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -395,32 +481,21 @@ impl SkillsServer {
     /// workflow before it reads any individual tool schema.
     fn instructions(&self) -> String {
         String::from(
-            "Hyprpilot skills MCP server. Skills are exposed as \
-             `hyprpilot://skills/<slug>` resources. Call `list_skills` to \
-             enumerate; `read_skill` to fetch a body. \
-             A skill may declare REFERENCES — shared convention files it \
-             cites. Their bodies are NOT included by default: `read_skill` \
-             lists what the skill declares (path, name, size, when it last \
-             changed), and you fetch only what the body directs you to with \
-             `read_skill_references { references: [\"<path>\", ...] }`, \
-             passing the `path` values from that list. Or pass \
-             `bundle: true` to `read_skill` for body-plus-everything in one \
-             call. References have no URI of their own — a path addresses a \
-             FILE, so one call spans skills, and a path you already loaded \
-             needs no second fetch even when another skill cites it under a \
-             different name. `list_skill_references { slug }` shows a \
-             skill's paths without reading any bodies. Bundled references \
-             are delimited by a `reference:` YAML block naming each one. \
-             Every resource and tool result carries the skill's \
-             frontmatter verbatim in ONE block (as `metadata` in tool output, \
-             and as the `io.hyprpilot/skill` key in resource `_meta`) — minus \
-             `title` / `description` (already in the spec Resource fields) \
-             and `references` (superseded by the manifest), plus the runtime \
-             `path`, `bundleDir`, `size`, `modified` and `created`. \
-             Skill roots are WATCHED: an edit is rescanned and announced as \
-             `resources/updated` (per affected skill) plus \
-             `resources/list_changed`, so you never need `reload` unless \
-             `list_skills` reports a root degraded or off.",
+            "Hyprpilot skills MCP server. Call `list_skills` to enumerate skills and `read_skill { slug }` \
+             to load one; a slug is the skill's path, `name` or `group/name` for a nested skill. \
+             `read_skill` returns the instructions plus two manifests, neither with bodies: the shared \
+             REFERENCES the skill declares (fetch with `read_skill_references { references: [path] }`, \
+             passing each row's `path` — a path is a file, so one call spans skills and a path you \
+             already loaded needs no second fetch) and the skill's own FILES such as `scripts/` \
+             (fetch with `read_skill_files { uris: [...] }`). `bundle: true` on `read_skill` returns \
+             every reference body in one call. Skills are also SEP-2640 resources: \
+             `skill://<path>/SKILL.md` and every bundle file as `skill://<path>/<file>`, plus \
+             `skills/list`, `skills/get` and `resources/directory/read`; a shared reference reads as \
+             its `file://` uri. Prompts (including this profile's system prompt) are served as MCP \
+             prompts and as `hyprpilot://prompts/<name>` resources, so an edited system prompt can be \
+             re-read mid-session. Roots are WATCHED: edits announce themselves as \
+             `resources/updated` + `resources/list_changed` (and `prompts/list_changed`), so you \
+             never need `reload` unless `list_skills` reports a root degraded or off.",
         )
     }
 
@@ -430,17 +505,40 @@ impl SkillsServer {
     /// Called BEFORE the startup scan: an edit landing between the scan
     /// and the first drain is then queued rather than lost. The channel
     /// is unbounded and nothing reads it yet.
+    ///
+    /// Prompt sources are flat, so their roots are not recursive; a
+    /// prompt FILE watches its parent, because an editor's atomic save
+    /// replaces the inode and a watch on the file itself would die with
+    /// the first edit.
     async fn arm_watch(&self, debounce: std::time::Duration) -> (Option<crate::watch::Watcher>, WatchSignals) {
-        let roots: Vec<crate::watch::WatchRoot> = self
+        let mut roots: Vec<crate::watch::WatchRoot> = self
             .registry
             .dirs()
             .iter()
             .map(|entry| crate::watch::WatchRoot {
                 dir: entry.dir.clone(),
-                ignore: entry.ignore.clone(),
                 watch: entry.watch,
+                recursive: true,
             })
             .collect();
+        roots.extend(self.prompts.dirs.iter().map(|entry| crate::watch::WatchRoot {
+            dir: entry.dir.clone(),
+            watch: entry.watch,
+            recursive: false,
+        }));
+        let mut parents: Vec<PathBuf> = self
+            .prompts
+            .files
+            .iter()
+            .filter_map(|f| f.parent().map(std::path::Path::to_path_buf))
+            .collect();
+        parents.sort();
+        parents.dedup();
+        roots.extend(parents.into_iter().map(|dir| crate::watch::WatchRoot {
+            dir,
+            watch: true,
+            recursive: false,
+        }));
         let armed = crate::watch::arm(&roots, debounce);
         *self.watch_status.write().await = armed.status;
         (armed.watcher, armed.signals)
@@ -451,25 +549,19 @@ impl SkillsServer {
     /// The single notification path. Both callers — the `reload` tool
     /// and the watcher relay — reach the wire only through here, so the
     /// two cannot drift into announcing different things for the same
-    /// delta.
-    /// `peer` is `None` over HTTP, where there is no ambient one to
-    /// broadcast through — see [`super::rpc::Subscriptions`]. Open
-    /// `subscriptions/listen` streams are reached either way, because
-    /// their sinks carry their own peer and the registry is shared by
-    /// every clone of this handler.
+    /// delta. `peer` is `None` over HTTP, where there is no ambient one
+    /// to broadcast through — see [`super::rpc::Subscriptions`].
     async fn announce(&self, peer: Option<&rmcp::service::Peer<RoleServer>>, delta: &CatalogueDelta) {
         // Deliberately NOT gated on `peer.peer_info()`. A client that
-        // opens with `subscriptions/listen` — which is the NORMAL path
-        // for Claude Code's v2 runtime, per the opener tests — takes
-        // rmcp's stateless branch and never records peer info at all,
-        // so gating on it would silence every notification for exactly
-        // the clients that asked for them. An unsolicited notification
-        // before `initialize` is at worst ignored; a subscriber that
-        // never hears anything is the failure this feature exists to
-        // prevent.
+        // opens with `subscriptions/listen` never records peer info at
+        // all, so gating on it would silence every notification for
+        // exactly the clients that asked for them.
         let plan = delta.plan();
-        if plan.list_changed {
+        if plan.resources_list_changed {
             self.subscriptions.resource_list_changed(peer).await;
+        }
+        if plan.prompts_list_changed {
+            self.subscriptions.prompt_list_changed(peer).await;
         }
         self.subscriptions.resources_updated(peer, plan.updated).await;
     }
@@ -507,17 +599,19 @@ impl SkillsServer {
             }
             let delta = self.reload_skills().await;
             if delta.is_empty() {
-                // Editor temp files and `git` internals reach here and
-                // diff to nothing. Free on the wire, which is why the
-                // filter does not try to guess them by name.
+                // Sibling files beside a watched prompt and `git`
+                // internals reach here and diff to nothing. Free on the
+                // wire, which is why the filter does not try to guess
+                // them by name.
                 tracing::debug!("mcp::server: watched change rescanned — no catalogue change");
                 continue;
             }
             tracing::info!(
                 membership_changed = delta.membership_changed,
                 updated = delta.updated.len(),
+                files_changed = delta.files_changed.len(),
                 references_changed = delta.references_changed.len(),
-                reference_citers = delta.reference_citers.len(),
+                prompts_changed = delta.prompts_changed.len(),
                 "mcp::server: skills rescanned from a watched change"
             );
             self.announce(peer.as_ref(), &delta).await;
@@ -544,15 +638,41 @@ impl SkillsServer {
     /// anything changed would invalidate a client's cache for nothing.
     async fn reload_skills(&self) -> CatalogueDelta {
         let _ordered = self.reload_gate.lock().await;
+        // Carried into the scan so an unchanged file is not read and
+        // hashed again. Cheap: the bytes are shared, not copied.
+        let previous: HashMap<PathBuf, BundleFile> = self
+            .skills_cache
+            .read()
+            .await
+            .files
+            .values()
+            .map(|f| (f.abs.clone(), f.clone()))
+            .collect();
         let registry = self.registry.clone();
+        let prompts = self.prompts.clone();
         let result = tokio::task::spawn_blocking(move || {
             registry.reload().map_err(|e| e.to_string())?;
-            Ok::<Vec<crate::mcp::skills::Skill>, String>(registry.list())
+            let mut skills = Vec::new();
+            for skill in registry.list() {
+                let Some(dir) = skill.path.parent() else { continue };
+                match read_bundle(dir, &previous) {
+                    Ok(files) => skills.push((skill, files)),
+                    Err(err) => tracing::warn!(
+                        slug = %skill.slug,
+                        %err,
+                        "mcp::server: bundle past the SEP-2640 limits — not served"
+                    ),
+                }
+            }
+            Ok::<Scan, String>(Scan {
+                skills,
+                prompts: prompts.load(),
+            })
         })
         .await;
 
-        let skills = match result {
-            Ok(Ok(s)) => s,
+        let scan = match result {
+            Ok(Ok(scan)) => scan,
             Ok(Err(err)) => {
                 tracing::error!(%err, "mcp::server: skills reload failed");
                 return CatalogueDelta::default();
@@ -564,60 +684,61 @@ impl SkillsServer {
         };
 
         let mut cache = self.skills_cache.write().await;
-        let next = build_cache(skills);
+        let next = build_cache(scan);
         let delta = CatalogueDelta::between(&cache, &next);
         *cache = next;
         delta
     }
 }
 
-/// What a `reload` actually changed, so the right notification fires for
+/// What a rescan actually changed, so the right notification fires for
 /// the right URI.
 ///
-/// With `ttlMs` effectively indefinite (`rpc::RESULT_TTL_MS`), a client
-/// re-fetches only when told to. `resources/list_changed` covers a skill
-/// appearing or disappearing; it says nothing about a body that changed
-/// under an unchanged slug, which is the common edit and the one
-/// `hyprpilot-reload` exists to catch. That needs a per-URI
+/// With `ttlMs` effectively indefinite, a client re-fetches only when
+/// told to. `resources/list_changed` covers a skill appearing or
+/// disappearing; it says nothing about a file that changed under an
+/// unchanged skill, which is the common edit. That needs a per-URI
 /// `resources/updated`.
 #[derive(Debug, Default, PartialEq)]
 struct CatalogueDelta {
-    /// Slugs added or removed — membership, so the LIST changed.
+    /// Skills added or removed — membership, so the LIST changed.
     membership_changed: bool,
-    /// Slugs whose body or metadata differs from the previous scan.
+    /// Slugs whose served view — body, metadata, frontmatter, declared
+    /// references or any file's digest — differs from the previous scan.
     updated: Vec<String>,
-    /// Canonical paths whose fingerprint changed, appeared, or vanished.
-    /// Reported so a caller knows which files to re-fetch, by the
-    /// address it already uses.
+    /// Full skill paths (`<skill-path>/<file>`) whose digest changed,
+    /// appeared or vanished.
+    files_changed: Vec<String>,
+    /// Canonical reference paths whose fingerprint changed, appeared, or
+    /// vanished.
     references_changed: Vec<String>,
-    /// Slugs citing any changed path, minus any already in `updated`.
-    /// Their BODIES are unchanged; their manifests and footers are not,
-    /// and both are served text.
-    reference_citers: Vec<String>,
+    /// Prompt names whose content changed, appeared or vanished.
+    prompts_changed: Vec<String>,
 }
 
 impl CatalogueDelta {
     fn between(before: &SkillsCache, after: &SkillsCache) -> Self {
+        let digests = |skill: &LoadedSkill| -> Vec<(String, String)> {
+            skill.files.iter().map(|f| (f.rel.clone(), f.digest.clone())).collect()
+        };
         let updated: Vec<String> = after
             .order
             .iter()
             .filter(|slug| {
                 // Every field a surface actually serves, compared
-                // directly. `meta_block` alone is not enough:
-                // `skill_block` STRIPS `title` / `description` /
-                // `references` because other fields carry them, so an
-                // edit to only those reached this comparison solely
-                // through the SKILL.md mtime embedded in the block —
-                // which is truncated to seconds, so a fast edit was
-                // invisible. Comparing the served values is the answer;
-                // depending on a timestamp's resolution was never one.
+                // directly — `skill_block` STRIPS `title` /
+                // `description` / `references`, and its mtime is
+                // truncated to seconds, so comparing the block alone
+                // missed a fast edit.
                 match (before.skills.get(*slug), after.skills.get(*slug)) {
                     (Some(old), Some(new)) => {
                         old.body != new.body
                             || old.meta_block != new.meta_block
+                            || old.frontmatter != new.frontmatter
                             || old.title != new.title
                             || old.description != new.description
                             || old.refs != new.refs
+                            || digests(old) != digests(new)
                     }
                     _ => false,
                 }
@@ -625,86 +746,106 @@ impl CatalogueDelta {
             .cloned()
             .collect();
 
-        let (references_changed, reference_citers) = Self::references_between(before, after, &updated);
+        let mut files_changed: Vec<String> = after
+            .files
+            .iter()
+            .filter(|(path, file)| before.files.get(*path).map_or(true, |old| old.digest != file.digest))
+            .map(|(path, _)| path.clone())
+            .collect();
+        files_changed.extend(
+            before
+                .files
+                .keys()
+                .filter(|path| !after.files.contains_key(*path))
+                .cloned(),
+        );
+        files_changed.sort_unstable();
+
+        let mut references_changed: Vec<String> = after
+            .declared
+            .iter()
+            .filter(|(path, entry)| before.declared.get(*path).map_or(true, |old| old.stat != entry.stat))
+            .map(|(path, _)| path.clone())
+            .collect();
+        // A vanished path is served text changing too: a surviving
+        // citer's manifest row turns into `status: not-found`.
+        references_changed.extend(
+            before
+                .declared
+                .keys()
+                .filter(|path| !after.declared.contains_key(*path))
+                .cloned(),
+        );
+        references_changed.sort_unstable();
+
+        let mut prompts_changed: Vec<String> = after
+            .prompts
+            .iter()
+            .filter(|prompt| before.prompt(&prompt.name) != Some(*prompt))
+            .map(|prompt| prompt.name.clone())
+            .collect();
+        prompts_changed.extend(
+            before
+                .prompts
+                .iter()
+                .filter(|prompt| after.prompt(&prompt.name).is_none())
+                .map(|prompt| prompt.name.clone()),
+        );
 
         Self {
             membership_changed: before.order != after.order,
             updated,
+            files_changed,
             references_changed,
-            reference_citers,
+            prompts_changed,
         }
-    }
-
-    /// Which declared files moved, and which surviving skills cite them.
-    ///
-    /// A path on ONE side only counts: a declared file that could not be
-    /// canonicalized is absent from `declared` entirely, so a reference
-    /// appearing flips its citer's manifest row from `status: not-found`
-    /// to a real path — a served change with no body edit behind it.
-    fn references_between(before: &SkillsCache, after: &SkillsCache, updated: &[String]) -> (Vec<String>, Vec<String>) {
-        let mut changed = Vec::new();
-        let mut citers = Vec::new();
-
-        for (path, entry) in &after.declared {
-            let moved = match before.declared.get(path) {
-                Some(old) => old.stat != entry.stat,
-                None => true,
-            };
-            if moved {
-                changed.push(path.clone());
-            }
-        }
-        // Vanished paths: a citer that survives now serves a
-        // `status: not-found` row where it served a real one.
-        for path in before.declared.keys() {
-            if !after.declared.contains_key(path) {
-                changed.push(path.clone());
-            }
-        }
-        changed.sort_unstable();
-
-        for path in &changed {
-            let entry = after.declared.get(path).or_else(|| before.declared.get(path));
-            for slug in entry.map(|e| e.citers.as_slice()).unwrap_or_default() {
-                // Only skills that still exist, and only once. A slug
-                // already in `updated` gets its notification from there.
-                if after.skills.contains_key(slug) && !updated.contains(slug) && !citers.contains(slug) {
-                    citers.push(slug.clone());
-                }
-            }
-        }
-        // Catalogue order, so the announcement is stable across rescans.
-        citers.sort_by_key(|slug| after.order.iter().position(|s| s == slug));
-
-        (changed, citers)
     }
 
     fn is_empty(&self) -> bool {
-        !self.membership_changed && self.updated.is_empty() && self.references_changed.is_empty()
+        !self.membership_changed
+            && self.updated.is_empty()
+            && self.files_changed.is_empty()
+            && self.references_changed.is_empty()
+            && self.prompts_changed.is_empty()
     }
 
     /// The URIs a rescan invalidates, decided in one pure place so the
     /// watcher and the `reload` tool cannot drift apart.
     fn plan(&self) -> Announcement {
-        let mut updated: Vec<String> = self.updated.iter().map(|slug| skill_uri(slug)).collect();
-        // A citer's served text (body plus manifest footer) changed even
-        // though its body did not. A subscriber holding that one skill
-        // has no other way to learn it.
-        updated.extend(self.reference_citers.iter().map(|slug| skill_uri(slug)));
+        let mut updated: Vec<String> = Vec::new();
+        let mut push = |uri: String| {
+            if !updated.contains(&uri) {
+                updated.push(uri);
+            }
+        };
+        for slug in &self.updated {
+            push(skill_md_uri(slug));
+        }
+        // A file shared by a skill and its nested child is one path, so
+        // one announcement, however many entries list it.
+        for path in &self.files_changed {
+            push(format!("skill://{path}"));
+        }
+        for path in &self.references_changed {
+            push(file_uri(path));
+        }
+        for name in &self.prompts_changed {
+            push(prompt_uri(name));
+        }
         // The index renders slug, title, description and reference
-        // COUNT — never a reference's own content. Firing it for a
-        // reference edit would be exactly the spurious invalidation the
-        // diff exists to prevent.
+        // COUNT — never a file's or a reference's content, so neither
+        // alone stales it.
         if self.membership_changed || !self.updated.is_empty() {
-            updated.push(catalogue_uri());
+            push(catalogue_uri());
         }
         Announcement {
             // Anything at all. A pre-`2026-07-28` client cannot
             // subscribe, so `resources/updated` is not a signal it can
-            // act on; `list_changed` is the only one it has, and a
-            // reference edit must reach it as something rather than
-            // silence.
-            list_changed: !self.is_empty(),
+            // act on; `list_changed` is the only one it has.
+            resources_list_changed: !self.is_empty(),
+            // MCP has no per-prompt update, so a changed BODY is a list
+            // change too — it is how a client learns to re-fetch.
+            prompts_list_changed: !self.prompts_changed.is_empty(),
             updated,
         }
     }
@@ -713,27 +854,29 @@ impl CatalogueDelta {
 /// What one rescan tells connected clients.
 #[derive(Debug, Default, PartialEq)]
 struct Announcement {
-    list_changed: bool,
+    resources_list_changed: bool,
+    prompts_list_changed: bool,
     updated: Vec<String>,
 }
 
-fn build_cache(skills: Vec<crate::mcp::skills::Skill>) -> SkillsCache {
-    let mut cache = SkillsCache::default();
-    for skill in skills {
+fn build_cache(scan: Scan) -> SkillsCache {
+    let mut cache = SkillsCache {
+        prompts: scan.prompts,
+        ..SkillsCache::default()
+    };
+    for (skill, files) in scan.skills {
         let slug = skill.slug.to_string();
         let refs = frontmatter_references(&skill.frontmatter);
+        let frontmatter = frontmatter_json(&skill.frontmatter);
         // The single merged block, built ONCE per skill here — not per
-        // request — so every `list_resources` / `read_resource` / tool
-        // call reuses the same lossless YAML→JSON projection.
-        let meta_block = skill_block(&frontmatter_json(&skill.frontmatter), &skill.path);
-        // Title falls back to the frontmatter `name`, then the slug,
-        // when no frontmatter `title` was set.
+        // request.
+        let meta_block = skill_block(&frontmatter, &skill.path);
+        // Title falls back to the frontmatter `name`, then the slug.
         let title = if skill.title.trim().is_empty() {
             frontmatter_string(&skill.frontmatter, "name").unwrap_or_else(|| slug.clone())
         } else {
             skill.title.clone()
         };
-        let description = skill.description.clone();
         if let Some(dir) = skill.path.parent() {
             for path in wire_references::declared_paths(dir, &refs) {
                 cache
@@ -747,6 +890,9 @@ fn build_cache(skills: Vec<crate::mcp::skills::Skill>) -> SkillsCache {
                     .push(slug.clone());
             }
         }
+        for file in &files {
+            cache.files.insert(format!("{slug}/{}", file.rel), file.clone());
+        }
         cache.order.push(slug.clone());
         cache.skills.insert(
             slug.clone(),
@@ -754,10 +900,12 @@ fn build_cache(skills: Vec<crate::mcp::skills::Skill>) -> SkillsCache {
                 slug,
                 path: skill.path,
                 title,
-                description,
+                description: skill.description,
+                frontmatter,
                 meta_block,
                 body: skill.body,
                 refs,
+                files,
             },
         );
     }
@@ -774,18 +922,96 @@ fn frontmatter_string(value: &yaml_serde::Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Root of every URI this server serves — the catalogue index itself
-/// and, with a `/<slug>` suffix, each skill body.
-const SKILLS_URI_ROOT: &str = "hyprpilot://skills";
-
 /// The catalogue index resource. It renders every skill's slug, title
-/// and description, so ANY skill change makes it stale.
+/// and description, so a skill change makes it stale.
 fn catalogue_uri() -> String {
-    SKILLS_URI_ROOT.to_string()
+    "hyprpilot://skills".to_string()
 }
 
-fn skill_uri(slug: &str) -> String {
-    format!("hyprpilot://skills/{slug}")
+fn skill_md_uri(slug: &str) -> String {
+    format!("skill://{slug}/SKILL.md")
+}
+
+fn skill_file_uri(slug: &str, rel: &str) -> String {
+    format!("skill://{slug}/{rel}")
+}
+
+fn prompt_uri(name: &str) -> String {
+    format!("hyprpilot://prompts/{name}")
+}
+
+/// Every URI this server answers for.
+enum ParsedUri<'a> {
+    /// The bare `hyprpilot://skills` index.
+    Catalogue,
+    Prompt(&'a str),
+    /// A `skill://` path — a bundle file or a directory, which only the
+    /// cache can tell apart.
+    Skill(&'a str),
+    /// A `file://` uri, decoded to the path it names.
+    Reference(String),
+}
+
+fn parse_uri(uri: &str) -> Option<ParsedUri<'_>> {
+    if uri == "hyprpilot://skills" {
+        return Some(ParsedUri::Catalogue);
+    }
+    if let Some(name) = uri.strip_prefix("hyprpilot://prompts/") {
+        return (!name.is_empty()).then_some(ParsedUri::Prompt(name));
+    }
+    if let Some(path) = uri.strip_prefix("skill://") {
+        // Directory URIs carry no trailing slash; tolerate one.
+        let path = path.strip_suffix('/').unwrap_or(path);
+        return (!path.is_empty()).then_some(ParsedUri::Skill(path));
+    }
+    path_from_file_uri(uri).map(ParsedUri::Reference)
+}
+
+/// Whether this request runs at `2026-07-28` or later, which decides
+/// whether a hand-built result carries `resultType`. rmcp strips that
+/// field from its own result types for an older peer but passes a
+/// `CustomResult` through untouched, so the custom methods have to make
+/// the same call themselves.
+fn negotiated_modern(context: &RequestContext<RoleServer>) -> bool {
+    context
+        .protocol_version()
+        .is_some_and(|v| v.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
+}
+
+/// Stamp a hand-built result the way rmcp stamps its own: the cache
+/// fields `2026-07-28` requires on a cacheable result, and `resultType`
+/// only for a peer that negotiated that revision.
+fn custom_result(
+    mut body: serde_json::Map<String, serde_json::Value>,
+    ttl_ms: u64,
+    modern: bool,
+) -> Result<CustomResult, rmcp::ErrorData> {
+    body.insert("ttlMs".into(), ttl_ms.into());
+    body.insert(
+        "cacheScope".into(),
+        serde_json::to_value(RESULT_CACHE_SCOPE).map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?,
+    );
+    if modern {
+        body.insert("resultType".into(), "complete".into());
+    }
+    Ok(CustomResult::new(serde_json::Value::Object(body)))
+}
+
+/// `params.uri` of a custom request, required.
+fn require_uri(params: Option<&serde_json::Value>) -> Result<&str, rmcp::ErrorData> {
+    params
+        .and_then(|p| p.get("uri"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| rmcp::ErrorData::invalid_params("`uri` is required", None))
+}
+
+/// Every listing here is a single page, so no cursor this server could
+/// have issued exists — refusing one is more honest than ignoring it.
+fn refuse_cursor(params: Option<&serde_json::Value>) -> Result<(), rmcp::ErrorData> {
+    match params.and_then(|p| p.get("cursor")) {
+        None | Some(serde_json::Value::Null) => Ok(()),
+        Some(_) => Err(rmcp::ErrorData::invalid_params("unknown cursor", None)),
+    }
 }
 
 fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
@@ -795,16 +1021,15 @@ fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
         .filter_map(|slug| cache.skills.get(slug))
         .map(|s| {
             // Reference DETAIL is deliberately absent: `list_skills` is
-            // the routing view ("which skill?"), it is served purely
-            // from cache, and resolving references here would mean
-            // reading every declared file of every skill on every call.
-            // `list_skill_references` owns that question.
+            // the routing view ("which skill?"), served purely from
+            // cache. `list_skill_references` owns that question.
             serde_json::json!({
                 "slug": s.slug,
                 "title": s.title,
                 "description": s.description,
-                "uri": skill_uri(&s.slug),
+                "uri": s.uri(),
                 "referenceCount": s.refs.references.len(),
+                "fileCount": s.supporting().count(),
                 "metadata": s.meta_block,
             })
         })
@@ -813,34 +1038,11 @@ fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
     serde_json::json!({ "skills": entries })
 }
 
-/// The whole resource surface: a catalogue index and one body per
-/// skill.
-///
-/// There is deliberately NO reference URI. Reference bodies are reached
-/// only through `read_skill_references`, addressed by path — a resource
-/// scheme would need a slug-and-name address for something whose real
-/// identity is its path, and would duplicate a tool that already does
-/// the job with de-duplication built in.
-enum ParsedUri<'a> {
-    /// The bare `hyprpilot://skills` index. Cannot collide with a slug:
-    /// every skill URI carries a `skills/` prefix, and `strip_prefix`
-    /// requires the separator.
-    Catalogue,
-    Skill(&'a str),
-}
-
-fn parse_uri(uri: &str) -> Option<ParsedUri<'_>> {
-    let rest = uri.strip_prefix("hyprpilot://")?;
-    if rest == "skills" {
-        return Some(ParsedUri::Catalogue);
-    }
-    rest.strip_prefix("skills/")
-        .filter(|slug| !slug.is_empty())
-        .map(ParsedUri::Skill)
-}
-
 fn slug_prop() -> serde_json::Value {
-    serde_json::json!({ "type": "string", "description": "The skill slug." })
+    serde_json::json!({
+        "type": "string",
+        "description": "The skill's slug: its path, `name` or `group/name` for a nested skill.",
+    })
 }
 
 fn object_schema(props: serde_json::Value) -> Arc<serde_json::Map<String, serde_json::Value>> {
@@ -859,35 +1061,23 @@ fn object_schema(props: serde_json::Value) -> Arc<serde_json::Map<String, serde_
 ///
 /// Required because the alternative was a whole-catalogue scan, and on
 /// a real root that is a six-figure payload — the single largest thing
-/// this server could hand a client. Per-skill listing answers the same
-/// question incrementally: each row carries the canonical `path`, so a
-/// caller compares against what it already loaded rather than needing
-/// the corpus up front.
+/// this server could hand a client.
 fn list_references_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
     object_schema(serde_json::json!({ "slug": slug_prop() }))
 }
 
-/// `read_skill_references`'s schema — an ARRAY of canonical paths.
-///
-/// Paths rather than slug-plus-name because a path is what a reference
-/// IS, while a slug and a name are one of several addresses for it.
-/// Addressing by path means a file cited by many skills is one entry
-/// rather than many, a caller can fetch across skills in one call, and
-/// there is no collision or shadowing rule to explain.
-fn read_references_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
+/// An object schema with one REQUIRED string-array property.
+fn string_array_schema(key: &str, description: &str) -> Arc<serde_json::Map<String, serde_json::Value>> {
     let serde_json::Value::Object(map) = serde_json::json!({
         "type": "object",
         "properties": {
-            "references": {
+            key: {
                 "type": "array",
                 "items": { "type": "string" },
-                "description":
-                    "Canonical paths to fetch, exactly as they appear as `path` in a \
-                     skill's reference manifest. A path no skill declares is an error \
-                     rather than a partial result.",
+                "description": description,
             },
         },
-        "required": ["references"],
+        "required": [key],
         "additionalProperties": false,
     }) else {
         unreachable!("json! object literal")
@@ -896,12 +1086,6 @@ fn read_references_object_schema() -> Arc<serde_json::Map<String, serde_json::Va
 }
 
 /// `read_skill`'s schema — `slug`, plus an opt-IN for the full bundle.
-///
-/// Bundling defaults OFF. The body always carries a manifest of what the
-/// skill declares — path, name, size, mtime — so the agent can see what
-/// it has not loaded and fetch precisely what the body tells it to.
-/// `bundle: true` is the one-call shortcut for when everything is wanted
-/// anyway.
 fn read_skill_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
     object_schema(serde_json::json!({
         "slug": slug_prop(),
@@ -920,29 +1104,24 @@ fn read_skill_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>>
 /// markdown document.
 ///
 /// Exists for the ATTACHMENT path: a client injecting this costs no
-/// tool call at all. A model reading it still spends one (a generic
-/// resource read), so `list_skills` stays the better route for the
-/// model — same cost, but named and described.
-///
-/// It leads with how to chain the other two schemes, because an index
-/// whose entries the reader cannot then load is only half an answer.
+/// tool call at all. It leads with how to load what it lists, because
+/// an index whose entries the reader cannot then load is only half an
+/// answer.
 fn catalogue_markdown(cache: &SkillsCache) -> String {
     let mut out = String::from(
         "# hyprpilot skills\n\n\
-         Each entry below is loadable by URI — no tool call required:\n\n\
-         - `hyprpilot://skills/<slug>` — the skill's full `SKILL.md` body. Read this first; it is the \
-         instruction set. It ends with a list of the references that skill declares: each one's \
-         PATH and name, but not its body.\n\n\
-         Reference bodies have no URI of their own. Pass the paths from that list to \
-         `read_skill_references` — one call takes as many as you need, and a path is a file, so \
-         references from several skills come back together. A path is also an IDENTITY: the same \
-         shared file is cited by many skills under different names, so a path you already loaded \
-         needs no second fetch. `list_skill_references { slug }` shows a skill's paths without \
-         reading any bodies.\n\n\
-         So the chain is: pick a slug here → read `skills/<slug>` → follow the reference directives \
-         in its body, loading only the paths those steps actually name. The roots are watched, so \
-         this index is kept current; `reload` forces a rescan if a root is reported \
-         unwatched.\n\n",
+         Each entry below is loadable by URI:\n\n\
+         - `skill://<path>/SKILL.md` — the skill's raw `SKILL.md`, frontmatter included. Read this \
+         first; it is the instruction set. `read_skill { slug }` returns the same body rendered, plus \
+         manifests of what it references and ships.\n\
+         - `skill://<path>/<file>` — a file the skill ships (`scripts/`, its own `references/`). \
+         `read_skill_files` fetches them by uri.\n\n\
+         A frontmatter `references:` list names SHARED files outside the bundle. Their address is a \
+         canonical PATH, which `list_skill_references { slug }` resolves and `read_skill_references` \
+         fetches — one call takes as many as you need, and a path is a file, so the same convention \
+         cited by many skills is fetched once. Each also reads as a `file://` resource.\n\n\
+         The roots are watched, so this index is kept current; `reload` forces a rescan if a root is \
+         reported unwatched.\n\n",
     );
     if cache.order.is_empty() {
         out.push_str("_No skills available._\n");
@@ -960,7 +1139,7 @@ fn catalogue_markdown(cache: &SkillsCache) -> String {
         if !skill.description.is_empty() {
             out.push_str(&format!("{}\n\n", skill.description));
         }
-        out.push_str(&format!("`{}`", skill_uri(slug)));
+        out.push_str(&format!("`{}`", skill.uri()));
         if !skill.refs.references.is_empty() {
             out.push_str(&format!(
                 " · {} reference(s) — `list_skill_references {{ slug: \"{slug}\" }}`",
@@ -973,13 +1152,32 @@ fn catalogue_markdown(cache: &SkillsCache) -> String {
     out
 }
 
+/// A text manifest of a skill's own files, appended to its rendered
+/// body — the same safety net the references footer is, for clients
+/// that never surface structured content.
+fn files_footer(skill: &LoadedSkill) -> String {
+    let files: Vec<&BundleFile> = skill.supporting().collect();
+    if files.is_empty() {
+        return String::new();
+    }
+    let mut out = format!(
+        "\n---\nskill_files:\n  skill: {}\n  count: {}\n  \
+         note: bodies are NOT included above - pass the uris below to `read_skill_files`\n  available:\n",
+        skill.slug,
+        files.len()
+    );
+    for file in files {
+        out.push_str(&format!(
+            "    - uri: {}\n      size: {}\n",
+            skill_file_uri(&skill.slug, &file.rel),
+            file.size()
+        ));
+    }
+    out.push_str("---\n");
+    out
+}
+
 /// Text projection for `list_skill_references`.
-///
-/// Leads with the files cited by MORE THAN ONE skill, because that is
-/// the question the tool exists to answer: a caller that already holds
-/// `output-diff` from one skill should be able to see, in one glance,
-/// that another skill's citation is the same file rather than a second
-/// one to fetch.
 fn list_references_summary(slug: &str, entries: &[ReferenceEntry]) -> String {
     if entries.is_empty() {
         return format!("`{slug}` declares no references.");
@@ -1022,13 +1220,32 @@ fn list_skills_summary(cache: &SkillsCache) -> String {
         let Some(skill) = cache.skills.get(slug) else {
             continue;
         };
-        if skill.description.is_empty() {
-            out.push_str(&format!("- {}\n", skill.slug));
-        } else {
-            out.push_str(&format!("- {}: {}\n", skill.slug, skill.description));
-        }
+        out.push_str(&format!("- {}: {}\n", skill.slug, skill.description));
     }
     out.push_str("Call `read_skill` with a slug to fetch the full SKILL.md body.");
+    out
+}
+
+/// One fetched bundle file, as `read_skill_files` frames it: a YAML
+/// header naming the file, then its text. A file that is not UTF-8 has
+/// no text a model can read, so its header says where the bytes are.
+fn file_block(uri: &str, file: &BundleFile) -> String {
+    let mut out = format!(
+        "---\nfile:\n  uri: {uri}\n  size: {}\n  mimeType: {}\n  digest: {}\n",
+        file.size(),
+        file.mime_type(),
+        file.digest
+    );
+    match file.text() {
+        Some(text) => {
+            out.push_str("---\n");
+            out.push_str(text);
+            if !text.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+        None => out.push_str("  status: binary - read it with resources/read\n---\n"),
+    }
     out
 }
 
@@ -1041,12 +1258,7 @@ impl ServerHandler for SkillsServer {
 
     fn get_info(&self) -> ServerConfig {
         let mut caps = ServerCapabilities::default();
-        // The tool set is fixed for the life of THIS process — the
-        // four skills tools. It never changes, so do NOT advertise
-        // tool-list-changed. Skills back the resource list, which
-        // `reload` can change, so resources DO advertise list-changed
-        // (and `reload` fires it).
-        // rmcp 2 marks these `#[non_exhaustive]` — no struct literal
+        // rmcp marks these `#[non_exhaustive]` — no struct literal
         // outside the crate — so mutate the owned `default()` instances'
         // public fields instead.
         let mut tools = rmcp::model::ToolsCapability::default();
@@ -1054,14 +1266,26 @@ impl ServerHandler for SkillsServer {
         caps.tools = Some(tools);
         let mut resources = rmcp::model::ResourcesCapability::default();
         // Per-resource subscriptions are how a client learns that ONE
-        // skill body changed rather than re-reading the catalogue. It is
-        // what makes the indefinite `ttlMs` safe — see
-        // `rpc::RESULT_TTL_MS` — so it is advertised, and
-        // `accepted_subscription_filter` below is what actually accepts
-        // the opt-in at `2026-07-28`.
+        // file changed rather than re-reading the catalogue — what makes
+        // the indefinite `ttlMs` safe.
         resources.subscribe = Some(true);
         resources.list_changed = Some(true);
         caps.resources = Some(resources);
+        let mut prompts = rmcp::model::PromptsCapability::default();
+        prompts.list_changed = Some(true);
+        caps.prompts = Some(prompts);
+        // SEP-2640. Declaring it commits this server to `skills/list` and
+        // `skills/get`; `directoryRead` adds `resources/directory/read`.
+        caps.extensions = Some(
+            [(
+                SKILLS_EXTENSION_ID.to_string(),
+                [("directoryRead".to_string(), serde_json::Value::Bool(true))]
+                    .into_iter()
+                    .collect(),
+            )]
+            .into_iter()
+            .collect(),
+        );
         ServerConfig::new(caps)
             .with_server_info(Implementation::new(
                 DEFAULT_SKILLS_SERVER_NAME.to_string(),
@@ -1072,30 +1296,27 @@ impl ServerHandler for SkillsServer {
 
     /// Accept the `subscriptions/listen` opt-in at `2026-07-28`.
     ///
-    /// rmcp leaves this `None` — subscriptions unimplemented — so
-    /// without it a client on the current revision has NO channel for
-    /// the notifications this server already emits, and the indefinite
-    /// `ttlMs` would have nothing to invalidate it.
-    ///
-    /// The SDK intersects what we return with both the request and the
-    /// capabilities advertised above, so echoing the two categories we
-    /// actually fire is enough; a client asking for
-    /// `toolsListChanged` gets it dropped, correctly, because the tool
-    /// set cannot change.
+    /// The acknowledgment is the client's contract, so a URI is accepted
+    /// only when this server can fire for it: the catalogue, a prompt,
+    /// any `skill://` path (a file can appear later and is announced when
+    /// it does), and a `file://` reference some skill declares. The SDK
+    /// intersects the result with the advertised capabilities, which is
+    /// what refuses `toolsListChanged`.
     fn accepted_subscription_filter(
         &self,
         requested: &rmcp::model::SubscriptionFilter,
     ) -> Option<rmcp::model::SubscriptionFilter> {
-        // `hyprpilot://skills` (the catalogue index) and
-        // `hyprpilot://skills/<slug>` are the only URIs this server ever
-        // fires for.
-        // Delegates to the same parser `read_resource` uses, so an
-        // acknowledged URI is by construction one this server can serve
-        // and fire for. Re-implementing the match here is how
-        // `hyprpilot://skillsfoo` — and an empty slug — got acknowledged
-        // and then never fired, which is the "waiting forever" contract
-        // this filter exists to close.
-        super::rpc::accept_resource_subscriptions(requested, |uri| parse_uri(uri).is_some())
+        // Synchronous, so the cache is consulted only if no rescan holds
+        // it; mid-rescan a declared path is accepted, since the next
+        // scan is what decides it anyway.
+        let cache = self.skills_cache.try_read().ok();
+        let mut accepted = super::rpc::accept_resource_subscriptions(requested, |uri| match parse_uri(uri) {
+            Some(ParsedUri::Reference(path)) => cache.as_ref().map_or(true, |c| c.declared.contains_key(&path)),
+            Some(_) => true,
+            None => false,
+        })?;
+        accepted.prompts_list_changed = requested.prompts_list_changed;
+        Some(accepted)
     }
 
     /// Hold the subscription stream open so notifications can ride it.
@@ -1107,8 +1328,7 @@ impl ServerHandler for SkillsServer {
     /// Legacy `resources/subscribe`, honoured so `resources.subscribe:
     /// true` is truthful at every revision we negotiate. Records
     /// nothing: a peer with no `subscriptions/listen` stream already
-    /// receives these notifications as broadcasts. rmcp's default
-    /// answers `-32601`, which would make the capability a lie.
+    /// receives these notifications as broadcasts.
     #[allow(deprecated)]
     async fn subscribe(
         &self,
@@ -1141,11 +1361,12 @@ impl ServerHandler for SkillsServer {
             Tool::new_with_raw(
                 "read_skill",
                 Some(
-                    "Read a skill's full SKILL.md body and frontmatter metadata. The result \
-                     also lists every reference the skill declares - name, address, size and \
-                     when it last changed - but NOT their bodies. Fetch those with \
-                     `read_skill_references`, or pass `bundle: true` to get them all in one \
-                     call. Equivalent to reading the `hyprpilot://skills/<slug>` resource."
+                    "Read a skill's SKILL.md body and frontmatter metadata. The result also \
+                     lists, without bodies, every shared reference the skill declares (path, \
+                     name, size, when it last changed) and every file it ships (uri, size). \
+                     Fetch references with `read_skill_references` and files with \
+                     `read_skill_files`, or pass `bundle: true` for every reference body in one \
+                     call."
                         .into(),
                 ),
                 read_skill_object_schema(),
@@ -1154,8 +1375,7 @@ impl ServerHandler for SkillsServer {
                 "list_skill_references",
                 Some(
                     "List one skill's reference METADATA without any bodies - canonical \
-                     path, name, size and when each last changed. Use it to see what a \
-                     skill cites before spending tokens on it. The `path` is both the \
+                     path, name, size and when each last changed. The `path` is both the \
                      identity and the address: pass it to `read_skill_references` to get \
                      the body, and compare it against paths you already loaded, since the \
                      same shared file is cited by many skills under different names."
@@ -1174,13 +1394,32 @@ impl ServerHandler for SkillsServer {
                      some skill actually declares are served."
                         .into(),
                 ),
-                read_references_object_schema(),
+                string_array_schema(
+                    "references",
+                    "Canonical paths to fetch, exactly as they appear as `path` in a skill's \
+                     reference manifest. A path no skill declares is an error rather than a \
+                     partial result.",
+                ),
+            ),
+            Tool::new_with_raw(
+                "read_skill_files",
+                Some(
+                    "Fetch files a skill ships - scripts, templates, its own references - by \
+                     their `skill://` uri, as listed in `read_skill`'s file manifest. One call \
+                     takes files from several skills. A file that is not text is described \
+                     rather than inlined."
+                        .into(),
+                ),
+                string_array_schema(
+                    "uris",
+                    "`skill://<skill-path>/<file>` uris from a skill's file manifest.",
+                ),
             ),
             Tool::new_with_raw(
                 "reload",
                 Some(
-                    "Force a rescan of every skill directory. The roots are WATCHED, so \
-                     an edit is rescanned and announced on its own - call this only when \
+                    "Force a rescan of every skill and prompt source. The roots are WATCHED, \
+                     so an edit is rescanned and announced on its own - call this only when \
                      `list_skills` reports a root degraded or off, or after editing a \
                      reference file that lives outside every configured root."
                         .into(),
@@ -1211,8 +1450,7 @@ impl ServerHandler for SkillsServer {
                 // Appended ONLY when coverage is partial: a text-only
                 // client (opencode renders `content`, never
                 // `structured_content`) would otherwise never learn it
-                // needs `reload`, and an untroubled session pays
-                // nothing for the check.
+                // needs `reload`.
                 if let Some(line) = watch.summary_line() {
                     summary.push_str(&format!("\n{line} Call `reload` after editing files under it."));
                 }
@@ -1226,24 +1464,30 @@ impl ServerHandler for SkillsServer {
                     return Ok(tool_error(format!("unknown skill: {slug}")));
                 };
                 let entries = skill.references();
-                // Opting into the bundle replaces the footer with the
-                // real thing; otherwise the footer is what tells the
-                // reader those bodies exist and how to reach them.
-                let text = if want_bundle {
+                // Opting into the bundle replaces the references footer
+                // with the real thing; otherwise the footer is what tells
+                // the reader those bodies exist and how to reach them.
+                let mut text = if want_bundle {
                     let bundle = wire_references::bundle(&entries);
                     append_references(&skill.body, slug, entries.len(), &bundle)
                 } else {
                     format!("{}{}", skill.body, wire_references::manifest_footer(&entries, slug))
                 };
+                text.push_str(&files_footer(skill));
                 // `body` stays the body — appending into it would change
                 // the field's meaning for anything reading the structured
                 // result. The concatenation is the text projection only.
                 Ok(structured_with_text(
                     text,
                     serde_json::json!({
-                        "uri": skill_uri(slug),
+                        "uri": skill.uri(),
                         "body": skill.body,
                         "references": wire_references::manifest(&entries),
+                        "files": skill.supporting().map(|f| serde_json::json!({
+                            "uri": skill_file_uri(slug, &f.rel),
+                            "size": f.size(),
+                            "mimeType": f.mime_type(),
+                        })).collect::<Vec<_>>(),
                         "bundle": want_bundle
                             .then(|| wire_references::bundle(&entries)),
                         "metadata": skill.meta_block,
@@ -1277,19 +1521,18 @@ impl ServerHandler for SkillsServer {
                 // declares, built once per reload. A caller-supplied
                 // path is CHECKED, never joined — so this reaches
                 // exactly the files the skills already reference and no
-                // others. Canonicalizing first means a caller may pass
-                // any spelling of a declared file.
+                // others.
                 let mut paths = Vec::with_capacity(items.len());
                 let mut unknown = Vec::new();
                 for item in items {
                     let Some(raw) = item.as_str() else {
                         return Ok(tool_error("`references` must be an array of strings"));
                     };
-                    match wire_references::canonical(raw).filter(|p| cache.declared.contains_key(p)) {
+                    let raw_path = path_from_file_uri(raw).unwrap_or_else(|| raw.to_string());
+                    match wire_references::canonical(&raw_path).filter(|p| cache.declared.contains_key(p)) {
                         // Repeats are collapsed: a caller assembling a
-                        // selection across several steps of a skill, or
-                        // across skills that share a file, must not
-                        // amplify its own response.
+                        // selection across skills that share a file must
+                        // not amplify its own response.
                         Some(path) if !paths.contains(&path) => paths.push(path),
                         Some(_) => {}
                         None => unknown.push(raw.to_string()),
@@ -1312,41 +1555,82 @@ impl ServerHandler for SkillsServer {
                     }),
                 ))
             }
+            "read_skill_files" => {
+                let Some(serde_json::Value::Array(items)) = args.get("uris") else {
+                    return Ok(tool_error(
+                        "`uris` is required and must be an array of `skill://` uris, as listed \
+                         in a skill's file manifest",
+                    ));
+                };
+                let cache = self.skills_cache.read().await;
+                let mut found: Vec<(String, &BundleFile)> = Vec::new();
+                let mut unknown = Vec::new();
+                for item in items {
+                    let Some(uri) = item.as_str() else {
+                        return Ok(tool_error("`uris` must be an array of strings"));
+                    };
+                    match parse_uri(uri) {
+                        Some(ParsedUri::Skill(path)) if cache.file(path).is_some() => {
+                            if !found.iter().any(|(seen, _)| seen == uri) {
+                                found.push((uri.to_string(), cache.file(path).expect("checked above")));
+                            }
+                        }
+                        _ => unknown.push(uri.to_string()),
+                    }
+                }
+                if !unknown.is_empty() {
+                    return Ok(tool_error(format!(
+                        "no skill ships {}. Pass the `uri` values from `read_skill`'s file manifest.",
+                        unknown.iter().map(|u| format!("`{u}`")).collect::<Vec<_>>().join(", ")
+                    )));
+                }
+                let text: Vec<String> = found.iter().map(|(uri, file)| file_block(uri, file)).collect();
+                Ok(structured_with_text(
+                    text.join("\n"),
+                    serde_json::json!({
+                        "files": found.iter().map(|(uri, file)| serde_json::json!({
+                            "uri": uri,
+                            "size": file.size(),
+                            "mimeType": file.mime_type(),
+                            "digest": file.digest,
+                            "text": file.text(),
+                        })).collect::<Vec<_>>(),
+                    }),
+                ))
+            }
             "reload" => {
                 let delta = self.reload_skills().await;
-                let count = self.skills_cache.read().await.skills.len();
-                if delta.is_empty() {
-                    // Nothing moved, so nothing is invalidated. Firing
-                    // anyway would cost every subscriber a full re-fetch
-                    // for a no-op reload.
-                    tracing::debug!(count, "mcp::server: skills reloaded — no change");
-                }
-                // The SAME path the watcher relay takes. `ttlMs` is
-                // effectively indefinite, so a client re-reads only when
-                // told to — which makes this the whole invalidation
-                // story rather than a nicety, and makes one shared
-                // notification path the only way the two callers cannot
-                // disagree about a delta.
+                let (count, prompts) = {
+                    let cache = self.skills_cache.read().await;
+                    (cache.skills.len(), cache.prompts.len())
+                };
+                // The SAME path the watcher relay takes, so the two
+                // callers cannot disagree about a delta. A no-op reload
+                // diffs to nothing and announces nothing.
                 self.announce(Some(&context.peer), &delta).await;
                 tracing::info!(
                     count,
+                    prompts,
                     membership_changed = delta.membership_changed,
                     updated = delta.updated.len(),
+                    files_changed = delta.files_changed.len(),
                     references_changed = delta.references_changed.len(),
+                    prompts_changed = delta.prompts_changed.len(),
                     "mcp::server: skills reloaded"
                 );
                 let watch = self.watch_status.read().await;
                 Ok(structured_with_text(
-                    format!("Reloaded {count} skill(s)."),
+                    format!("Reloaded {count} skill(s) and {prompts} prompt(s)."),
                     serde_json::json!({
                         "reloaded": count,
+                        "prompts": prompts,
                         "membershipChanged": delta.membership_changed,
                         "updated": delta.updated,
+                        "filesChanged": delta.files_changed.iter().map(|p| format!("skill://{p}")).collect::<Vec<_>>(),
                         // Paths, by the address `read_skill_references`
-                        // already takes — so a caller holding a stale
-                        // reference body knows exactly what to re-fetch
-                        // without re-deriving it from a manifest.
+                        // already takes.
                         "referencesChanged": delta.references_changed,
+                        "promptsChanged": delta.prompts_changed,
                         "watch": watch_payload(&watch),
                     }),
                 ))
@@ -1365,17 +1649,15 @@ impl ServerHandler for SkillsServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, rmcp::ErrorData> {
         let cache = self.skills_cache.read().await;
-        let mut resources = Vec::with_capacity(cache.skills.len() + 1);
+        let mut resources = Vec::with_capacity(cache.skills.len() + cache.prompts.len() + 1);
         // The index goes FIRST — it is the entry point, and it explains
         // how to load everything under it.
         let catalogue = catalogue_markdown(&cache);
         resources.push(
-            rmcp::model::Resource::new("hyprpilot://skills", "skills")
+            rmcp::model::Resource::new(catalogue_uri(), "skills")
                 .with_title("hyprpilot skills — catalogue")
                 .with_description(format!(
-                    "Every available skill with its description, and how to load one: read \
-                     `hyprpilot://skills/<slug>` for the body, then pass the paths it lists to \
-                     `read_skill_references` for the files it declares. {} skill(s).",
+                    "Every available skill with its description, and how to load one. {} skill(s).",
                     cache.order.len()
                 ))
                 .with_mime_type("text/markdown")
@@ -1383,33 +1665,36 @@ impl ServerHandler for SkillsServer {
         );
         for slug in &cache.order {
             let Some(skill) = cache.skills.get(slug) else { continue };
-            // Body resource. `name` is the always-present slug; `title`
-            // is the human title; `description` / `mimeType` / `size` /
-            // `_meta` fill in the standard MCP Resource fields.
+            let Some(skill_md) = skill.skill_md() else { continue };
+            // `name` is the frontmatter name the SEP asks for, which the
+            // loader guarantees is the slug's final segment.
+            let name = slug.rsplit('/').next().unwrap_or(slug);
             resources.push(
-                rmcp::model::Resource::new(skill_uri(slug), skill.slug.clone())
+                rmcp::model::Resource::new(skill.uri(), name)
                     .with_title(skill.title.clone())
                     .with_description(skill.description.clone())
                     .with_mime_type("text/markdown")
-                    .with_size(skill.body.len() as u64)
+                    .with_size(skill_md.size())
                     .with_meta(skill_meta(&skill.meta_block)),
             );
-            // References are deliberately absent from this listing —
-            // and from the resource surface entirely. There is no
-            // reference URI to enumerate: a reference is addressed by
-            // its path through `read_skill_references`.
-            //
-            // This listing is the single most expensive thing this
-            // server can hand a client: measured against a 127-skill
-            // catalogue it was 231 resources / ~170 KB, of which 48% was
-            // `_meta` — and the bundle resource's `_meta` was its own
-            // skill's block repeated verbatim, paying twice for one
-            // skill's metadata. Enumerating every individual reference
-            // on top would have reached ~710 entries and ~520 KB, which
-            // is most of a context window spent before a single skill is
-            // read. A template costs one entry regardless of catalogue
-            // size, and `list_skill_references` answers "what does this
-            // skill cite" far more cheaply than a listing can.
+            // Supporting files and references are deliberately absent.
+            // Measured against a 127-skill catalogue, one extra entry per
+            // skill took the listing from ~105 KB to ~170 KB, and every
+            // reference would have reached ~500 KB — most of a context
+            // window before a single skill is read. Each is reachable by
+            // uri, by `skills/list`, and by directory read instead.
+        }
+        for prompt in &cache.prompts {
+            let mut resource = rmcp::model::Resource::new(prompt_uri(&prompt.name), prompt.name.clone())
+                .with_mime_type("text/markdown")
+                .with_size(prompt.body.len() as u64);
+            if let Some(title) = &prompt.title {
+                resource = resource.with_title(title.clone());
+            }
+            if let Some(description) = &prompt.description {
+                resource = resource.with_description(description.clone());
+            }
+            resources.push(resource);
         }
         Ok(ListResourcesResult::with_all_items(resources)
             .with_ttl_ms(self.transport.result_ttl_ms())
@@ -1421,9 +1706,12 @@ impl ServerHandler for SkillsServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, rmcp::ErrorData> {
-        let templates = vec![rmcp::model::ResourceTemplate::new("hyprpilot://skills/{slug}", "skill")
-            .with_description("Full SKILL.md body for the addressed skill slug.")
-            .with_mime_type("text/markdown")];
+        let templates = vec![
+            rmcp::model::ResourceTemplate::new("skill://{+path}", "skill-file").with_description(
+                "Any file a skill ships, `skill://<skill-path>/<file>` - its `SKILL.md` included - \
+                 served raw, as SEP-2640 lists it.",
+            ),
+        ];
         Ok(ListResourceTemplatesResult::with_all_items(templates)
             .with_ttl_ms(self.transport.result_ttl_ms())
             .with_cache_scope(RESULT_CACHE_SCOPE))
@@ -1435,48 +1723,176 @@ impl ServerHandler for SkillsServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
         let uri = &request.uri;
-        match parse_uri(uri) {
-            Some(ParsedUri::Catalogue) => {
-                let cache = self.skills_cache.read().await;
-                Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
-                    uri: uri.clone(),
-                    mime_type: Some("text/markdown".into()),
-                    text: catalogue_markdown(&cache),
-                    meta: None,
-                }])
-                .with_ttl_ms(self.transport.result_ttl_ms())
-                .with_cache_scope(RESULT_CACHE_SCOPE)
-                .into())
-            }
-            Some(ParsedUri::Skill(slug)) => {
-                let cache = self.skills_cache.read().await;
-                let Some(skill) = cache.skills.get(slug) else {
-                    return Err(rmcp::ErrorData::invalid_params(format!("unknown skill: {slug}"), None));
+        let cache = self.skills_cache.read().await;
+        let contents = match parse_uri(uri) {
+            Some(ParsedUri::Catalogue) => ResourceContents::TextResourceContents {
+                uri: uri.clone(),
+                mime_type: Some("text/markdown".into()),
+                text: catalogue_markdown(&cache),
+                meta: None,
+            },
+            Some(ParsedUri::Prompt(name)) => {
+                let Some(prompt) = cache.prompt(name) else {
+                    return Err(rmcp::ErrorData::invalid_params(format!("unknown prompt: {name}"), None));
                 };
-                // The attachment path — palette picks and `#{...}` land
-                // here — and the one place a manifest FOOTER is
-                // load-bearing rather than a nicety: a resource read
-                // returns text plus `_meta`, and many clients never
-                // surface `_meta` to the model. Without the footer an
-                // attached skill would lose its references with no
-                // in-context signal at all, which is the silent gap
-                // bundling-by-default used to prevent.
-                let entries = skill.references();
-                Ok(ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
+                ResourceContents::TextResourceContents {
                     uri: uri.clone(),
                     mime_type: Some("text/markdown".into()),
-                    text: format!("{}{}", skill.body, wire_references::manifest_footer(&entries, slug)),
-                    meta: Some(skill_meta(&skill.meta_block)),
-                }])
-                .with_ttl_ms(self.transport.result_ttl_ms())
-                .with_cache_scope(RESULT_CACHE_SCOPE)
-                .into())
+                    text: prompt.body.clone(),
+                    meta: None,
+                }
             }
-            None => Err(rmcp::ErrorData::invalid_params(
-                format!("unrecognised uri: {uri}"),
+            Some(ParsedUri::Skill(path)) => {
+                let Some(file) = cache.file(path) else {
+                    let reason = if cache.directory(path).is_some() {
+                        format!("{uri} is a directory - list it with resources/directory/read")
+                    } else {
+                        format!("unknown skill file: {uri}")
+                    };
+                    return Err(rmcp::ErrorData::invalid_params(reason, None));
+                };
+                // The bytes the listing hashed, from memory — never
+                // re-read, so they cannot disagree with the digest.
+                let contents = match file.text() {
+                    Some(text) => ResourceContents::text(text, uri.clone()),
+                    None => ResourceContents::blob(file.base64(), uri.clone()),
+                }
+                .with_mime_type(file.mime_type());
+                match path.strip_suffix("/SKILL.md").and_then(|slug| cache.skills.get(slug)) {
+                    Some(skill) => contents.with_meta(skill_meta(&skill.meta_block)),
+                    None => contents,
+                }
+            }
+            Some(ParsedUri::Reference(path)) => {
+                let Some(path) = wire_references::canonical(&path).filter(|p| cache.declared.contains_key(p)) else {
+                    return Err(rmcp::ErrorData::invalid_params(
+                        format!("no skill declares {uri}"),
+                        None,
+                    ));
+                };
+                // Read per call, like every reference body: a shared
+                // convention changes far more often than the skills
+                // citing it.
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| rmcp::ErrorData::invalid_params(format!("{uri}: {e}"), None))?;
+                ResourceContents::TextResourceContents {
+                    uri: uri.clone(),
+                    mime_type: Some("text/markdown".into()),
+                    text,
+                    meta: None,
+                }
+            }
+            None => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!("unrecognised uri: {uri}"),
+                    None,
+                ))
+            }
+        };
+        Ok(ReadResourceResult::new(vec![contents])
+            .with_ttl_ms(self.transport.result_ttl_ms())
+            .with_cache_scope(RESULT_CACHE_SCOPE)
+            .into())
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, rmcp::ErrorData> {
+        let cache = self.skills_cache.read().await;
+        let prompts = cache
+            .prompts
+            .iter()
+            .map(|p| {
+                let prompt = rmcp::model::Prompt::new(p.name.clone(), p.description.clone(), None);
+                match &p.title {
+                    Some(title) => prompt.with_title(title.clone()),
+                    None => prompt,
+                }
+            })
+            .collect();
+        Ok(ListPromptsResult::with_all_items(prompts)
+            .with_ttl_ms(self.transport.result_ttl_ms())
+            .with_cache_scope(RESULT_CACHE_SCOPE))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, rmcp::ErrorData> {
+        let cache = self.skills_cache.read().await;
+        let Some(prompt) = cache.prompt(&request.name) else {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!("unknown prompt: {}", request.name),
                 None,
-            )),
+            ));
+        };
+        let result = GetPromptResult::new(vec![PromptMessage::new_text(Role::User, prompt.body.clone())]);
+        Ok(match &prompt.description {
+            Some(description) => result.with_description(description.clone()),
+            None => result,
         }
+        .into())
+    }
+
+    /// The SEP-2640 methods. rmcp has no model for them, so they arrive
+    /// as custom requests on every transport and are answered with
+    /// hand-built results — stamped by `custom_result` the way rmcp
+    /// stamps its own.
+    async fn on_custom_request(
+        &self,
+        request: CustomRequest,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CustomResult, rmcp::ErrorData> {
+        let params = request.params.as_ref();
+        let modern = negotiated_modern(&context);
+        let ttl = self.transport.result_ttl_ms();
+        let cache = self.skills_cache.read().await;
+        let mut body = serde_json::Map::new();
+        match request.method.as_str() {
+            "skills/list" => {
+                refuse_cursor(params)?;
+                body.insert(
+                    "skills".into(),
+                    cache
+                        .order
+                        .iter()
+                        .filter_map(|slug| cache.skills.get(slug))
+                        .map(LoadedSkill::entry)
+                        .collect(),
+                );
+            }
+            "skills/get" => {
+                let uri = require_uri(params)?;
+                let Some(skill) = cache.skills.values().find(|s| s.uri() == uri) else {
+                    return Err(rmcp::ErrorData::invalid_params(format!("not a skill: {uri}"), None));
+                };
+                body.insert("skill".into(), skill.entry());
+            }
+            "resources/directory/read" => {
+                refuse_cursor(params)?;
+                let uri = require_uri(params)?;
+                let children = match parse_uri(uri) {
+                    Some(ParsedUri::Skill(path)) => cache.directory(path),
+                    _ => None,
+                }
+                .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("not a directory: {uri}"), None))?;
+                body.insert(
+                    "resources".into(),
+                    serde_json::to_value(children).map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?,
+                );
+            }
+            method => {
+                return Err(rmcp::ErrorData::new(
+                    ErrorCode::METHOD_NOT_FOUND,
+                    method.to_string(),
+                    None,
+                ))
+            }
+        }
+        custom_result(body, ttl, modern)
     }
 }
 
@@ -1484,69 +1900,78 @@ impl ServerHandler for SkillsServer {
 mod tests {
     use super::*;
 
-    /// The bare index URI must not shadow a skill. Every skill URI
-    /// carries a `skills/` prefix, so the equality check has to come
-    /// first and `skillsfoo` must still be nothing.
+    /// The bare index URI must not shadow anything, and a missing
+    /// separator is not a prompt.
     #[test]
-    fn the_catalogue_uri_cannot_shadow_a_slug() {
+    fn the_catalogue_uri_cannot_shadow_anything() {
         assert!(matches!(parse_uri("hyprpilot://skills"), Some(ParsedUri::Catalogue)));
-        assert!(matches!(
-            parse_uri("hyprpilot://skills/git-commit"),
-            Some(ParsedUri::Skill("git-commit"))
-        ));
         assert!(parse_uri("hyprpilot://skillsfoo").is_none());
+        assert!(
+            parse_uri("hyprpilot://skills/git-commit").is_none(),
+            "skills moved to skill://"
+        );
         assert!(parse_uri("hyprpilot://nope").is_none());
     }
 
-    /// The index must point at the tool that loads references, because
-    /// there is no reference URI to chain into any more.
+    /// The index must name both ways a skill's content is reached,
+    /// because a resource read cannot discover the reference tools.
     #[test]
     fn the_catalogue_explains_how_to_load_what_it_lists() {
         let empty = SkillsCache::default();
         let out = catalogue_markdown(&empty);
-        assert!(out.contains("hyprpilot://skills/<slug>"), "must name the body scheme");
+        assert!(out.contains("skill://<path>/SKILL.md"), "must name the body scheme");
         assert!(
             out.contains("read_skill_references"),
-            "must name how reference bodies are reached"
+            "must name how references are reached"
         );
         assert!(
-            !out.contains("hyprpilot://references"),
-            "the references scheme is gone and must not be advertised"
+            out.contains("read_skill_files"),
+            "must name how bundle files are reached"
         );
         assert!(out.contains("No skills available"), "an empty catalogue still renders");
-    }
-
-    /// The resource surface is exactly the catalogue and skill bodies.
-    /// Every former reference URI now addresses nothing — a stale client
-    /// must get a clean "unrecognised uri" rather than a body.
-    #[test]
-    fn the_reference_uri_scheme_no_longer_resolves() {
-        for gone in [
-            "hyprpilot://references/git-commit",
-            "hyprpilot://references/git-commit/output-diff",
-            "hyprpilot://references/git-commit/",
-            "hyprpilot://references",
-        ] {
-            assert!(parse_uri(gone).is_none(), "{gone} must not parse");
-        }
     }
 
     #[test]
     fn parses_known_uris() {
         assert!(matches!(
-            parse_uri("hyprpilot://skills/foo"),
-            Some(ParsedUri::Skill("foo"))
+            parse_uri("skill://acme/billing/refunds/SKILL.md"),
+            Some(ParsedUri::Skill("acme/billing/refunds/SKILL.md"))
         ));
-        // A slug is a single segment, but parsing does not enforce that
-        // — an unknown slug simply resolves to no skill.
         assert!(matches!(
-            parse_uri("hyprpilot://skills/foo/references"),
-            Some(ParsedUri::Skill("foo/references"))
+            parse_uri("skill://acme/billing/"),
+            Some(ParsedUri::Skill("acme/billing"))
         ));
-        // A bare trailing slash addresses nothing.
-        assert!(parse_uri("hyprpilot://skills/").is_none());
+        assert!(matches!(
+            parse_uri("hyprpilot://prompts/AGENTS"),
+            Some(ParsedUri::Prompt("AGENTS"))
+        ));
+        assert!(matches!(
+            parse_uri("file:///refs/output%20diff.md"),
+            Some(ParsedUri::Reference(path)) if path == "/refs/output diff.md"
+        ));
+        assert!(parse_uri("skill://").is_none());
+        assert!(parse_uri("hyprpilot://prompts/").is_none());
         assert!(parse_uri("hyprpilot://unknown/x").is_none());
         assert!(parse_uri("not-our-scheme://x").is_none());
+    }
+
+    /// A `BundleFile` the way `read_bundle` would build it.
+    fn bundle_file(rel: &str, bytes: &str) -> BundleFile {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, bytes).unwrap();
+        let mut file = crate::mcp::skills::wire_files::read_bundle(dir.path(), &HashMap::new())
+            .unwrap()
+            .remove(0);
+        file.rel = rel.to_string();
+        file
+    }
+
+    fn scan_of(skills: Vec<crate::mcp::skills::Skill>) -> Scan {
+        Scan {
+            skills: skills.into_iter().map(|skill| (skill, Vec::new())).collect(),
+            prompts: Vec::new(),
+        }
     }
 
     fn loaded_skill(slug: &str, title: &str, description: &str, frontmatter_yaml: &str, path: &str) -> LoadedSkill {
@@ -1555,29 +1980,14 @@ mod tests {
         LoadedSkill {
             slug: slug.to_string(),
             meta_block: skill_block(&frontmatter_json(&frontmatter), &path),
+            frontmatter: frontmatter_json(&frontmatter),
             path,
             title: title.to_string(),
             description: description.to_string(),
             body: String::new(),
             refs: frontmatter_references(&frontmatter),
+            files: Vec::new(),
         }
-    }
-
-    /// The acknowledgment is a promise to notify, so it must accept
-    /// exactly the URIs this server can fire for. A prefix match with no
-    /// separator accepted `hyprpilot://skillsfoo`; an empty slug
-    /// addresses nothing.
-    #[test]
-    fn only_addressable_skill_uris_are_acknowledged() {
-        let ok = |uri: &str| parse_uri(uri).is_some();
-
-        assert!(ok("hyprpilot://skills"), "the catalogue index is fireable");
-        assert!(ok("hyprpilot://skills/git-commit"));
-
-        assert!(!ok("hyprpilot://skillsfoo"), "a missing separator is not a slug");
-        assert!(!ok("hyprpilot://skills/"), "an empty slug addresses nothing");
-        assert!(!ok("hyprpilot://sessions/abc"), "another server's scheme");
-        assert!(!ok("file:///etc/passwd"));
     }
 
     /// Build a cache from `(slug, body)` pairs — the delta is about
@@ -1650,6 +2060,8 @@ mod tests {
                     include: Vec::new(),
                     watch: true,
                 }],
+                prompt_dirs: Vec::new(),
+                prompt_files: Vec::new(),
             },
             crate::mcp::server::ConfigSource::default(),
         )
@@ -1677,40 +2089,29 @@ mod tests {
         );
     }
 
-    /// THE reference-gap pin. A shared convention file changes; no
-    /// skill body moved, so the old delta reported nothing and every
-    /// citing skill went stale in a client's cache for the full ttl.
-    /// `modified` is a served manifest field, so a fingerprint change IS
-    /// a change in served content.
+    /// A shared convention file changes; no skill moved. The raw
+    /// `SKILL.md` of every citer is byte-identical, so the announcement
+    /// is the reference's own `file://` uri — and `list_changed`, the
+    /// only signal a client that cannot subscribe has.
     #[test]
-    fn a_reference_edit_updates_every_skill_that_cites_it() {
+    fn a_reference_edit_is_announced_by_its_own_uri() {
         let mut before = cache_of(&[("alpha", "same"), ("beta", "same")]);
         cite(&mut before, "/refs/output-diff.md", "t1", &["alpha", "beta"]);
         let mut after = cache_of(&[("alpha", "same"), ("beta", "same")]);
         cite(&mut after, "/refs/output-diff.md", "t2", &["alpha", "beta"]);
 
         let delta = CatalogueDelta::between(&before, &after);
-        assert!(!delta.is_empty());
-        assert!(delta.updated.is_empty(), "no body moved");
+        assert!(delta.updated.is_empty(), "no skill moved");
         assert!(!delta.membership_changed);
         assert_eq!(delta.references_changed, vec!["/refs/output-diff.md".to_string()]);
-        assert_eq!(delta.reference_citers, vec!["alpha".to_string(), "beta".to_string()]);
-    }
 
-    /// The index renders slug, title, description and reference COUNT —
-    /// never a reference's content. Firing it here would be exactly the
-    /// spurious invalidation the diff exists to prevent.
-    #[test]
-    fn a_reference_edit_does_not_stale_the_catalogue_index() {
-        let mut before = cache_of(&[("alpha", "same")]);
-        cite(&mut before, "/refs/x.md", "t1", &["alpha"]);
-        let mut after = cache_of(&[("alpha", "same")]);
-        cite(&mut after, "/refs/x.md", "t2", &["alpha"]);
-
-        let plan = CatalogueDelta::between(&before, &after).plan();
-        assert!(plan.list_changed, "an older client has no other signal");
-        assert_eq!(plan.updated, vec![skill_uri("alpha")]);
-        assert!(!plan.updated.contains(&catalogue_uri()));
+        let plan = delta.plan();
+        assert!(plan.resources_list_changed, "an older client has no other signal");
+        assert_eq!(plan.updated, vec![file_uri("/refs/output-diff.md")]);
+        assert!(
+            !plan.updated.contains(&catalogue_uri()),
+            "the index renders a count, not content"
+        );
     }
 
     /// A body edit DOES stale the index — it renders the description,
@@ -1718,62 +2119,91 @@ mod tests {
     #[test]
     fn a_body_edit_stales_the_catalogue_index() {
         let plan = CatalogueDelta::between(&cache_of(&[("alpha", "v1")]), &cache_of(&[("alpha", "v2")])).plan();
-        assert_eq!(plan.updated, vec![skill_uri("alpha"), catalogue_uri()]);
+        assert_eq!(plan.updated, vec![skill_md_uri("alpha"), catalogue_uri()]);
     }
 
-    /// A declared file that could not be canonicalized is absent from
-    /// `declared` entirely, so its citer serves a `status: not-found`
-    /// row. The file appearing flips that row to a real path — served
-    /// content, with no body edit behind it.
+    /// Appearing and vanishing are both changes in served content: a
+    /// citer's manifest row flips between a path and `status: not-found`.
     #[test]
-    fn a_reference_appearing_updates_its_citer() {
+    fn a_reference_appearing_or_vanishing_is_a_change() {
         let before = cache_of(&[("alpha", "same")]);
         let mut after = cache_of(&[("alpha", "same")]);
         cite(&mut after, "/refs/new.md", "t1", &["alpha"]);
 
-        let delta = CatalogueDelta::between(&before, &after);
-        assert_eq!(delta.references_changed, vec!["/refs/new.md".to_string()]);
-        assert_eq!(delta.reference_citers, vec!["alpha".to_string()]);
+        assert_eq!(
+            CatalogueDelta::between(&before, &after).references_changed,
+            vec!["/refs/new.md".to_string()]
+        );
+        assert_eq!(
+            CatalogueDelta::between(&after, &before).references_changed,
+            vec!["/refs/new.md".to_string()]
+        );
     }
 
+    /// One URI is announced once, however many reasons it has. A file a
+    /// skill shares with the skill nested inside it is one path.
     #[test]
-    fn a_reference_vanishing_updates_its_surviving_citer() {
-        let mut before = cache_of(&[("alpha", "same")]);
-        cite(&mut before, "/refs/gone.md", "t1", &["alpha"]);
-        let after = cache_of(&[("alpha", "same")]);
-
-        let delta = CatalogueDelta::between(&before, &after);
-        assert_eq!(delta.references_changed, vec!["/refs/gone.md".to_string()]);
-        assert_eq!(delta.reference_citers, vec!["alpha".to_string()]);
-    }
-
-    /// A slug that no longer exists must never be announced — a client
-    /// would fetch a URI that now errors.
-    #[test]
-    fn a_removed_skill_is_never_a_reference_citer() {
-        let mut before = cache_of(&[("alpha", "same"), ("beta", "same")]);
-        cite(&mut before, "/refs/x.md", "t1", &["alpha", "beta"]);
-        let mut after = cache_of(&[("alpha", "same")]);
-        cite(&mut after, "/refs/x.md", "t2", &["alpha"]);
-
-        let delta = CatalogueDelta::between(&before, &after);
-        assert!(delta.membership_changed);
-        assert_eq!(delta.reference_citers, vec!["alpha".to_string()]);
-    }
-
-    /// A skill whose body ALSO changed is announced once. Two
-    /// `resources/updated` for one URI is a client re-fetching twice.
-    #[test]
-    fn a_citer_whose_body_also_moved_is_announced_once() {
+    fn a_uri_with_several_reasons_is_announced_once() {
         let mut before = cache_of(&[("alpha", "v1")]);
-        cite(&mut before, "/refs/x.md", "t1", &["alpha"]);
         let mut after = cache_of(&[("alpha", "v2")]);
-        cite(&mut after, "/refs/x.md", "t2", &["alpha"]);
+        before
+            .files
+            .insert("alpha/SKILL.md".into(), bundle_file("SKILL.md", "v1"));
+        after
+            .files
+            .insert("alpha/SKILL.md".into(), bundle_file("SKILL.md", "v2"));
+
+        let plan = CatalogueDelta::between(&before, &after).plan();
+        assert_eq!(plan.updated, vec![skill_md_uri("alpha"), catalogue_uri()]);
+    }
+
+    /// The bundle-file gap: a script changes, the skill's text does not.
+    /// Its uri is announced, and so is the skill — its `resources` set
+    /// (and with it the host's approval) is what changed.
+    #[test]
+    fn a_bundle_file_edit_announces_the_file_and_its_skill() {
+        let mut before = cache_of(&[("alpha", "same")]);
+        let mut after = cache_of(&[("alpha", "same")]);
+        before.skills.get_mut("alpha").unwrap().files = vec![bundle_file("scripts/run.py", "v1")];
+        after.skills.get_mut("alpha").unwrap().files = vec![bundle_file("scripts/run.py", "v2")];
+        before
+            .files
+            .insert("alpha/scripts/run.py".into(), bundle_file("scripts/run.py", "v1"));
+        after
+            .files
+            .insert("alpha/scripts/run.py".into(), bundle_file("scripts/run.py", "v2"));
 
         let delta = CatalogueDelta::between(&before, &after);
         assert_eq!(delta.updated, vec!["alpha".to_string()]);
-        assert!(delta.reference_citers.is_empty());
-        assert_eq!(delta.plan().updated, vec![skill_uri("alpha"), catalogue_uri()]);
+        assert_eq!(delta.files_changed, vec!["alpha/scripts/run.py".to_string()]);
+        assert!(delta
+            .plan()
+            .updated
+            .contains(&"skill://alpha/scripts/run.py".to_string()));
+    }
+
+    /// MCP has no per-prompt update notification, so an edited BODY is
+    /// a prompt list change — the only way a client learns to re-fetch.
+    #[test]
+    fn a_prompt_edit_is_a_prompt_list_change() {
+        let prompt = |body: &str| Prompt {
+            name: "AGENTS".into(),
+            title: None,
+            description: None,
+            body: body.into(),
+            path: PathBuf::from("/p/AGENTS.md"),
+        };
+        let mut before = cache_of(&[]);
+        let mut after = cache_of(&[]);
+        before.prompts.push(prompt("v1"));
+        after.prompts.push(prompt("v2"));
+
+        let plan = CatalogueDelta::between(&before, &after).plan();
+        assert!(plan.prompts_list_changed);
+        assert_eq!(plan.updated, vec![prompt_uri("AGENTS")]);
+
+        let same = CatalogueDelta::between(&after, &after);
+        assert!(same.is_empty() && !same.plan().prompts_list_changed);
     }
 
     /// The extension of `a_reload_that_changed_nothing_notifies_nothing`
@@ -1867,7 +2297,7 @@ mod tests {
             });
         }
 
-        let cache = build_cache(skills);
+        let cache = build_cache(scan_of(skills));
         assert_eq!(cache.declared.len(), 1, "one entry for the shared file");
         assert_eq!(
             cache.declared[&canonical].citers,
@@ -1954,7 +2384,7 @@ mod tests {
             frontmatter,
         };
 
-        let cache = build_cache(vec![skill]);
+        let cache = build_cache(scan_of(vec![skill]));
         let loaded = cache.skills.get("myskill").unwrap();
 
         assert_eq!(loaded.title, "myskill");
@@ -1983,7 +2413,7 @@ mod tests {
             frontmatter,
         };
 
-        let cache = build_cache(vec![skill]);
+        let cache = build_cache(scan_of(vec![skill]));
         let loaded = cache.skills.get("myskill").unwrap();
         let entries = loaded.references();
 
@@ -2033,7 +2463,7 @@ license: MIT
             frontmatter,
         };
 
-        let cache = build_cache(vec![skill]);
+        let cache = build_cache(scan_of(vec![skill]));
         let loaded = cache.skills.get("myskill").unwrap();
 
         assert_eq!(
@@ -2086,11 +2516,12 @@ references:
                     "slug": "plan-hard",
                     "title": "Plan hard",
                     "description": "Deep planning",
-                    "uri": "hyprpilot://skills/plan-hard",
+                    "uri": "skill://plan-hard/SKILL.md",
                     // A count, not the names: this view is served
                     // purely from cache, and resolving names would mean
                     // reading every reference of every skill per call.
                     "referenceCount": 1,
+                    "fileCount": 0,
                     "metadata": {
                         "name": "plan-hard",
                         "argument-hint": "[goal]",
@@ -2203,8 +2634,107 @@ metadata:
             Some("/tmp/plan-hard")
         );
     }
-}
 
+    /// The SEP-2640 entry: the frontmatter VERBATIM (including the keys
+    /// the metadata block strips) and every file with its digest and
+    /// size, `SKILL.md` among them.
+    #[test]
+    fn a_skills_list_entry_is_the_spec_shape() {
+        let mut skill = loaded_skill(
+            "acme/refunds",
+            "Refunds",
+            "Process refunds",
+            "name: refunds\ndescription: Process refunds\nlicense: MIT\n",
+            "/tmp/acme/refunds/SKILL.md",
+        );
+        skill.files = vec![bundle_file("SKILL.md", "raw"), bundle_file("scripts/x.py", "x")];
+        let entry = skill.entry();
+
+        assert_eq!(entry["uri"], "skill://acme/refunds/SKILL.md");
+        assert_eq!(
+            entry["frontmatter"],
+            serde_json::json!({ "name": "refunds", "description": "Process refunds", "license": "MIT" })
+        );
+        assert_eq!(entry["resources"][0]["uri"], "skill://acme/refunds/SKILL.md");
+        assert_eq!(entry["resources"][1]["uri"], "skill://acme/refunds/scripts/x.py");
+        assert_eq!(entry["resources"][1]["size"], 1);
+        assert_eq!(
+            entry["resources"][1]["digest"],
+            crate::mcp::skills::wire_files::digest(b"x")
+        );
+        assert_eq!(entry["digest"], entry["resources"][0]["digest"]);
+    }
+
+    /// Every directory in the namespace lists its direct children —
+    /// a skill root, a subdirectory and an organizational prefix alike —
+    /// and a file or an unknown path is not a directory.
+    #[test]
+    fn a_directory_read_lists_direct_children_only() {
+        let mut cache = SkillsCache::default();
+        for (path, body) in [
+            ("acme/refunds/SKILL.md", "s"),
+            ("acme/refunds/templates/invoice.md", "i"),
+            ("acme/refunds/templates/regional/eu.md", "e"),
+            ("acme/other/SKILL.md", "o"),
+        ] {
+            let rel = path.rsplit('/').next().unwrap();
+            cache.files.insert(path.to_string(), bundle_file(rel, body));
+        }
+        let names = |path: &str| -> Vec<(String, Option<String>)> {
+            cache
+                .directory(path)
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.uri.clone(), r.mime_type.clone()))
+                .collect()
+        };
+
+        assert_eq!(
+            names("acme/refunds/templates"),
+            vec![
+                (
+                    "skill://acme/refunds/templates/invoice.md".to_string(),
+                    Some("text/markdown".to_string())
+                ),
+                (
+                    "skill://acme/refunds/templates/regional".to_string(),
+                    Some("inode/directory".to_string())
+                ),
+            ]
+        );
+        assert_eq!(names("acme").len(), 2, "an organizational prefix is a directory");
+        assert!(
+            cache.directory("acme/refunds/SKILL.md").is_none(),
+            "a file is not a directory"
+        );
+        assert!(cache.directory("nope").is_none());
+        // `acme/ref` is a string prefix of `acme/refunds`, not a directory.
+        assert!(cache.directory("acme/ref").is_none());
+    }
+
+    /// A single page, so there is no cursor this server issued.
+    #[test]
+    fn a_cursor_is_refused() {
+        assert!(refuse_cursor(None).is_ok());
+        assert!(refuse_cursor(Some(&serde_json::json!({ "cursor": null }))).is_ok());
+        let err = refuse_cursor(Some(&serde_json::json!({ "cursor": "x" }))).unwrap_err();
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    /// rmcp strips `resultType` from its own results for an older peer
+    /// and passes a custom result through untouched, so ours must make
+    /// the same call — and always carry the cache stamps.
+    #[test]
+    fn a_custom_result_carries_result_type_only_when_modern() {
+        let legacy = custom_result(serde_json::Map::new(), 5, false).unwrap().0;
+        assert!(legacy.get("resultType").is_none());
+        assert_eq!(legacy["ttlMs"], 5);
+        assert_eq!(legacy["cacheScope"], "private");
+
+        let modern = custom_result(serde_json::Map::new(), 5, true).unwrap().0;
+        assert_eq!(modern["resultType"], "complete");
+    }
+}
 #[cfg(test)]
 mod watch_tests {
     use super::{SkillDirEntry, SkillsArgs, SkillsServer};
@@ -2218,7 +2748,7 @@ mod watch_tests {
         std::fs::create_dir_all(&bundle).unwrap();
         std::fs::write(
             bundle.join("SKILL.md"),
-            format!("---\ndescription: d\n{refs}---\n\n# {slug}\n\n{body}\n"),
+            format!("---\nname: {slug}\ndescription: d\n{refs}---\n\n# {slug}\n\n{body}\n"),
         )
         .unwrap();
     }
@@ -2247,6 +2777,8 @@ mod watch_tests {
                     include: Vec::new(),
                     watch: true,
                 }],
+                prompt_dirs: Vec::new(),
+                prompt_files: Vec::new(),
             },
             crate::mcp::server::ConfigSource::default(),
         )
@@ -2315,18 +2847,18 @@ mod watch_tests {
         let root = tempfile::tempdir().unwrap();
         write_skill(root.path(), "alpha", "v1", "");
         let (client_tx, mut lines, watcher, relay, running) =
-            serve_watched(root.path(), &listen(&["hyprpilot://skills/alpha"])).await;
+            serve_watched(root.path(), &listen(&["skill://alpha/SKILL.md"])).await;
         acknowledged(&mut lines).await;
 
         write_skill(root.path(), "alpha", "v2 edited", "");
 
         let seen = collect_until(&mut lines, |seen| {
-            updated_for(seen, "hyprpilot://skills/alpha")
+            updated_for(seen, "skill://alpha/SKILL.md")
                 && seen.iter().any(|l| l.contains("notifications/resources/list_changed"))
         })
         .await;
         assert!(
-            updated_for(&seen, "hyprpilot://skills/alpha"),
+            updated_for(&seen, "skill://alpha/SKILL.md"),
             "no per-skill update reached the client: {seen:?}"
         );
         assert!(
@@ -2355,17 +2887,23 @@ mod watch_tests {
             "references:\n  - ../references/shared.md\n",
         );
 
+        let shared = std::fs::canonicalize(root.path().join("references/shared.md")).unwrap();
+        let shared_uri = crate::mcp::skills::wire_references::file_uri(&shared.display().to_string());
         let (client_tx, mut lines, watcher, relay, running) =
-            serve_watched(root.path(), &listen(&["hyprpilot://skills/alpha"])).await;
+            serve_watched(root.path(), &listen(&[&shared_uri, "skill://alpha/SKILL.md"])).await;
         acknowledged(&mut lines).await;
 
         // Only the reference moves. The skill body is untouched.
         std::fs::write(root.path().join("references/shared.md"), "v2 edited").unwrap();
 
-        let seen = collect_until(&mut lines, |seen| updated_for(seen, "hyprpilot://skills/alpha")).await;
+        let seen = collect_until(&mut lines, |seen| updated_for(seen, &shared_uri)).await;
         assert!(
-            updated_for(&seen, "hyprpilot://skills/alpha"),
-            "a reference edit reached the citing skill as silence: {seen:?}"
+            updated_for(&seen, &shared_uri),
+            "a reference edit reached its subscriber as silence: {seen:?}"
+        );
+        assert!(
+            !updated_for(&seen, "skill://alpha/SKILL.md"),
+            "the citing skill's raw SKILL.md did not change: {seen:?}"
         );
         // The index renders a reference COUNT, not its content.
         assert!(
@@ -2417,7 +2955,7 @@ mod watch_tests {
         let root = tempfile::tempdir().unwrap();
         write_skill(root.path(), "alpha", "v1", "");
         let (client_tx, mut lines, watcher, relay, running) =
-            serve_watched(root.path(), &listen(&["hyprpilot://skills/alpha"])).await;
+            serve_watched(root.path(), &listen(&["skill://alpha/SKILL.md"])).await;
         acknowledged(&mut lines).await;
 
         std::fs::write(root.path().join("alpha/.SKILL.md.swp"), "editor scratch").unwrap();
@@ -2430,8 +2968,67 @@ mod watch_tests {
         drop(client_tx);
         running.cancel().await.ok();
     }
-}
 
+    /// A prompt file — the profile's system prompt — is watched through
+    /// its PARENT directory, so an editor's atomic save (a new inode)
+    /// still announces it as a prompt list change.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_edited_prompt_file_announces_a_prompt_list_change() {
+        let prompts = tempfile::tempdir().unwrap();
+        let file = prompts.path().join("AGENTS.md");
+        std::fs::write(&file, "v1").unwrap();
+
+        let handler = SkillsServer::new(
+            SkillsArgs {
+                serve: Default::default(),
+                skill_dirs: Vec::new(),
+                prompt_dirs: Vec::new(),
+                prompt_files: vec![file.clone()],
+            },
+            crate::mcp::server::ConfigSource::default(),
+        )
+        .expect("build skills server");
+        let (watcher, signals) = handler.arm_watch(std::time::Duration::from_millis(50)).await;
+        let _ = handler.reload_skills().await;
+        let relay_server = handler.clone();
+        let (mut client_tx, server_rx) = tokio::io::duplex(1 << 16);
+        let (server_tx, client_rx) = tokio::io::duplex(1 << 16);
+        client_tx
+            .write_all(
+                format!(
+                    "{{\"jsonrpc\":\"2.0\",\"id\":\"l\",\"method\":\"subscriptions/listen\",\"params\":{{{META},\"notifications\":{{\"promptsListChanged\":true,\"resourceSubscriptions\":[\"hyprpilot://prompts/AGENTS\"]}}}}}}\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let running = handler.serve((server_rx, server_tx)).await.expect("serve");
+        let relay = tokio::spawn(relay_server.relay_watch(signals, Some(running.peer().clone())));
+        let mut lines = BufReader::new(client_rx).lines();
+        acknowledged(&mut lines).await;
+
+        // An atomic save: write beside, rename over.
+        let tmp = prompts.path().join(".AGENTS.md.tmp");
+        std::fs::write(&tmp, "v2 edited").unwrap();
+        std::fs::rename(&tmp, &file).unwrap();
+
+        let seen = collect_until(&mut lines, |seen| {
+            seen.iter().any(|l| l.contains("notifications/prompts/list_changed"))
+                && updated_for(seen, "hyprpilot://prompts/AGENTS")
+        })
+        .await;
+        assert!(
+            seen.iter().any(|l| l.contains("notifications/prompts/list_changed")),
+            "no prompt list change reached the client: {seen:?}"
+        );
+        assert!(updated_for(&seen, "hyprpilot://prompts/AGENTS"), "{seen:?}");
+
+        relay.abort();
+        drop(watcher);
+        drop(client_tx);
+        running.cancel().await.ok();
+    }
+}
 #[cfg(test)]
 mod opener_tests {
     use super::{SkillsArgs, SkillsServer};
@@ -2453,6 +3050,8 @@ mod opener_tests {
             SkillsArgs {
                 skill_dirs: Vec::new(),
                 serve: Default::default(),
+                prompt_dirs: Vec::new(),
+                prompt_files: Vec::new(),
             },
             crate::mcp::server::ConfigSource::default(),
         )
@@ -2544,6 +3143,8 @@ mod opener_tests {
                 SkillsArgs {
                     skill_dirs: Vec::new(),
                     serve: Default::default(),
+                    prompt_dirs: Vec::new(),
+                    prompt_files: Vec::new(),
                 },
                 crate::mcp::server::ConfigSource::default(),
             )
@@ -2626,5 +3227,187 @@ mod opener_tests {
                 "tools/list unanswered after opener {opener}: {lines:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod sep_tests {
+    use super::{SkillDirEntry, SkillsArgs, SkillsServer};
+    use rmcp::ServiceExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    const META: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"t","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}"#;
+
+    /// A root with a skill shipping a script, and a skill nested under
+    /// an organizational prefix.
+    fn seed() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let alpha = root.path().join("alpha");
+        std::fs::create_dir_all(alpha.join("scripts")).unwrap();
+        std::fs::write(
+            alpha.join("SKILL.md"),
+            "---\nname: alpha\ndescription: a\n---\n\nalpha body\n",
+        )
+        .unwrap();
+        std::fs::write(alpha.join("scripts/run.py"), "print('hi')\n").unwrap();
+        let refunds = root.path().join("acme/refunds");
+        std::fs::create_dir_all(&refunds).unwrap();
+        std::fs::write(
+            refunds.join("SKILL.md"),
+            "---\nname: refunds\ndescription: r\n---\n\nrefunds body\n",
+        )
+        .unwrap();
+        root
+    }
+
+    /// Serve the seeded root, send `requests` (one JSON-RPC line each,
+    /// ids 1..), and collect each id's reply.
+    async fn exchange(root: &std::path::Path, opener: Option<&str>, requests: &[String]) -> Vec<serde_json::Value> {
+        let handler = SkillsServer::new(
+            SkillsArgs {
+                serve: Default::default(),
+                skill_dirs: vec![SkillDirEntry {
+                    dir: root.to_path_buf(),
+                    ignore: Vec::new(),
+                    include: Vec::new(),
+                    watch: false,
+                }],
+                prompt_dirs: Vec::new(),
+                prompt_files: Vec::new(),
+            },
+            crate::mcp::server::ConfigSource::default(),
+        )
+        .expect("build skills server");
+        let _ = handler.reload_skills().await;
+
+        let (mut client_tx, server_rx) = tokio::io::duplex(1 << 20);
+        let (server_tx, client_rx) = tokio::io::duplex(1 << 20);
+        if let Some(opener) = opener {
+            client_tx.write_all(format!("{opener}\n").as_bytes()).await.unwrap();
+        }
+        for (i, request) in requests.iter().enumerate() {
+            let line = request.replacen('{', &format!("{{\"jsonrpc\":\"2.0\",\"id\":{},", i + 1), 1);
+            client_tx.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+        }
+        client_tx.flush().await.unwrap();
+        let running = handler.serve((server_rx, server_tx)).await.expect("serve");
+
+        let mut replies = std::collections::BTreeMap::new();
+        let mut lines = BufReader::new(client_rx).lines();
+        while replies.len() < requests.len() {
+            let line = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+                .await
+                .expect("a reply within the bound")
+                .unwrap()
+                .expect("the stream stays open");
+            let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+            if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
+                replies.insert(id, value);
+            }
+        }
+        drop(client_tx);
+        running.cancel().await.ok();
+        replies.into_values().collect()
+    }
+
+    fn modern(method: &str, params: &str) -> String {
+        format!("{{\"method\":\"{method}\",\"params\":{{{META}{params}}}}}")
+    }
+
+    /// The host side of the contract, end to end: list, fetch the raw
+    /// `SKILL.md` and a script, and check each against the digest and
+    /// size the listing promised.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_listed_file_reads_back_to_its_digest() {
+        let root = seed();
+        let replies = exchange(
+            root.path(),
+            None,
+            &[
+                modern("skills/list", ""),
+                modern("resources/read", r#","uri":"skill://alpha/SKILL.md""#),
+                modern("resources/read", r#","uri":"skill://alpha/scripts/run.py""#),
+            ],
+        )
+        .await;
+
+        let list = &replies[0]["result"];
+        assert_eq!(list["resultType"], "complete");
+        assert!(list["ttlMs"].is_u64());
+        let skills = list["skills"].as_array().expect("skills");
+        let uris: Vec<&str> = skills.iter().filter_map(|s| s["uri"].as_str()).collect();
+        assert_eq!(uris, ["skill://acme/refunds/SKILL.md", "skill://alpha/SKILL.md"]);
+
+        let alpha = &skills[1];
+        assert_eq!(
+            alpha["frontmatter"],
+            serde_json::json!({ "name": "alpha", "description": "a" })
+        );
+        for (reply, listed) in replies[1..].iter().zip(alpha["resources"].as_array().unwrap()) {
+            let contents = &reply["result"]["contents"][0];
+            assert_eq!(contents["uri"], listed["uri"]);
+            let text = contents["text"].as_str().expect("text content");
+            assert_eq!(text.len() as u64, listed["size"].as_u64().unwrap());
+            assert_eq!(
+                crate::mcp::skills::wire_files::digest(text.as_bytes()),
+                listed["digest"].as_str().unwrap()
+            );
+        }
+        assert!(
+            replies[1]["result"]["contents"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("---\nname: alpha"),
+            "SKILL.md is served raw, frontmatter included"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn skills_get_and_directory_read_answer_by_uri() {
+        let root = seed();
+        let replies = exchange(
+            root.path(),
+            None,
+            &[
+                modern("skills/get", r#","uri":"skill://acme/refunds/SKILL.md""#),
+                modern("skills/get", r#","uri":"skill://nope/SKILL.md""#),
+                modern("resources/directory/read", r#","uri":"skill://acme""#),
+                modern("resources/directory/read", r#","uri":"skill://alpha/SKILL.md""#),
+            ],
+        )
+        .await;
+
+        assert_eq!(replies[0]["result"]["skill"]["frontmatter"]["name"], "refunds");
+        assert_eq!(replies[1]["error"]["code"], -32602, "an unknown skill: {}", replies[1]);
+        assert_eq!(
+            replies[2]["result"]["resources"],
+            serde_json::json!([{ "uri": "skill://acme/refunds", "name": "refunds", "mimeType": "inode/directory" }])
+        );
+        assert_eq!(replies[3]["error"]["code"], -32602, "a file is not a directory");
+    }
+
+    /// The declared capability is the host's only way to know the
+    /// methods exist — and a session that agreed an older revision must
+    /// not be handed the newer result shape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_legacy_session_sees_the_extension_without_result_type() {
+        let root = seed();
+        let replies = exchange(
+            root.path(),
+            None,
+            &[
+                r#"{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#.to_string(),
+                r#"{"method":"skills/list","params":{}}"#.to_string(),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            replies[0]["result"]["capabilities"]["extensions"]["io.modelcontextprotocol/skills"],
+            serde_json::json!({ "directoryRead": true })
+        );
+        assert_eq!(replies[0]["result"]["capabilities"]["prompts"]["listChanged"], true);
+        assert!(replies[1]["result"].get("resultType").is_none(), "{}", replies[1]);
+        assert_eq!(replies[1]["result"]["skills"].as_array().map(Vec::len), Some(2));
     }
 }
