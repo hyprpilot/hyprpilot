@@ -20,7 +20,7 @@ use rmcp::model::{
     ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::ServerHandler;
+use rmcp::{ServerHandler, ServiceExt};
 
 use super::harness::{DelegatePolicy, Harness};
 use super::rpc::{
@@ -135,16 +135,6 @@ impl ServerHandler for HarnessServer {
     /// Accept a `subscriptions/listen` opt-in. Without this rmcp leaves
     /// subscriptions unimplemented, and the per-session wake-up below
     /// would have no channel to arrive on.
-    /// Record the negotiated protocol version as the peer's, per
-    /// `rpc::initialize_negotiated`.
-    async fn initialize(
-        &self,
-        request: rmcp::model::InitializeRequestParams,
-        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
-        Ok(super::rpc::initialize_negotiated(self, request, &context))
-    }
-
     fn accepted_subscription_filter(
         &self,
         requested: &rmcp::model::SubscriptionFilter,
@@ -1326,8 +1316,7 @@ pub async fn run_harness(args: HarnessArgs, config: super::ConfigSource) -> anyh
         return served;
     }
 
-    let (stdin, stdout) = rmcp::transport::io::stdio();
-    let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
+    let running = handler.serve(rmcp::transport::io::stdio()).await?;
 
     // The peer exists only once the service is running, which is also
     // the earliest a session can exist — so installing the hook here is

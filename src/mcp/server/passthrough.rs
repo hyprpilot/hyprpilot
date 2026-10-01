@@ -28,7 +28,7 @@ use rmcp::model::{
     PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
-use rmcp::ServerHandler;
+use rmcp::{ServerHandler, ServiceExt};
 
 use crate::config::mcp::{PassthroughTool, DEFAULT_PASSTHROUGH_SERVER_NAME, DEFAULT_PASSTHROUGH_TIMEOUT_SECONDS};
 
@@ -141,16 +141,6 @@ impl ServerHandler for PassthroughServer {
         super::rpc::supported_protocol_versions()
     }
 
-    /// Record the negotiated protocol version as the peer's, per
-    /// `rpc::initialize_negotiated`.
-    async fn initialize(
-        &self,
-        request: rmcp::model::InitializeRequestParams,
-        context: RequestContext<RoleServer>,
-    ) -> Result<rmcp::model::InitializeResult, rmcp::ErrorData> {
-        Ok(super::rpc::initialize_negotiated(self, request, &context))
-    }
-
     fn get_info(&self) -> ServerConfig {
         let mut caps = ServerCapabilities::default();
         // Fixed for the life of the process.
@@ -219,8 +209,7 @@ pub async fn run_passthrough(args: PassthroughArgs, _config: super::ConfigSource
         return super::http::serve_http(handler, &args.serve, DEFAULT_PASSTHROUGH_SERVER_NAME).await;
     }
 
-    let (stdin, stdout) = rmcp::transport::io::stdio();
-    let running = super::rpc::serve_from_first_byte(handler, (stdin, stdout));
+    let running = handler.serve(rmcp::transport::io::stdio()).await?;
 
     wait_for_shutdown(running).await;
 
@@ -383,7 +372,6 @@ mod tests {
         let (url, _upstream) = stub_upstream("200 OK", "forwarded").await;
         let (mut client_tx, server_rx) = tokio::io::duplex(1 << 16);
         let (server_tx, client_rx) = tokio::io::duplex(1 << 16);
-        let running = super::super::rpc::serve_from_first_byte(server(&url), (server_rx, server_tx));
 
         for line in [
             r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
@@ -394,6 +382,7 @@ mod tests {
             client_tx.write_all(format!("{line}\n").as_bytes()).await.unwrap();
         }
         client_tx.flush().await.unwrap();
+        let running = server(&url).serve((server_rx, server_tx)).await.expect("serve");
 
         let mut replies = std::collections::HashMap::new();
         let mut lines = BufReader::new(client_rx).lines();

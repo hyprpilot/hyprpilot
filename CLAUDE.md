@@ -499,36 +499,30 @@ view is refused rather than read as the status — the subscription filter
 is built on the same parser, so accepting one would acknowledge a URI
 that can never be served.
 
-**All four serve from the connection's FIRST byte**
-(`rpc::serve_from_first_byte`, wrapping rmcp's `serve_directly`), never
-`ServiceExt::serve`. `serve` runs a pre-loop handshake that handles a
-non-`initialize` opener INLINE — `handle_request().await` completes
-before the serve loop is spawned — so a LONG-LIVED opener deadlocks the
+**All four serve through rmcp's own `ServiceExt::serve`**, which needs
+3.4 or later. Before 3.4 its pre-loop handshake handled a
+non-`initialize` opener INLINE — `handle_request().await` completed
+before the serve loop was spawned — so a LONG-LIVED opener deadlocked the
 process: `subscriptions/listen` acknowledges through
 `Peer::send_notification`, which awaits a oneshot only the loop can
-fire, and the loop does not exist yet. Nothing is read or written
-again, ever. That is not hypothetical: Claude Code's v2 MCP runtime
-probes `server/discover` on a DISPOSABLE second process, then opens the
-real transport with `subscriptions/listen` as its first request — so
-for a server implementing subscriptions this ordering is the NORMAL
-path. It reported `connected` (the throwaway probe succeeded) and then
-`tools fetch failed`, on one account only, because the runtime is
-gated per-account. `mcp serve` was immune twice over: it advertises no
-`listChanged`, so no listen is opened, and it does not override
-`accepted_subscription_filter`, so rmcp answers `-32601` before
-`establish`. Negotiation still runs against
-`supported_protocol_versions`, but rmcp's in-loop `initialize` records
-the version the client ASKED for rather than the negotiated one — so
-every server overrides `initialize` to use
-`rpc::initialize_negotiated`. Without it a client told `2025-11-25` is
-still served `2026-07-28` result shapes, which is the `ttlMs` failure
-again from the other side. Requests now also run CONCURRENTLY, so a
-client that pipelines past `initialize` can be answered before that
-version is recorded; the spec forbids it, and nothing is owed to a
-client that does. Tests drive every opener
-(`initialize`-first, `discover`-first, `listen`-first) because rmcp
-gives the first request its own code path; a smoke that only opens
-with `initialize` covers one of three.
+fire, and the loop did not exist yet. That was not hypothetical: Claude
+Code's v2 MCP runtime probes `server/discover` on a DISPOSABLE second
+process, then opens the real transport with `subscriptions/listen` as
+its first request — so for a server implementing subscriptions this
+ordering is the NORMAL path. It reported `connected` (the throwaway probe
+succeeded) and then `tools fetch failed`. rmcp 3.4 (rust-sdk #1263) now
+hands that opener to the loop as its first message, and its handshake
+records the NEGOTIATED version as the peer's, so the in-tree
+`serve_directly` wrapper and the `initialize` override that patched the
+version are gone. Two consequences: `serve` returns only once the first
+request arrives, so the skills watcher relay and the harness exit hook
+start then (an edit before it is queued on the armed channel, not lost);
+and a test must write its opener before awaiting `serve`. Tests drive
+every opener (`initialize`-first, `discover`-first, `listen`-first)
+because rmcp gives the first request its own code path; a smoke that
+only opens with `initialize` covers one of three. Sending `initialize`
+is itself the choice of legacy semantics — one naming `2026-07-28`
+negotiates down to `2025-11-25`, pinned by the same tests.
 
 `server/rpc.rs` owns the plumbing all four import (`object_schema`,
 `structured_with_text`, `tool_error`, `require_string`,
@@ -852,7 +846,7 @@ Skills reach the agent **only** through the skills server.
   WATCHED, so an edit is rescanned and announced without a tool call.
   **The watcher contract:** armed BEFORE the startup scan (so an edit
   between the scan and the first drain is queued, not lost); the relay
-  is spawned AFTER `serve_from_first_byte` with
+  is spawned AFTER `serve` returns, with
   `running.peer().clone()`, mirroring the harness exit hook, and is
   never an opener and never on a request path — so it cannot
   reintroduce the pre-loop deadlock. Rescans are serialised by a
