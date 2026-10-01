@@ -17,7 +17,7 @@ use std::sync::Arc;
 use clap::Args;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo, Tool,
+    ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
@@ -69,7 +69,7 @@ impl ServerHandler for HarnessServer {
         super::rpc::supported_protocol_versions()
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut caps = ServerCapabilities::default();
         // Fixed for the life of the process.
         let mut tools = rmcp::model::ToolsCapability::default();
@@ -114,7 +114,7 @@ impl ServerHandler for HarnessServer {
                 .collect(),
         );
 
-        ServerInfo::new(caps)
+        ServerConfig::new(caps)
             .with_server_info(Implementation::new(
                 DEFAULT_HARNESS_SERVER_NAME.to_string(),
                 env!("CARGO_PKG_VERSION").to_string(),

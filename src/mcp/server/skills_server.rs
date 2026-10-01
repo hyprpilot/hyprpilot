@@ -84,7 +84,7 @@ use clap::Args;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ErrorCode, Implementation, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo, Tool,
+    ReadResourceResult, ResourceContents, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
@@ -1039,7 +1039,7 @@ impl ServerHandler for SkillsServer {
         super::rpc::supported_protocol_versions()
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut caps = ServerCapabilities::default();
         // The tool set is fixed for the life of THIS process — the
         // four skills tools. It never changes, so do NOT advertise
@@ -1062,7 +1062,7 @@ impl ServerHandler for SkillsServer {
         resources.subscribe = Some(true);
         resources.list_changed = Some(true);
         caps.resources = Some(resources);
-        ServerInfo::new(caps)
+        ServerConfig::new(caps)
             .with_server_info(Implementation::new(
                 DEFAULT_SKILLS_SERVER_NAME.to_string(),
                 env!("CARGO_PKG_VERSION").to_string(),

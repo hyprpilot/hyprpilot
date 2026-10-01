@@ -25,7 +25,7 @@ use std::time::Duration;
 use clap::Args;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
@@ -151,14 +151,14 @@ impl ServerHandler for PassthroughServer {
         Ok(super::rpc::initialize_negotiated(self, request, &context))
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut caps = ServerCapabilities::default();
         // Fixed for the life of the process.
         let mut tools = rmcp::model::ToolsCapability::default();
         tools.list_changed = Some(false);
         caps.tools = Some(tools);
 
-        ServerInfo::new(caps)
+        ServerConfig::new(caps)
             .with_server_info(Implementation::new(
                 DEFAULT_PASSTHROUGH_SERVER_NAME.to_string(),
                 env!("CARGO_PKG_VERSION").to_string(),
