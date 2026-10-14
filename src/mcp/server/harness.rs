@@ -1566,8 +1566,8 @@ pub(crate) fn turn_label(turn: u32, outcome: &TurnOutcome) -> String {
 /// - **codex** — `{"type":"turn.completed"}` closes the turn, but the
 ///   text rides the preceding `item.completed` whose `item.type` is
 ///   `agent_message`.
-/// - **opencode** — emits NO terminal marker. Its stream ends
-///   `step_finish(reason=stop)`, so the answer is the last
+/// - **opencode** — emits NO terminal marker. `run --format json` may
+///   end without a closing `step_finish`, so the answer is the last
 ///   `{"type":"text"}` part. Scanning for a terminal event here would
 ///   find nothing and report `false` forever.
 fn tail_has_terminal_result(path: &std::path::Path) -> bool {
