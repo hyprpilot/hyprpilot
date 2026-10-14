@@ -8,8 +8,8 @@
 //! - [`claude`] — `claude` native flags (`--model`, `--mcp-config`,
 //!   `--allowedTools`, …).
 //! - [`codex`] — `codex` `-c` config overrides + `exec` subcommand.
-//! - [`opencode`] — `opencode` `OPENCODE_CONFIG_CONTENT` /
-//!   `OPENCODE_PERMISSION` env + `run` subcommand.
+//! - [`opencode`] — `opencode --standalone`, `OPENCODE_CONFIG_CONTENT`
+//!   env + `run` subcommand.
 //! - [`argv`] — flag-detection predicates shared by all three.
 //! - [`temp`] — the launch-scoped 0600 temp-config guard + reaper
 //!   backing claude's by-path `--mcp-config`.
@@ -410,7 +410,7 @@ pub(super) mod fixtures {
                 cwd: None,
                 env: BTreeMap::new(),
             },
-            model: Some("model-a".into()),
+            model: Some("provider/model-a".into()),
             effort: Some("high".into()),
             system_prompt: Vec::new(),
             mode: Some("plan".into()),
@@ -575,12 +575,6 @@ pub(super) mod fixtures {
             },
             source: "<test>".into(),
         }
-    }
-
-    pub(crate) fn assert_json_key_before(body: &str, before: &str, after: &str) {
-        let before_pos = body.find(&format!("\"{before}\"")).expect("before key exists");
-        let after_pos = body.find(&format!("\"{after}\"")).expect("after key exists");
-        assert!(before_pos < after_pos, "expected `{before}` before `{after}` in {body}");
     }
 }
 

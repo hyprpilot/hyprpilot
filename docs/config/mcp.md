@@ -314,11 +314,11 @@ input_schema = { type = "object", properties = { question = { type = "string" } 
 
 The merged catalogue and policy are projected into each vendor's native shape at launch:
 
-| Vendor        | Servers via                            | Policy via                                                      |
-| ------------- | -------------------------------------- | --------------------------------------------------------------- |
-| `claude-code` | `--mcp-config <path>` (0600 temp file) | `--allowedTools` / `--disallowedTools` (`mcp__server__tool`)    |
-| `codex`       | `-c mcp_servers.<name>.*` overrides    | exact-name `enabled_tools` / `disabled_tools` / `approval_mode` |
-| `opencode`    | `OPENCODE_CONFIG_CONTENT` env          | ordered `OPENCODE_PERMISSION` rules (`server_tool`)             |
+| Vendor        | Servers via                             | Policy via                                                      |
+| ------------- | --------------------------------------- | --------------------------------------------------------------- |
+| `claude-code` | `--mcp-config <path>` (0600 temp file)  | `--allowedTools` / `--disallowedTools` (`mcp__server__tool`)    |
+| `codex`       | `-c mcp_servers.<name>.*` overrides     | exact-name `enabled_tools` / `disabled_tools` / `approval_mode` |
+| `opencode`    | `OPENCODE_CONFIG_CONTENT` `mcp.servers` | ordered `permissions` rules in the same config (`server_tool`)  |
 
 Codex does not support wildcard tool patterns in those fields, so wildcard patterns are skipped for Codex with a warning. Provider-native arguments you pass after `--` (or env you set on the agent) suppress the generated equivalents.
 

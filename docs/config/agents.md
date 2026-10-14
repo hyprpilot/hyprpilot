@@ -69,7 +69,7 @@ Each provider variant maps to a per-vendor command builder that projects the res
 
 - **`claude-code`** — `--model`, `--effort`, `--permission-mode` (from `mode`), `--append-system-prompt`, MCP servers as `--mcp-config <path>` pointing at a per-launch 0600 temp file (keeps expanded header secrets out of the world-readable argv — see [MCP → Secrets](./mcp#secrets-in-the-vendor-handoff)), and tool policy as `--allowedTools` / `--disallowedTools` (`mcp__server__tool` naming).
 - **`codex`** — `--model`, effort as a `-c model_reasoning_effort=…` override, MCP servers as `-c mcp_servers.<name>.*` config keys, and tool policy as exact-name `enabled_tools` / `disabled_tools` / per-tool `approval_mode`. Codex does not support wildcard tool patterns in those fields, so wildcard patterns are skipped for Codex with a warning.
-- **`opencode`** — `--model`, `mode` as the opencode `--agent` name (a synthetic `hyprpilot` agent when unset), config (system prompt, effort variant, MCP servers) via `OPENCODE_CONFIG_CONTENT`, and tool policy as ordered `OPENCODE_PERMISSION` rules (`server_tool` naming, wildcards supported).
+- **`opencode`** (V2) — always `--standalone`, and everything else as native config in `OPENCODE_CONFIG_CONTENT`: the system prompt and model on the agent `mode` names (a synthetic `hyprpilot` agent when unset), that agent as `default_agent`, effort joined onto the model as `provider/model#effort`, MCP servers under `mcp.servers`, and tool policy as ordered `permissions` rules (`server_tool` actions, wildcards supported). The TUI takes no `--model` / `--agent`, so neither is ever emitted. `--standalone` gives the launch a private server that inherits its env; without it opencode attaches to one shared background service started with some earlier client's env, and the profile's config, database and API keys are ignored. A `--server` you pass after `--` suppresses it. The model must be a `provider/model` reference; a bare model id fails the launch, since opencode would otherwise drop the whole agent, system prompt included, without a word. An `OPENCODE_CONFIG_CONTENT` you set in the agent's `env` replaces the generated config wholesale — model, agent, system prompt, MCP servers and tool permissions are then not projected, and a warning says so.
 
 MCP transport (stdio / http / sse) is inferred from field presence (`command` → stdio, `url` → http/sse). Any provider-native argument you pass after `--` suppresses the generated equivalent, so you can always override hyprpilot's projection by hand.
 
@@ -79,7 +79,7 @@ MCP transport (stdio / http / sse) is inferred from field presence (`command` �
 
 - **claude-code** — passed to `--permission-mode` (e.g. `plan`, `default`).
 - **codex** — Codex has no single mode flag. The value must be either an approval policy (`untrusted`, `on-request`, `never`, or the deprecated `on-failure`) mapped to `--ask-for-approval`, or a sandbox mode (`read-only`, `workspace-write`, `danger-full-access`) mapped to `--sandbox`. An unsupported value fails before the terminal is handed to `codex`.
-- **opencode** — used as the `--agent` name.
+- **opencode** — the agent name, set as `default_agent`.
 
 ## Swapping the agent per launch
 

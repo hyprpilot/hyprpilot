@@ -316,7 +316,7 @@ mod tests {
         );
         assert_eq!(
             command.args[model_idx + 1],
-            "model-a",
+            "provider/model-a",
             "generated --model flag still carries resolved.model's value"
         );
     }
@@ -520,7 +520,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(command.args.windows(2).any(|w| w == ["--model", "model-a"]));
+        assert!(command.args.windows(2).any(|w| w == ["--model", "provider/model-a"]));
         assert!(command.args.windows(2).any(|w| w == ["--effort", "high"]));
         assert!(command.args.windows(2).any(|w| w == ["--permission-mode", "plan"]));
         assert!(command
