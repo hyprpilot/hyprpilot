@@ -17,8 +17,8 @@
 //! This module keeps the dispatch, the `exec` handoff (with its
 //! secret-tiered tracing + argv redaction), the infallible
 //! `base_command` projection of the agent's `command`/`args`/`env`/
-//! `cwd`, and the pure helpers (`ensure_inline_size`, MCP leaf-pattern
-//! matching) the vendor modules share.
+//! `cwd`, and the helpers the vendor modules share (`ensure_inline_size`,
+//! the MCP transport filter, MCP leaf-pattern matching).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,7 +27,7 @@ use std::process::{ExitCode, Stdio};
 use anyhow::{bail, Context, Result};
 
 use crate::config::AgentProvider;
-use crate::mcp::MCPDefinition;
+use crate::mcp::{project_transport, MCPDefinition, McpTransport};
 use crate::resolve::profile::ResolvedProfile;
 
 mod argv;
@@ -303,6 +303,22 @@ pub(super) fn base_command(resolved: &ResolvedProfile) -> SpawnCommand {
 
 fn expand_value(raw: &str, ctx: &str) -> String {
     crate::paths::expand_env_value(raw, ctx, |name| std::env::var(name).ok())
+}
+
+/// Each catalogue entry with the transport it projects to. An entry with
+/// neither `command` nor `url` has none and is skipped with a warning,
+/// so no vendor is handed a server it cannot start.
+pub(super) fn mcp_transports<'a>(
+    defs: &'a [MCPDefinition],
+    vendor: &'static str,
+) -> impl Iterator<Item = (&'a MCPDefinition, McpTransport)> + 'a {
+    defs.iter().filter_map(move |def| {
+        let transport = project_transport(def);
+        if transport.is_none() {
+            tracing::warn!(name = %def.name, vendor, "cli spawn: skipping MCP entry without command or url");
+        }
+        transport.map(|transport| (def, transport))
+    })
 }
 
 /// Strip the `mcp__<server>__` prefix from a tool pattern, returning
@@ -650,6 +666,18 @@ mod tests {
             Some("expanded-value")
         );
         std::env::remove_var("HYPRPILOT_TEST_OVERRIDE_OVERLAID_VAR");
+    }
+
+    /// Every vendor builder reads the catalogue through this, so an entry
+    /// that cannot start reaches none of them.
+    #[test]
+    fn mcp_transports_skips_entries_without_a_transport() {
+        let defs = [transportless_mcp_def(), mcp_def()];
+        let names: Vec<&str> = mcp_transports(&defs, "test")
+            .map(|(def, _)| def.name.as_str())
+            .collect();
+
+        assert_eq!(names, ["hyprpilot-nvim"]);
     }
 
     #[test]

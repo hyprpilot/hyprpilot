@@ -4,11 +4,13 @@
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 
-use crate::mcp::{project_transport, MCPDefinition, McpTransport};
+use crate::mcp::{MCPDefinition, McpTransport};
 use crate::resolve::profile::ResolvedProfile;
 
 use super::argv::{combined_args, flag_value, has_flag};
-use super::{base_command, ensure_inline_size, mcp_leaf_pattern, HarnessProjection, Resume, SpawnCommand};
+use super::{
+    base_command, ensure_inline_size, mcp_leaf_pattern, mcp_transports, HarnessProjection, Resume, SpawnCommand,
+};
 
 /// Agent the generated prompt and model hang off when the profile names
 /// no `mode`.
@@ -197,11 +199,7 @@ fn opencode_model_ref(model: Option<&str>, effort: Option<&str>) -> Result<Optio
 
 fn opencode_mcp_servers(defs: &[MCPDefinition]) -> Map<String, Value> {
     let mut out = Map::new();
-    for def in defs {
-        let Some(server) = project_transport(def) else {
-            tracing::warn!(name = %def.name, "cli spawn: skipping MCP entry without command or url for opencode");
-            continue;
-        };
+    for (_, server) in mcp_transports(defs, "opencode") {
         match server {
             McpTransport::Stdio {
                 name,
