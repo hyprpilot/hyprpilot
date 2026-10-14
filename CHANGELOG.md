@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.0.0](https://github.com/hyprpilot/hyprpilot/compare/v3.24.0...v4.0.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **spawn:** opencode 1.x is no longer supported; the opencode projection targets the V2 CLI only.
+
+### Features
+
+* **spawn:** project opencode for its V2 CLI ([#272](https://github.com/hyprpilot/hyprpilot/issues/272)) ([10cee3b](https://github.com/hyprpilot/hyprpilot/commit/10cee3b5af5b4bae3c29e9aca456e3c21f03b9cc))
+
 ## [3.24.0](https://github.com/hyprpilot/hyprpilot/compare/v3.23.1...v3.24.0) (2026-10-01)
 
 
