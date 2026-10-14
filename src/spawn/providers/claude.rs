@@ -2,11 +2,11 @@
 
 use anyhow::Result;
 
-use crate::mcp::{expanded_raw, project_transport, MCPDefinition};
+use crate::mcp::{expanded_raw, MCPDefinition};
 use crate::resolve::profile::ResolvedProfile;
 
 use super::argv::{combined_args, has_flag};
-use super::{base_command, ensure_inline_size, HarnessProjection, Resume, SpawnCommand};
+use super::{base_command, ensure_inline_size, mcp_transports, HarnessProjection, Resume, SpawnCommand};
 
 pub(super) fn build_claude(
     resolved: &ResolvedProfile,
@@ -125,15 +125,9 @@ fn has_claude_disallowed_tools_flag(args: &[String]) -> bool {
 
 fn claude_mcp_config(defs: &[MCPDefinition]) -> Result<String> {
     let mut servers = serde_json::Map::new();
-    for def in defs {
-        // Parity with codex/opencode, which warn+skip transportless
-        // defs: claude used to serialize any raw entry verbatim, so a
-        // def missing both `command` and `url` reached the vendor as a
-        // malformed server. Skip it here instead.
-        if project_transport(def).is_none() {
-            tracing::warn!(name = %def.name, "cli spawn: skipping MCP entry without command or url for claude");
-            continue;
-        }
+    // claude takes the raw entry rather than the projected transport, so
+    // the transport only gates which entries it gets.
+    for (def, _) in mcp_transports(defs, "claude") {
         servers.insert(def.name.clone(), claude_mcp_server_config(def));
     }
     serde_json::to_string(&serde_json::json!({ "mcpServers": servers }))
@@ -316,7 +310,7 @@ mod tests {
         );
         assert_eq!(
             command.args[model_idx + 1],
-            "model-a",
+            "provider/model-a",
             "generated --model flag still carries resolved.model's value"
         );
     }
@@ -520,7 +514,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(command.args.windows(2).any(|w| w == ["--model", "model-a"]));
+        assert!(command.args.windows(2).any(|w| w == ["--model", "provider/model-a"]));
         assert!(command.args.windows(2).any(|w| w == ["--effort", "high"]));
         assert!(command.args.windows(2).any(|w| w == ["--permission-mode", "plan"]));
         assert!(command

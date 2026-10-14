@@ -4,12 +4,13 @@ use std::collections::BTreeSet;
 
 use anyhow::{bail, Result};
 
-use crate::mcp::{project_transport, MCPDefinition, McpTransport};
+use crate::mcp::{MCPDefinition, McpTransport};
 use crate::resolve::profile::ResolvedProfile;
 
 use super::argv::{combined_args, has_config_override, has_flag};
 use super::{
-    base_command, ensure_inline_size, is_exact_tool_name, mcp_leaf_pattern, HarnessProjection, Resume, SpawnCommand,
+    base_command, ensure_inline_size, is_exact_tool_name, mcp_leaf_pattern, mcp_transports, HarnessProjection, Resume,
+    SpawnCommand,
 };
 
 const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never", "on-failure"];
@@ -299,11 +300,7 @@ fn codex_mcp_tool_policy(def: &MCPDefinition) -> CodexToolPolicy {
 
 fn codex_mcp_config_entries(defs: &[MCPDefinition]) -> Vec<(String, String)> {
     let mut entries = Vec::new();
-    for def in defs {
-        let Some(server) = project_transport(def) else {
-            tracing::warn!(name = %def.name, "cli spawn: skipping MCP entry without command or url for codex");
-            continue;
-        };
+    for (def, server) in mcp_transports(defs, "codex") {
         match server {
             McpTransport::Stdio {
                 name,

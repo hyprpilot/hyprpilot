@@ -59,16 +59,6 @@ pub struct HyprpilotExtension {
     pub auto_reject_tools: Vec<String>,
 }
 
-impl HyprpilotExtension {
-    #[must_use]
-    pub fn has_tool_policy(&self) -> bool {
-        self.include_tools.is_some()
-            || !self.exclude_tools.is_empty()
-            || !self.auto_accept_tools.is_empty()
-            || !self.auto_reject_tools.is_empty()
-    }
-}
-
 /// One server entry. `name` is the `mcpServers` map key (used for
 /// indexing + UI labels + tool→server attribution). `raw` carries the
 /// untouched server entry minus the hyprpilot extension key — gets

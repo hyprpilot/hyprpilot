@@ -393,7 +393,9 @@ an optional `hyprpilot` namespace key:
 - **Vendor projection** (`spawn/providers/`): claude gets
   `--mcp-config` (inline JSON) + `--allowedTools` / `--disallowedTools`;
   codex gets `-c mcp_servers.<name>.*` config overrides; opencode gets
-  `OPENCODE_CONFIG_CONTENT` + `OPENCODE_PERMISSION` env. Transport is
+  `mcp.servers` + an ordered `permissions` ruleset (last match wins,
+  action `<server>_<tool>`, resource `*`) inside
+  `OPENCODE_CONFIG_CONTENT`. Transport is
   inferred by field presence (`command` → stdio, `url` → http/sse).
   Provider args the captain passed suppress the generated equivalents.
   Reserved names: each in-tree server's resolved name — see
@@ -1077,14 +1079,12 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
   running session always gets one. There is no `truncated` flag — the
   cursor's presence is the signal. An unrecognised cursor errors.
 - **cwd reaches each vendor differently.** claude inherits the process
-  cwd; codex takes a global `--cd`; opencode takes `--dir` **on `run`
-  only**. hyprpilot sets `current_dir` AND emits the flag for the two
-  that need one — opencode does not derive its tool sandbox from the
-  process cwd, so without `--dir` the agent silently worked in the
-  wrong tree while every surface reported the requested path. `--dir`
-  is gated on the headless path: the bare TUI command takes a
-  positional `project` and parses strictly, so passing it there exits 1
-  with a usage dump and no session at all.
+  cwd; codex takes a global `--cd`; opencode `run` reads `$PWD` BEFORE
+  the process cwd and has no `--dir`. hyprpilot sets `current_dir` AND
+  whatever else the vendor reads — `--cd`, or `PWD` in opencode's env.
+  `$PWD` is otherwise inherited from the caller's shell, so the agent
+  silently worked in the wrong tree while every surface reported the
+  requested path.
 - **`[profiles.harness]` is OPT-IN.** A profile with no block is not
   available: absent from `list_profiles` AND refused by
   `spawn`/`session_send`. Within a declared block `enabled` defaults
@@ -1415,6 +1415,29 @@ no prompt flag falls through to the picker.
   modes still project via `-s`). `stdin_prompt = Some(prompt)`.
 - **opencode** — `run` subcommand + prompt POSITIONAL (opencode's
   `run [message…]` is positional-only; no stdin support).
+
+**opencode is V2 only** (`opencode.rs`); there is no V1 projection and
+no version detection. Two V2 facts shape it:
+
+- **Always `--standalone`**, on the TUI and on `run`. Without it both
+  attach to ONE shared per-user background service, which keeps the env
+  of whichever client spawned it — so a profile's `OPENCODE_CONFIG_DIR`,
+  `OPENCODE_DB`, `OPENCODE_CONFIG_CONTENT` and API keys are silently
+  ignored whenever a service already runs. A captain-passed `--server`
+  suppresses it. `acp` is always standalone and is not projected.
+- **The TUI rejects `--model` / `--agent`**, so model and agent ride
+  `OPENCODE_CONFIG_CONTENT` on BOTH paths rather than as flags on one:
+  `agents.<name>` (`system`, `model`), `default_agent`, top-level
+  `model`. Effort is the variant in the `provider/model#effort` string
+  form of a model selection (V2 also takes `{providerID, model,
+  variant}`; the string is the one used); without a model it is dropped
+  with a warn. A ref without a `provider/` part fails the launch,
+  because opencode's normalizer silently drops an agent whose model it
+  cannot parse, system prompt included. `OPENCODE_PERMISSION` does not
+  exist in V2 — the MCP tool policy is the `permissions` array in the
+  same config. A preset `OPENCODE_CONFIG_CONTENT` in the agent env
+  suppresses ALL of it (model, agent, system prompt, MCP, permissions)
+  with a warn.
 
 All share the interactive model/effort/mode/MCP/tool-policy projection
 + arg-dedup — headless only changes prompt DELIVERY.

@@ -111,8 +111,8 @@ fn claude_answer(events: &[Value]) -> Option<String> {
 /// An `error` event in this turn.
 ///
 /// Two shapes, because the vendors disagree: opencode nests the message
-/// under `error.data.message`, codex puts it at the top level. Matching
-/// only one silently drops the other's failures.
+/// under `error.message`, codex puts it at the top level. Matching only
+/// one silently drops the other's failures.
 fn turn_error(events: &[Value]) -> Option<String> {
     events
         .iter()
@@ -120,10 +120,8 @@ fn turn_error(events: &[Value]) -> Option<String> {
         .filter_map(|event| {
             if let Some(err) = event.get("error") {
                 return err
-                    .get("data")
-                    .and_then(|d| d.get("message"))
+                    .get("message")
                     .and_then(Value::as_str)
-                    .or_else(|| err.get("name").and_then(Value::as_str))
                     .or_else(|| err.as_str())
                     .map(str::to_owned);
             }
@@ -170,19 +168,21 @@ mod tests {
         assert_eq!(extract(&body, AgentProvider::Codex), Answer::Text("the answer".into()));
     }
 
-    /// The failure the answer query goes blind on. A real 402 left
-    /// `stderr.log` at zero bytes and the whole diagnosis in here, so a
+    /// The failure the answer query goes blind on. A provider failure
+    /// leaves `stderr.log` empty and the whole diagnosis in here, so a
     /// caller running only the answer query reports "returned nothing"
-    /// for a billing error.
+    /// for it. Captured from `opencode run --format json`.
     #[test]
     fn an_upstream_error_is_reported_rather_than_silence() {
         let body = lines(&[serde_json::json!({
             "type": "error",
-            "error": { "name": "ProviderError", "data": { "message": "Payment Required (statusCode 402)" } }
+            "timestamp": 1_791_979_079_722_u64,
+            "sessionID": "ses_ec5b938d5ffejpjHHQ1IgXDKsF",
+            "error": { "type": "provider.no-route", "message": "Model unavailable: kilic/does-not-exist" }
         })]);
 
         let answer = extract(&body, AgentProvider::OpenCode);
-        assert_eq!(answer, Answer::Failed("Payment Required (statusCode 402)".into()));
+        assert_eq!(answer, Answer::Failed("Model unavailable: kilic/does-not-exist".into()));
         assert!(answer.render().starts_with("error: "));
     }
 
@@ -192,7 +192,7 @@ mod tests {
     fn an_error_outranks_text_that_preceded_it() {
         let body = lines(&[
             serde_json::json!({ "type": "result", "result": "partial thought" }),
-            serde_json::json!({ "type": "error", "error": { "name": "Overloaded" } }),
+            serde_json::json!({ "type": "error", "error": { "message": "Overloaded" } }),
         ]);
 
         assert_eq!(
@@ -226,7 +226,7 @@ mod tests {
     }
 
     /// codex puts its error message at the top level rather than under
-    /// `error.data`. Matching only opencode's shape drops it silently.
+    /// an `error` object. Matching only opencode's shape drops it silently.
     #[test]
     fn a_codex_top_level_error_is_matched() {
         let body = lines(&[serde_json::json!({ "type": "error", "message": "stream disconnected" })]);
@@ -239,21 +239,26 @@ mod tests {
 
     /// opencode emits a `text` part per block of prose, including one
     /// BEFORE its tool calls, so the answer is every block of the turn
-    /// rather than the last one.
+    /// rather than the last one. The closing `step_finish` may or may
+    /// not follow it.
     #[test]
     fn opencode_joins_every_block_of_the_turn() {
-        let body = lines(&[
+        let mut events = vec![
             serde_json::json!({ "type": "text", "part": { "text": "I'll check first." } }),
             serde_json::json!({ "type": "tool_use", "part": { "tool": "read" } }),
             serde_json::json!({ "type": "step_finish", "part": { "reason": "tool-calls" } }),
             serde_json::json!({ "type": "text", "part": { "text": "Here is the result." } }),
-            serde_json::json!({ "type": "step_finish", "part": { "reason": "stop" } }),
-        ]);
+        ];
+        let open = lines(&events);
+        events.push(serde_json::json!({ "type": "step_finish", "part": { "reason": "stop" } }));
+        let closed = lines(&events);
 
-        assert_eq!(
-            extract(&body, AgentProvider::OpenCode),
-            Answer::Text("I'll check first.\nHere is the result.".into())
-        );
+        for body in [open, closed] {
+            assert_eq!(
+                extract(&body, AgentProvider::OpenCode),
+                Answer::Text("I'll check first.\nHere is the result.".into())
+            );
+        }
     }
 
     /// A turn that DIED emits no terminal event, so an error is all it
@@ -263,7 +268,7 @@ mod tests {
     fn a_turn_that_died_still_reports_its_error() {
         let body = lines(&[
             serde_json::json!({ "type": "text", "part": { "text": "starting" } }),
-            serde_json::json!({ "type": "error", "error": { "data": { "message": "Payment Required" } } }),
+            serde_json::json!({ "type": "error", "error": { "type": "unknown", "message": "Payment Required" } }),
         ]);
 
         assert_eq!(

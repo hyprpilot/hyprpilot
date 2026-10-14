@@ -185,7 +185,7 @@ The three vendors mark completion differently — all verified against the insta
 
 - **claude** — a terminal `{"type":"result"}` carrying the answer.
 - **codex** — `{"type":"turn.completed"}` closes the turn; the text rode the `item.completed` before it, whose `item.type` is `agent_message`.
-- **opencode** — emits **no** terminal marker at all. Its stream ends `step_finish(reason=stop)`, so the last `{"type":"text"}` part is the signal.
+- **opencode** — emits **no** terminal marker at all. `opencode run --format json` may end without a closing `step_finish`, so the last `{"type":"text"}` part is the signal.
 
 ### The session directory
 
