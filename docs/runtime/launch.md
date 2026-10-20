@@ -88,6 +88,8 @@ Two refusals, both loud rather than silent:
 
 Passing the vendor's own flag through `-- <args>` still wins — the generated projection is suppressed exactly as it is for every other flag.
 
+Codex headless resumes use `codex exec <launch options> resume <session-id|--last> <provider args>`. The profile's native `args` and generated model, effort, instructions, MCP, cwd and sandbox settings stay on the parent `exec` command, including on harness `session_send` follow-ups. Parent-only flags such as `--profile`, `--approve-for-me`, `--cd` and `--sandbox` are not accepted after `exec resume`; put native launch settings in the profile's `args`. Trailing `-- <args>` remain verbatim resume arguments, such as `--all` or `--model <model>`.
+
 ## Forwarding native arguments
 
 Everything after a `--` separator is forwarded verbatim to the vendor CLI — use it for provider-native flags and resume flows:

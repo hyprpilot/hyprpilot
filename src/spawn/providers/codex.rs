@@ -38,21 +38,6 @@ pub(super) fn build_codex(
     if headless {
         command.args.insert(0, "exec".into());
     }
-    // `resume` is a SUBCOMMAND — of `codex`, and again of `codex exec` —
-    // not a flag, so it sits immediately after any `exec` and before
-    // every generated option, unlike claude's `--resume`, which is
-    // order-free.
-    if let Some(resume) = resume {
-        if !has_flag(&command.args, "resume", None) {
-            let at = usize::from(headless);
-            command.args.insert(at, "resume".into());
-            match resume {
-                Resume::Picker => {}
-                Resume::Last => command.args.insert(at + 1, "--last".into()),
-                Resume::Session(id) => command.args.insert(at + 1, id.clone()),
-            }
-        }
-    }
     let detect_args = combined_args(&command.args, &provider_args);
 
     if let Some(harness) = harness {
@@ -100,6 +85,18 @@ pub(super) fn build_codex(
         push_codex_config_if_absent(&mut command.args, &detect_args, &key, value);
     }
 
+    // `exec resume` does not accept parent options such as `--profile`,
+    // `--cd` or `--sandbox`. Keep launch settings on the parent command.
+    if let Some(resume) = resume {
+        if !has_flag(&detect_args, "resume", None) {
+            command.args.push("resume".into());
+            match resume {
+                Resume::Picker => {}
+                Resume::Last => command.args.push("--last".into()),
+                Resume::Session(id) => command.args.push(id.clone()),
+            }
+        }
+    }
     command.args.extend(provider_args);
     // Deliver the headless prompt on stdin (see the `exec` comment
     // above) — never as a positional.
@@ -464,9 +461,82 @@ mod tests {
     use crate::spawn::providers::build_command_cli as build_command;
     use crate::spawn::providers::fixtures::*;
 
-    /// `resume` is a subcommand, so position is the whole contract:
-    /// it has to land first interactively and immediately after `exec`
-    /// headless, before any generated option codex would reject there.
+    #[test]
+    fn codex_headless_resume_preserves_launch_options_before_subcommand() {
+        let mut resolved = resolved_with_cwd(AgentProvider::Codex, "/workspace/project");
+        resolved.agent.args = vec!["--profile".into(), "delegate".into(), "--approve-for-me".into()];
+        resolved.mode = Some("workspace-write".into());
+        let harness = HarnessProjection {
+            structured_output: true,
+        };
+        let initial = build_codex(
+            &resolved,
+            Some("be terse"),
+            &[mcp_def()],
+            vec![],
+            Some("first turn"),
+            None,
+            Some(&harness),
+        )
+        .unwrap();
+
+        for resume in [Resume::Last, Resume::Session("abc123".into())] {
+            let resumed = build_codex(
+                &resolved,
+                Some("be terse"),
+                &[mcp_def()],
+                vec![],
+                Some("next turn"),
+                Some(&resume),
+                Some(&harness),
+            )
+            .unwrap();
+            let mut expected = initial.args.clone();
+            expected.extend([
+                "resume".into(),
+                match resume {
+                    Resume::Last => "--last".into(),
+                    Resume::Session(id) => id,
+                    Resume::Picker => unreachable!(),
+                },
+            ]);
+
+            assert_eq!(resumed.args, expected);
+            assert_eq!(resumed.cwd, initial.cwd);
+            assert_eq!(resumed.env, initial.env);
+            assert_eq!(resumed.stdin_prompt.as_deref(), Some("next turn"));
+        }
+    }
+
+    #[test]
+    fn codex_resume_keeps_trailing_overrides_and_native_resume_options() {
+        let overrides = vec![
+            "--model".into(),
+            "custom-model".into(),
+            "-c".into(),
+            "instructions=\"custom\"".into(),
+            "--all".into(),
+        ];
+        let command = build_codex(
+            &resolved_with_cwd(AgentProvider::Codex, "/workspace/project"),
+            Some("generated"),
+            &[],
+            overrides.clone(),
+            Some("next turn"),
+            Some(&Resume::Session("abc123".into())),
+            None,
+        )
+        .unwrap();
+        let at = command.args.iter().position(|arg| arg == "resume").unwrap();
+
+        assert!(command.args[..at]
+            .windows(2)
+            .any(|w| w == ["--cd", "/workspace/project"]));
+        assert_eq!(&command.args[at + 2..], overrides);
+        assert_eq!(command.args.iter().filter(|arg| *arg == "--model").count(), 1);
+        assert!(!command.args.iter().any(|arg| arg == "instructions=\"generated\""));
+    }
+
     #[test]
     fn codex_places_resume_as_a_subcommand() {
         let cases = [
@@ -480,7 +550,7 @@ mod tests {
             (
                 Some("hi"),
                 Resume::Last,
-                vec!["exec".to_string(), "resume".to_string(), "--last".to_string()],
+                vec!["resume".to_string(), "--last".to_string()],
             ),
         ];
 
@@ -496,12 +566,28 @@ mod tests {
             )
             .unwrap();
 
-            assert_eq!(
-                command.args[..expected.len()],
-                expected[..],
-                "{resume:?} prompt={prompt:?}"
-            );
+            assert!(command.args.ends_with(&expected), "{resume:?} prompt={prompt:?}");
+            assert_eq!(command.args.first().is_some_and(|arg| arg == "exec"), prompt.is_some());
         }
+    }
+
+    #[test]
+    fn codex_native_resume_suppresses_generated_selector() {
+        let native = vec!["resume".into(), "native-session".into(), "--all".into()];
+        let command = build_codex(
+            &resolved_with_cwd(AgentProvider::Codex, "/workspace/project"),
+            None,
+            &[],
+            native.clone(),
+            Some("next turn"),
+            Some(&Resume::Last),
+            None,
+        )
+        .unwrap();
+
+        assert!(command.args.ends_with(&native));
+        assert_eq!(command.args.iter().filter(|arg| *arg == "resume").count(), 1);
+        assert!(!command.args.iter().any(|arg| arg == "--last"));
     }
 
     #[test]
