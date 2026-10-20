@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.1](https://github.com/hyprpilot/hyprpilot/compare/v4.0.0...v4.0.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **codex:** preserve launch flags on resume ([#274](https://github.com/hyprpilot/hyprpilot/issues/274)) ([a146085](https://github.com/hyprpilot/hyprpilot/commit/a146085e73e2b8e748028a8c974881e285e5780e))
+
 ## [4.0.0](https://github.com/hyprpilot/hyprpilot/compare/v3.24.0...v4.0.0) (2026-10-14)
 
 
