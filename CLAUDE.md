@@ -1485,9 +1485,14 @@ never chose. **No vendor offers a picker headless** (claude answers
 "requires a valid session ID … when used with `--print`",
 `codex exec resume` takes only an id or `--last`), so `spawn::prepare`
 bails while the launch still knows why it was asked for. Codex's
-`resume` is a SUBCOMMAND — of `codex` and again of `codex exec` — so it
-is INSERTED at index 0, or 1 behind `exec`, ahead of every generated
-option; claude's and opencode's flags are order-free and append.
+`resume` is a SUBCOMMAND — of `codex` and again of `codex exec` — so
+base-agent and generated launch options precede it:
+`codex exec <launch options> resume <id|--last> <provider args>`.
+`--profile`, `--approve-for-me`, `--cd` and `--sandbox` belong to the
+parent command, not `exec resume`; keeping them there preserves the
+launch's settings on harness follow-ups too. Trailing provider args
+stay after the resume selector; claude's and opencode's flags are
+order-free and append.
 
 ### Multiplexer title
 
