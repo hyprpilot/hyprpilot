@@ -80,19 +80,33 @@ pub(super) fn build_opencode(
     }
 
     // The TUI takes no `--model` / `--agent` (it rejects both), so the
-    // model and agent reach every launch as config rather than as two
-    // spellings that could disagree between the TUI and `run`.
+    // model and agent reach every launch as config. `run` takes both
+    // flags as well, and without `--agent` it follows up its answer with
+    // a second step under the default agent.
     let agent_name = flag_value(&detect_args, "--agent", None).or_else(|| resolved.mode.clone());
     if !command.env.contains_key("OPENCODE_CONFIG_CONTENT") {
-        if let Some(config) = opencode_config_content(
+        let config = opencode_config(
             agent_name.as_deref(),
             resolved.model.as_deref(),
             resolved.effort.as_deref(),
             system_prompt,
             mcp_defs,
-        )? {
-            ensure_inline_size("OPENCODE_CONFIG_CONTENT", &config)?;
-            command.env.insert("OPENCODE_CONFIG_CONTENT".into(), config);
+        )?;
+        if !config.is_empty() {
+            if prompt.is_some() {
+                for (key, flag, short) in [("default_agent", "--agent", None), ("model", "--model", Some("-m"))] {
+                    if let Some(value) = config.get(key).and_then(Value::as_str) {
+                        if !has_flag(&detect_args, flag, short) {
+                            command.args.push(flag.into());
+                            command.args.push(value.into());
+                        }
+                    }
+                }
+            }
+
+            let content = serde_json::to_string(&config).context("serialize opencode config")?;
+            ensure_inline_size("OPENCODE_CONFIG_CONTENT", &content)?;
+            command.env.insert("OPENCODE_CONFIG_CONTENT".into(), content);
         }
     } else if system_prompt.is_some()
         || resolved.model.is_some()
@@ -113,13 +127,13 @@ pub(super) fn build_opencode(
     Ok(command)
 }
 
-fn opencode_config_content(
+fn opencode_config(
     agent_name: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
     system_prompt: Option<&str>,
     mcp_defs: &[MCPDefinition],
-) -> Result<Option<String>> {
+) -> Result<Map<String, Value>> {
     let mut root = Map::new();
     let mut agent = Map::new();
     if let Some(prompt) = system_prompt.filter(|prompt| !prompt.is_empty()) {
@@ -147,13 +161,8 @@ fn opencode_config_content(
     if !permissions.is_empty() {
         root.insert("permissions".into(), Value::Array(permissions));
     }
-    if root.is_empty() {
-        return Ok(None);
-    }
 
-    serde_json::to_string(&Value::Object(root))
-        .map(Some)
-        .context("serialize opencode config")
+    Ok(root)
 }
 
 /// The `provider/model#variant` string form of a V2 model selection, the
@@ -802,7 +811,82 @@ mod tests {
             "run is the subcommand"
         );
         assert!(command.args.iter().any(|a| a == "--standalone"));
-        assert!(!command.args.iter().any(|a| a == "--model" || a == "--agent"));
         assert_eq!(command.args.last().map(String::as_str), Some("write the readme"));
+    }
+
+    #[test]
+    fn opencode_headless_passes_the_agent_and_model_before_the_prompt() {
+        let command = build_command(
+            &resolved(AgentProvider::OpenCode),
+            None,
+            &[],
+            vec![],
+            Some("write the readme"),
+        )
+        .unwrap();
+        let args = &command.args;
+
+        let agent = args.iter().position(|a| a == "--agent").expect("--agent");
+        let model = args.iter().position(|a| a == "--model").expect("--model");
+        assert_eq!(args[agent + 1], "plan");
+        assert_eq!(args[model + 1], "provider/model-a#high");
+        assert!(agent < args.len() - 1 && model < args.len() - 1, "{args:?}");
+        assert_eq!(args.last().map(String::as_str), Some("write the readme"));
+    }
+
+    #[test]
+    fn opencode_headless_forwarded_agent_and_model_suppress_the_generated_ones() {
+        for forwarded in [
+            vec![
+                "--agent".to_string(),
+                "review".to_string(),
+                "-m".to_string(),
+                "p/m".to_string(),
+            ],
+            vec!["--agent=review".to_string(), "--model=p/m".to_string()],
+        ] {
+            let command = build_command(
+                &resolved(AgentProvider::OpenCode),
+                None,
+                &[],
+                forwarded.clone(),
+                Some("go"),
+            )
+            .unwrap();
+
+            let expected: Vec<String> = ["run", "--standalone"]
+                .into_iter()
+                .map(String::from)
+                .chain(forwarded.clone())
+                .chain(["go".to_string()])
+                .collect();
+            assert_eq!(command.args, expected, "{forwarded:?}");
+        }
+    }
+
+    #[test]
+    fn opencode_headless_names_no_agent_the_config_does_not_select() {
+        let mut resolved = resolved_with_mode(AgentProvider::OpenCode, None);
+        resolved.model = None;
+        resolved.effort = None;
+        let command = build_command(&resolved, None, &[mcp_def()], vec![], Some("go")).unwrap();
+
+        assert!(config_of(&command).get("default_agent").is_none());
+        assert!(
+            !command.args.iter().any(|a| a == "--model" || a == "--agent"),
+            "{:?}",
+            command.args
+        );
+    }
+
+    #[test]
+    fn opencode_interactive_launch_carries_neither_agent_nor_model_flag() {
+        let command = build_command(&resolved(AgentProvider::OpenCode), None, &[], vec![], None).unwrap();
+
+        assert!(
+            !command.args.iter().any(|a| a == "--model" || a == "--agent"),
+            "{:?}",
+            command.args
+        );
     }
 }
