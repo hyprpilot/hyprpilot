@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.2](https://github.com/hyprpilot/hyprpilot/compare/v4.0.1...v4.0.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **spawn:** pass --agent and --model to headless opencode run ([#276](https://github.com/hyprpilot/hyprpilot/issues/276)) ([c201179](https://github.com/hyprpilot/hyprpilot/commit/c201179f345826800e2a2ad8eb9d444641adc1d2))
+
 ## [4.0.1](https://github.com/hyprpilot/hyprpilot/compare/v4.0.0...v4.0.1) (2026-10-20)
 
 
