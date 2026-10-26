@@ -965,7 +965,7 @@ dependencies = [
 
 [[package]]
 name = "hyprpilot"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "anyhow",
  "axum",
