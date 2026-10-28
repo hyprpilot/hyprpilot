@@ -85,7 +85,7 @@ Swap `foot` for your terminal of choice (`kitty -e`, `alacritty -e`, `wezterm st
 
 ## Shell completion
 
-Completion is dynamic: the shell calls hyprpilot back on every `<Tab>`, so it offers the session profile ids from your resolved config (agent and model as the description, the default marked), the overlay names under `~/.config/hyprpilot/profiles/` for `--config-profile`, and the modes a profile's provider accepts for `--mode`. The candidates follow the command line — `hyprpilot --config-profile work <Tab>` lists the work overlay's profiles. A config that does not load yields no candidates rather than an error.
+Completion is dynamic: the shell calls hyprpilot back on every `<Tab>`, so it offers the session profile ids from your resolved config (agent and model as the description, the default marked), the overlay names under `~/.config/hyprpilot/profiles/` for `--config-profile`, and, for a codex profile, its approval and sandbox modes for `--mode`. claude and opencode get no `--mode` candidates: hyprpilot passes their modes through as-is and keeps no list of them. The candidates follow the command line — `hyprpilot --config-profile work <Tab>` lists the work overlay's profiles. A config that does not load yields no candidates rather than an error.
 
 Register it from your shell's startup file:
 

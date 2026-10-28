@@ -538,9 +538,7 @@ mod tests {
     /// get an entry for it.
     #[test]
     fn harness_is_not_injected_by_default() {
-        assert!(
-            build_harness_definition(&default_cfg(), PathBuf::from("<test>"), 0, &ConfigSource::default()).is_none()
-        );
+        assert!(harness_def(&default_cfg(), 0).is_none());
     }
 
     #[test]
@@ -552,8 +550,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0, &ConfigSource::default())
-            .expect("enabled harness injects");
+        let def = harness_def(&cfg, 0).expect("enabled harness injects");
         assert_eq!(def.name, crate::config::mcp::DEFAULT_HARNESS_SERVER_NAME);
     }
 
@@ -570,8 +567,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def =
-            build_harness_definition(&cfg, PathBuf::from("<test>"), 0, &ConfigSource::default()).expect("injects");
+        let def = harness_def(&cfg, 0).expect("injects");
         assert_eq!(def.hyprpilot.auto_accept_tools, vec!["*".to_string()]);
     }
 
@@ -586,8 +582,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def =
-            build_harness_definition(&cfg, PathBuf::from("<test>"), 0, &ConfigSource::default()).expect("injects");
+        let def = harness_def(&cfg, 0).expect("injects");
         let args = def.raw["args"].as_array().expect("args");
         assert!(
             !args.iter().any(|a| a == "--no-notify-on-complete"),
@@ -608,8 +603,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def =
-            build_harness_definition(&cfg, PathBuf::from("<test>"), 0, &ConfigSource::default()).expect("injects");
+        let def = harness_def(&cfg, 0).expect("injects");
         let args = def.raw["args"].as_array().expect("args");
         assert!(args.iter().any(|a| a == "--no-notify-on-complete"), "got: {args:?}");
     }
@@ -645,8 +639,7 @@ mod tests {
         assert_eq!(parsed.config, selection.path);
         assert_eq!(parsed.config_profiles, selection.profiles);
 
-        let bare =
-            build_harness_definition(&cfg, PathBuf::from("<test>"), 0, &ConfigSource::default()).expect("injects");
+        let bare = harness_def(&cfg, 0).expect("injects");
         assert!(
             !bare.raw["args"]
                 .as_array()
@@ -657,8 +650,12 @@ mod tests {
         );
     }
 
+    fn harness_def(cfg: &McpConfig, spawn_depth: usize) -> Option<MCPDefinition> {
+        build_harness_definition(cfg, PathBuf::from("<test>"), spawn_depth, &ConfigSource::default())
+    }
+
     fn harness_args(cfg: &McpConfig) -> Vec<String> {
-        let def = build_harness_definition(cfg, PathBuf::from("<test>"), 0, &ConfigSource::default()).expect("injects");
+        let def = harness_def(cfg, 0).expect("injects");
         def.raw["args"]
             .as_array()
             .expect("args")
@@ -738,13 +735,7 @@ mod tests {
     /// candidate list a separate question.
     #[test]
     fn an_empty_scope_still_injects_the_server() {
-        assert!(build_harness_definition(
-            &scoped(Some(vec![]), None),
-            PathBuf::from("<test>"),
-            0,
-            &ConfigSource::default()
-        )
-        .is_some());
+        assert!(harness_def(&scoped(Some(vec![]), None), 0).is_some());
     }
 
     #[test]
@@ -776,8 +767,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def =
-            build_harness_definition(&cfg, PathBuf::from("<test>"), 0, &ConfigSource::default()).expect("injects");
+        let def = harness_def(&cfg, 0).expect("injects");
         assert_eq!(
             def.hyprpilot.auto_accept_tools,
             vec!["list_profiles".to_string()],
@@ -799,9 +789,9 @@ mod tests {
             ..McpConfig::default()
         };
 
-        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 0, &ConfigSource::default()).is_some());
+        assert!(harness_def(&cfg, 0).is_some());
         assert!(
-            build_harness_definition(&cfg, PathBuf::from("<test>"), 1, &ConfigSource::default()).is_none(),
+            harness_def(&cfg, 1).is_none(),
             "a session at the default maxDepth of 1 must get no harness"
         );
     }
@@ -820,8 +810,8 @@ mod tests {
             ..McpConfig::default()
         };
 
-        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 1, &ConfigSource::default()).is_some());
-        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 2, &ConfigSource::default()).is_none());
+        assert!(harness_def(&cfg, 1).is_some());
+        assert!(harness_def(&cfg, 2).is_none());
     }
 
     /// The sidecar enforces the same cap on `spawn` that this function
@@ -942,7 +932,7 @@ mod tests {
             ..McpConfig::default()
         };
         assert!(build_tools_definition(&cfg, PathBuf::from("<test>")).is_none());
-        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 0, &ConfigSource::default()).is_some());
+        assert!(harness_def(&cfg, 0).is_some());
     }
 
     #[test]

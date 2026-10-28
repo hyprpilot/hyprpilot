@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use clap::parser::ValueSource;
-use clap::{Args, CommandFactory, ValueEnum};
+use clap::{Args, CommandFactory};
 use clap_complete::env::{Bash, Elvish, EnvCompleter, Fish, Powershell, Shells};
 use clap_complete::CompletionCandidate;
 
@@ -90,13 +90,10 @@ pub struct CompletionArgs {
 /// Print the same registration script `COMPLETE=<shell> hyprpilot`
 /// does, for `eval "$(hyprpilot completion zsh)"`.
 pub fn run(args: &CompletionArgs) -> Result<()> {
-    let name = args
-        .shell
-        .to_possible_value()
-        .expect("every clap_complete::Shell variant has a name");
+    let name = args.shell.to_string();
     let shell = SHELLS
-        .completer(name.get_name())
-        .ok_or_else(|| anyhow!("no completion engine for `{}`", name.get_name()))?;
+        .completer(&name)
+        .ok_or_else(|| anyhow!("no completion engine for `{name}`"))?;
     // The binary the shell calls back, spelled the way
     // `CompleteEnv` spells it: a bare name stays a PATH lookup.
     let mut completer = PathBuf::from(std::env::args_os().next().unwrap_or_else(|| "hyprpilot".into()));
@@ -123,9 +120,9 @@ struct CommandLine {
     /// The overlays a launch would fold: every `--config-profile` on
     /// the line, else `HYPRPILOT_CONFIG_PROFILE`.
     overlays: Vec<String>,
-    /// Only the overlays typed on the line, which are the ones not
-    /// worth offering again.
-    given_overlays: Vec<String>,
+    /// Whether `overlays` came off the line, which makes them the ones
+    /// not worth offering again.
+    overlays_on_line: bool,
     /// The positional `[PROFILE]`.
     profile: Option<String>,
 }
@@ -147,19 +144,26 @@ impl CommandLine {
         let Ok(matches) = crate::Cli::command().ignore_errors(true).try_get_matches_from(words) else {
             return Self::default();
         };
-        let overlays: Vec<String> = matches
-            .try_get_many::<String>("config_profiles")
-            .ok()
-            .flatten()
-            .map(|values| values.cloned().collect())
-            .unwrap_or_default();
-        let on_line = matches.value_source("config_profiles") == Some(ValueSource::CommandLine);
-
+        // The shell hands a word over as typed: quotes intact, `~` and
+        // `$VAR` unexpanded.
         Self {
-            config: matches.try_get_one::<PathBuf>("config").ok().flatten().cloned(),
-            given_overlays: if on_line { overlays.clone() } else { Vec::new() },
-            overlays,
-            profile: matches.try_get_one::<String>("profile_id").ok().flatten().cloned(),
+            config: matches
+                .try_get_one::<PathBuf>("config")
+                .ok()
+                .flatten()
+                .map(|path| crate::paths::resolve_user(unquote(&path.to_string_lossy()))),
+            overlays: matches
+                .try_get_many::<String>("config_profiles")
+                .ok()
+                .flatten()
+                .map(|values| values.map(|name| unquote(name).to_string()).collect())
+                .unwrap_or_default(),
+            overlays_on_line: matches.value_source("config_profiles") == Some(ValueSource::CommandLine),
+            profile: matches
+                .try_get_one::<String>("profile_id")
+                .ok()
+                .flatten()
+                .map(|id| unquote(id).to_string()),
         }
     }
 
@@ -169,6 +173,13 @@ impl CommandLine {
 
         Some(cfg)
     }
+}
+
+fn unquote(word: &str) -> &str {
+    ['\'', '"']
+        .into_iter()
+        .find_map(|quote| word.strip_prefix(quote)?.strip_suffix(quote))
+        .unwrap_or(word)
 }
 
 fn words_before_cursor(mut args: Vec<OsString>, index: Option<usize>) -> Vec<OsString> {
@@ -204,13 +215,16 @@ pub fn profile_ids() -> Vec<CompletionCandidate> {
 /// Overlay names under `profiles/` in the config dir, minus the ones
 /// already on the line.
 pub fn config_profiles() -> Vec<CompletionCandidate> {
-    overlay_names(
-        &crate::paths::config_dir().join("profiles"),
-        &CommandLine::current().given_overlays,
-    )
-    .into_iter()
-    .map(CompletionCandidate::new)
-    .collect()
+    let line = CommandLine::current();
+    let given = if line.overlays_on_line {
+        line.overlays
+    } else {
+        Vec::new()
+    };
+    overlay_names(&crate::paths::config_dir().join("profiles"), &given)
+        .into_iter()
+        .map(CompletionCandidate::new)
+        .collect()
 }
 
 fn overlay_names(dir: &Path, exclude: &[String]) -> Vec<String> {
@@ -232,17 +246,15 @@ fn overlay_names(dir: &Path, exclude: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The modes the positional profile's provider accepts. Nothing until
-/// a profile is on the line — the provider is what decides.
+/// The modes the launched profile's provider accepts — the positional
+/// one, else `[profile] default`.
 pub fn modes() -> Vec<CompletionCandidate> {
     let line = CommandLine::current();
-    let Some(profile) = line.profile.as_deref() else {
-        return Vec::new();
-    };
     let Some(cfg) = line.load() else {
         return Vec::new();
     };
-    let Ok((resolved, _)) = crate::resolve::resolve_into_instance_and_profile(&cfg, Some(profile), &[]) else {
+    let Ok((resolved, _)) = crate::resolve::resolve_into_instance_and_profile(&cfg, line.profile.as_deref(), &[])
+    else {
         return Vec::new();
     };
     crate::spawn::providers::known_modes(resolved.agent.provider)
@@ -301,7 +313,25 @@ mod tests {
 
         assert_eq!(line.config, Some(PathBuf::from("/etc/hyprpilot/config.yaml")));
         assert_eq!(line.overlays, ["personal", "work"]);
-        assert_eq!(line.given_overlays, ["personal", "work"]);
+        assert!(line.overlays_on_line);
+        assert_eq!(line.profile.as_deref(), Some("claude/opus"));
+    }
+
+    /// bash hands a word over as typed, so `'~/cfg.yaml'` must load
+    /// the same file a launch would.
+    #[test]
+    fn quoted_and_unexpanded_words_resolve_like_a_launch() {
+        let line = CommandLine::parse(words(&[
+            "hyprpilot",
+            "--config",
+            "'~/cfg.yaml'",
+            "--config-profile",
+            "\"work\"",
+            "'claude/opus'",
+        ]));
+
+        assert_eq!(line.config, Some(crate::paths::resolve_user("~/cfg.yaml")));
+        assert_eq!(line.overlays, ["work"]);
         assert_eq!(line.profile.as_deref(), Some("claude/opus"));
     }
 
@@ -311,7 +341,7 @@ mod tests {
     fn a_trailing_flag_without_its_value_does_not_lose_the_line() {
         let line = CommandLine::parse(words(&["hyprpilot", "--config-profile", "work", "--config-profile"]));
 
-        assert_eq!(line.given_overlays, ["work"]);
+        assert_eq!(line.overlays, ["work"]);
     }
 
     /// The contract zsh plugin managers load against: a `_hyprpilot`
