@@ -18,13 +18,67 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Result};
 use clap::parser::ValueSource;
 use clap::{Args, CommandFactory, ValueEnum};
-use clap_complete::env::Shells;
+use clap_complete::env::{Bash, Elvish, EnvCompleter, Fish, Powershell, Shells};
 use clap_complete::CompletionCandidate;
 
 use crate::config::Config;
 
 /// The env var the registration script sets when it calls back in.
 pub const VAR: &str = "COMPLETE";
+
+/// clap_complete's engines, with zsh swapped for [`Zsh`].
+pub const SHELLS: Shells<'static> = Shells(&[&Bash, &Elvish, &Fish, &Powershell, &Zsh]);
+
+/// clap_complete's zsh engine, registered as `_hyprpilot` rather than
+/// `_clap_dynamic_completer_hyprpilot`.
+///
+/// `_<command>` is the name zsh plugin managers expect to find, e.g. a
+/// lazy `znap function _hyprpilot '…eval "$(hyprpilot completion zsh)"'`
+/// followed by `compdef _hyprpilot hyprpilot`. The script's own
+/// `compdef` is skipped when `compinit` has not run yet, so evaluating
+/// it early is not an error.
+struct Zsh;
+
+impl EnvCompleter for Zsh {
+    fn name(&self) -> &'static str {
+        clap_complete::env::Zsh.name()
+    }
+
+    fn is(&self, name: &str) -> bool {
+        clap_complete::env::Zsh.is(name)
+    }
+
+    fn write_registration(
+        &self,
+        var: &str,
+        name: &str,
+        bin: &str,
+        completer: &str,
+        buf: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        let mut script = Vec::new();
+        clap_complete::env::Zsh.write_registration(var, name, bin, completer, &mut script)?;
+        let function = format!("_{}", name.replace('-', "_"));
+        let script = String::from_utf8_lossy(&script)
+            .replace(&format!("_clap_dynamic_completer{function}"), &function)
+            .replace(
+                &format!("compdef {function} {bin}"),
+                &format!("(( $+functions[compdef] )) && compdef {function} {bin}"),
+            );
+
+        buf.write_all(script.as_bytes())
+    }
+
+    fn write_complete(
+        &self,
+        cmd: &mut clap::Command,
+        args: Vec<OsString>,
+        current_dir: Option<&Path>,
+        buf: &mut dyn std::io::Write,
+    ) -> std::io::Result<()> {
+        clap_complete::env::Zsh.write_complete(cmd, args, current_dir, buf)
+    }
+}
 
 #[derive(Args, Debug)]
 pub struct CompletionArgs {
@@ -40,8 +94,7 @@ pub fn run(args: &CompletionArgs) -> Result<()> {
         .shell
         .to_possible_value()
         .expect("every clap_complete::Shell variant has a name");
-    let shells = Shells::builtins();
-    let shell = shells
+    let shell = SHELLS
         .completer(name.get_name())
         .ok_or_else(|| anyhow!("no completion engine for `{}`", name.get_name()))?;
     // The binary the shell calls back, spelled the way
@@ -63,7 +116,7 @@ pub fn run(args: &CompletionArgs) -> Result<()> {
 }
 
 /// The parts of the in-progress command line the completers need.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default)]
 struct CommandLine {
     /// `--config` / `HYPRPILOT_CONFIG`.
     config: Option<PathBuf>,
@@ -274,6 +327,23 @@ mod tests {
         let line = CommandLine::parse(words(&["hyprpilot", "--config-profile", "work", "--config-profile"]));
 
         assert_eq!(line.given_overlays, ["work"]);
+    }
+
+    /// The contract zsh plugin managers load against: a `_hyprpilot`
+    /// completer, and a script that can be evaluated before `compinit`.
+    #[test]
+    fn the_zsh_script_defines_the_conventional_completer() {
+        let mut buf = Vec::new();
+        Zsh.write_registration(VAR, "hyprpilot", "hyprpilot", "hyprpilot", &mut buf)
+            .unwrap();
+        let script = String::from_utf8(buf).unwrap();
+
+        assert!(script.contains("function _hyprpilot() {"), "{script}");
+        assert!(
+            script.contains("(( $+functions[compdef] )) && compdef _hyprpilot hyprpilot"),
+            "{script}"
+        );
+        assert!(!script.contains("_clap_dynamic_completer"), "{script}");
     }
 
     #[test]

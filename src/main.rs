@@ -75,7 +75,10 @@ enum Command {
 }
 
 fn main() -> Result<ExitCode> {
-    CompleteEnv::with_factory(Cli::command).complete();
+    CompleteEnv::with_factory(Cli::command)
+        .var(completion::VAR)
+        .shells(completion::SHELLS)
+        .complete();
     let cli = Cli::parse();
 
     // Before the config loads: printing the script must not depend on

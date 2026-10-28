@@ -195,7 +195,10 @@ hyprpilot mcp harness --transport http --listen 127.0.0.1:7779 --token-file ~/.c
 - **Shell completion** is clap_complete's dynamic engine:
   `CompleteEnv` at the top of `main` (`COMPLETE=<shell> hyprpilot`)
   and `hyprpilot completion <shell>` print the same registration
-  script. Completers (`src/completion.rs`) re-parse the in-progress
+  script (both through `completion::SHELLS`). The zsh engine is
+  wrapped so the script defines `_hyprpilot` and guards its own
+  `compdef` — the contract lazy zsh loaders (znap) rely on. Completers
+  (`src/completion.rs`) re-parse the in-progress
   line with `ignore_errors` to find the layer selection and the
   positional profile, and must never print or fail — a config that
   does not load yields no candidates.

@@ -110,6 +110,13 @@ hyprpilot completion fish | source
 
 `elvish` and `powershell` are supported too. `COMPLETE=<shell> hyprpilot` prints the same script.
 
+The zsh script defines the completer as `_hyprpilot`, the name zsh plugin managers expect, and only calls `compdef` itself once `compinit` has run. So it also loads lazily, for example with znap:
+
+```sh
+znap function _hyprpilot '_hyprpilot() { :; }; eval "$(hyprpilot completion zsh 2>/dev/null)"'
+compdef _hyprpilot hyprpilot
+```
+
 ## After install
 
 1. **Install a vendor CLI** — hyprpilot launches `claude`, `codex`, or `opencode`; at least one must be on your `$PATH`.
