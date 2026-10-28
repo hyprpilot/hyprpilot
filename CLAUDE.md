@@ -41,8 +41,8 @@ harness stays off unless `[mcp.harness].enabled` says otherwise.
 ## Toolchain (mise-pinned)
 
 `mise install` at the repo root drops: `rust` (stable + `rustfmt` +
-`clippy`), `task` 3 (go-task), `usage` 3, `cargo-nextest`, plus
-`node` 24 + `pnpm` 10 **for the `docs/` VitePress site only** — that
+`clippy`), `task` 3 (go-task), `usage` 7, `cargo-nextest`, plus
+`node` 24 + `pnpm` 12 **for the `docs/` VitePress site only** — that
 is the sole Node consumer in the repo. `rust-toolchain.toml` pins the
 toolchain for `cargo` invocations outside mise.
 
