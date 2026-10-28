@@ -117,6 +117,12 @@ znap function _hyprpilot '_hyprpilot() { :; }; eval "$(hyprpilot completion zsh 
 compdef _hyprpilot hyprpilot
 ```
 
+It also works as an autoload file: save it as `_hyprpilot` in a directory on `fpath` before `compinit` runs.
+
+```sh
+hyprpilot completion zsh > ~/.zfunc/_hyprpilot   # with fpath=(~/.zfunc $fpath) in ~/.zshrc
+```
+
 ## After install
 
 1. **Install a vendor CLI** — hyprpilot launches `claude`, `codex`, or `opencode`; at least one must be on your `$PATH`.

@@ -36,7 +36,9 @@ pub const SHELLS: Shells<'static> = Shells(&[&Bash, &Elvish, &Fish, &Powershell,
 /// lazy `znap function _hyprpilot '…eval "$(hyprpilot completion zsh)"'`
 /// followed by `compdef _hyprpilot hyprpilot`. The script's own
 /// `compdef` is skipped when `compinit` has not run yet, so evaluating
-/// it early is not an error.
+/// it early is not an error. Saved as `_hyprpilot` on `fpath`, it is
+/// also an autoload file: zsh runs it as the function's first call,
+/// which then has to complete rather than register.
 struct Zsh;
 
 impl EnvCompleter for Zsh {
@@ -63,7 +65,9 @@ impl EnvCompleter for Zsh {
             .replace(&format!("_clap_dynamic_completer{function}"), &function)
             .replace(
                 &format!("compdef {function} {bin}"),
-                &format!("(( $+functions[compdef] )) && compdef {function} {bin}"),
+                &format!(
+                    "if [[ ${{zsh_eval_context[-1]}} == loadautofunc ]]; then\n    {function} \"$@\"\nelif (( $+functions[compdef] )); then\n    compdef {function} {bin}\nfi"
+                ),
             );
 
         buf.write_all(script.as_bytes())
@@ -345,7 +349,8 @@ mod tests {
     }
 
     /// The contract zsh plugin managers load against: a `_hyprpilot`
-    /// completer, and a script that can be evaluated before `compinit`.
+    /// completer, a script that can be evaluated before `compinit`, and
+    /// one that completes when autoloaded from `fpath`.
     #[test]
     fn the_zsh_script_defines_the_conventional_completer() {
         let mut buf = Vec::new();
@@ -355,7 +360,11 @@ mod tests {
 
         assert!(script.contains("function _hyprpilot() {"), "{script}");
         assert!(
-            script.contains("(( $+functions[compdef] )) && compdef _hyprpilot hyprpilot"),
+            script.contains("elif (( $+functions[compdef] )); then\n    compdef _hyprpilot hyprpilot\nfi"),
+            "{script}"
+        );
+        assert!(
+            script.contains("if [[ ${zsh_eval_context[-1]} == loadautofunc ]]; then\n    _hyprpilot \"$@\""),
             "{script}"
         );
         assert!(!script.contains("_clap_dynamic_completer"), "{script}");
