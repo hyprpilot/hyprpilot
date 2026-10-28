@@ -290,6 +290,19 @@ impl SkillsCache {
         self.files.get(path)
     }
 
+    /// Names more than one skill carries, with their slugs in order.
+    fn shared_names(&self) -> BTreeMap<&str, Vec<&str>> {
+        let mut by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for skill in self.skills.values() {
+            by_name.entry(skill.name()).or_default().push(&skill.slug);
+        }
+        by_name.retain(|_, slugs| slugs.len() > 1);
+        for slugs in by_name.values_mut() {
+            slugs.sort_unstable();
+        }
+        by_name
+    }
+
     fn prompt(&self, name: &str) -> Option<&Prompt> {
         self.prompts.iter().find(|p| p.name == name)
     }
@@ -710,6 +723,20 @@ impl SkillsServer {
 
         let mut cache = self.skills_cache.write().await;
         let next = build_cache(scan);
+        // SEP-2640 lets names repeat across a listing and makes the host
+        // disambiguate, but a host shows the name, so two `refunds` read
+        // as one skill to the captain choosing between them. Said once,
+        // when the collision appears, not on every rescan.
+        let before = cache.shared_names();
+        for (name, slugs) in next.shared_names() {
+            if before.get(name) != Some(&slugs) {
+                tracing::warn!(
+                    name,
+                    ?slugs,
+                    "mcp::server: several skills share a name — hosts must tell them apart by path"
+                );
+            }
+        }
         let delta = CatalogueDelta::between(&cache, &next);
         *cache = next;
         delta
@@ -971,21 +998,6 @@ fn build_cache(scan: Scan) -> SkillsCache {
                 refs,
                 files,
             },
-        );
-    }
-    // SEP-2640 lets names repeat across a listing and makes the host
-    // disambiguate, but a host shows the name, so two `refunds` read as
-    // one skill to the captain choosing between them.
-    let mut by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for skill in cache.skills.values() {
-        by_name.entry(skill.name()).or_default().push(&skill.slug);
-    }
-    for (name, mut slugs) in by_name.into_iter().filter(|(_, slugs)| slugs.len() > 1) {
-        slugs.sort_unstable();
-        tracing::warn!(
-            name,
-            ?slugs,
-            "mcp::server: several skills share a name — hosts must tell them apart by path"
         );
     }
     cache
