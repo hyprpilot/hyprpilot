@@ -1833,8 +1833,10 @@ impl ServerHandler for SkillsServer {
                 // Read per call, like every reference body: a shared
                 // convention changes far more often than the skills
                 // citing it.
+                // Declared and resolved, so the URI is valid; failing to
+                // read it is the server's problem, not the caller's.
                 let text = std::fs::read_to_string(&path)
-                    .map_err(|e| rmcp::ErrorData::invalid_params(format!("{uri}: {e}"), None))?;
+                    .map_err(|e| rmcp::ErrorData::internal_error(format!("{uri}: {e}"), None))?;
                 ResourceContents::TextResourceContents {
                     uri: uri.clone(),
                     mime_type: Some("text/markdown".into()),
