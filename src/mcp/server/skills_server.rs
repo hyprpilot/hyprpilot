@@ -323,11 +323,18 @@ impl SkillsCache {
                 .into_iter()
                 .map(|(name, file)| {
                     let uri = format!("skill://{prefix}{name}");
-                    match file {
-                        Some(file) => rmcp::model::Resource::new(uri, name)
+                    // A skill's `SKILL.md` carries the skill's name and
+                    // description, as SEP-2640's resource metadata asks.
+                    let skill = (name == "SKILL.md").then(|| self.skills.get(path)).flatten();
+                    match (file, skill) {
+                        (Some(file), Some(skill)) => rmcp::model::Resource::new(uri, skill.name())
+                            .with_description(skill.description.clone())
                             .with_mime_type(file.mime_type())
                             .with_size(file.size()),
-                        None => rmcp::model::Resource::new(uri, name).with_mime_type("inode/directory"),
+                        (Some(file), None) => rmcp::model::Resource::new(uri, name)
+                            .with_mime_type(file.mime_type())
+                            .with_size(file.size()),
+                        (None, _) => rmcp::model::Resource::new(uri, name).with_mime_type("inode/directory"),
                     }
                 })
                 .collect(),
@@ -391,6 +398,12 @@ impl LoadedSkill {
 
     fn uri(&self) -> String {
         skill_md_uri(&self.slug)
+    }
+
+    /// The frontmatter `name`, which the loader guarantees is the slug's
+    /// final segment.
+    fn name(&self) -> &str {
+        self.slug.rsplit('/').next().unwrap_or(&self.slug)
     }
 
     fn skill_md(&self) -> Option<&BundleFile> {
@@ -942,6 +955,21 @@ fn build_cache(scan: Scan) -> SkillsCache {
                 refs,
                 files,
             },
+        );
+    }
+    // SEP-2640 lets names repeat across a listing and makes the host
+    // disambiguate, but a host shows the name, so two `refunds` read as
+    // one skill to the captain choosing between them.
+    let mut by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for skill in cache.skills.values() {
+        by_name.entry(skill.name()).or_default().push(&skill.slug);
+    }
+    for (name, mut slugs) in by_name.into_iter().filter(|(_, slugs)| slugs.len() > 1) {
+        slugs.sort_unstable();
+        tracing::warn!(
+            name,
+            ?slugs,
+            "mcp::server: several skills share a name — hosts must tell them apart by path"
         );
     }
     cache
@@ -1701,11 +1729,8 @@ impl ServerHandler for SkillsServer {
         for slug in &cache.order {
             let Some(skill) = cache.skills.get(slug) else { continue };
             let Some(skill_md) = skill.skill_md() else { continue };
-            // `name` is the frontmatter name the SEP asks for, which the
-            // loader guarantees is the slug's final segment.
-            let name = slug.rsplit('/').next().unwrap_or(slug);
             resources.push(
-                rmcp::model::Resource::new(skill.uri(), name)
+                rmcp::model::Resource::new(skill.uri(), skill.name())
                     .with_title(skill.title.clone())
                     .with_description(skill.description.clone())
                     .with_mime_type("text/markdown")
@@ -2823,6 +2848,35 @@ metadata:
         assert!(cache.directory("nope").is_none());
         // `acme/ref` is a string prefix of `acme/refunds`, not a directory.
         assert!(cache.directory("acme/ref").is_none());
+    }
+
+    /// SEP-2640 resource metadata: a skill's `SKILL.md` is named and
+    /// described by its frontmatter wherever it is listed.
+    #[test]
+    fn a_directory_read_names_a_skill_md_after_its_skill() {
+        let mut cache = SkillsCache::default();
+        cache
+            .files
+            .insert("acme/refunds/SKILL.md".into(), bundle_file("SKILL.md", "s"));
+        cache
+            .files
+            .insert("acme/refunds/notes.md".into(), bundle_file("notes.md", "n"));
+        cache.skills.insert(
+            "acme/refunds".into(),
+            loaded_skill(
+                "acme/refunds",
+                "Refunds",
+                "Process refunds",
+                "name: refunds\n",
+                "/tmp/acme/refunds/SKILL.md",
+            ),
+        );
+
+        let children = cache.directory("acme/refunds").unwrap();
+        assert_eq!(children[0].name, "refunds");
+        assert_eq!(children[0].description.as_deref(), Some("Process refunds"));
+        assert_eq!(children[1].name, "notes.md");
+        assert_eq!(children[1].description, None);
     }
 
     /// A single page, so there is no cursor this server issued.
