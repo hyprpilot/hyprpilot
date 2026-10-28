@@ -14,6 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use path_absolutize::Absolutize;
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
@@ -61,6 +62,12 @@ impl BundleFile {
             _ if self.text().is_some() => "text/plain",
             _ => "application/octet-stream",
         }
+    }
+
+    /// The same file served under another relative path.
+    #[must_use]
+    pub fn at(&self, rel: String) -> Self {
+        Self { rel, ..self.clone() }
     }
 
     /// The file as text, when it is UTF-8.
@@ -111,7 +118,6 @@ pub enum BundleError {
 /// and hashed again.
 pub fn read_bundle(dir: &Path, previous: &HashMap<PathBuf, BundleFile>) -> Result<Vec<BundleFile>, BundleError> {
     let mut files = Vec::new();
-    let mut total = 0u64;
     for entry in super::loader::walk(dir) {
         let Ok(entry) = entry else { continue };
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
@@ -119,103 +125,105 @@ pub fn read_bundle(dir: &Path, previous: &HashMap<PathBuf, BundleFile>) -> Resul
         }
         let abs = entry.path().to_path_buf();
         let Some(rel) = relative(dir, &abs) else { continue };
-        let Ok(meta) = std::fs::symlink_metadata(&abs) else {
+        let Some(file) = load_file(abs, rel, previous) else {
             continue;
         };
-        let modified = meta.modified().ok();
-        let file = match previous.get(&abs) {
-            // `rel` is this bundle's: a nested skill's file is also its
-            // enclosing skill's, under a different relative path.
-            Some(old) if old.modified == modified && old.size() == meta.len() => BundleFile { rel, ..old.clone() },
-            _ => match std::fs::read(&abs) {
-                Ok(bytes) => BundleFile {
-                    digest: digest(&bytes),
-                    bytes: bytes.into(),
-                    rel,
-                    abs,
-                    modified,
-                },
-                Err(err) => {
-                    warn!(path = %abs.display(), %err, "skills: unreadable bundle file — not served");
-                    continue;
-                }
-            },
-        };
-        total += file.size();
         files.push(file);
-        within_limits(&files, total)?;
+        check_limits(&files)?;
     }
     Ok(files)
 }
 
-fn within_limits(files: &[BundleFile], total: u64) -> Result<(), BundleError> {
+/// One file at `abs`, served as `rel`. Reused from `previous` when its
+/// size and mtime are unchanged, under THIS `rel`: a nested skill's file
+/// is also its enclosing skill's, and a shared reference is a file of
+/// every skill citing it, each under its own relative path.
+fn load_file(abs: PathBuf, rel: String, previous: &HashMap<PathBuf, BundleFile>) -> Option<BundleFile> {
+    let meta = std::fs::symlink_metadata(&abs).ok()?;
+    let modified = meta.modified().ok();
+    match previous.get(&abs) {
+        Some(old) if old.modified == modified && old.size() == meta.len() => Some(old.at(rel)),
+        _ => match std::fs::read(&abs) {
+            Ok(bytes) => Some(BundleFile {
+                digest: digest(&bytes),
+                bytes: bytes.into(),
+                rel,
+                abs,
+                modified,
+            }),
+            Err(err) => {
+                warn!(path = %abs.display(), %err, "skills: unreadable file — not served");
+                None
+            }
+        },
+    }
+}
+
+/// SEP-2640's per-skill limits over everything `files` serves.
+pub fn check_limits(files: &[BundleFile]) -> Result<(), BundleError> {
     if files.len() > MAX_FILES {
         return Err(BundleError::TooManyFiles(files.len()));
     }
+    let total: u64 = files.iter().map(BundleFile::size).sum();
     if total > MAX_BYTES {
         return Err(BundleError::TooLarge(total));
     }
     Ok(())
 }
 
-/// `files` plus a copy of every shared reference the skill declares
-/// outside its own directory, at the path its declaration names below
-/// the shared root: `../references/scm/commit-style.md` becomes
-/// `references/scm/commit-style.md`. The `SKILL.md` link
-/// `../references/scm/commit-style.md` then resolves, per RFC 3986,
-/// against `skill://<skill-path>/SKILL.md` to the copy.
+/// A copy of every shared reference the skill declares outside its own
+/// directory, at the path its declaration names below the shared root:
+/// `../references/scm/commit-style.md` becomes
+/// `references/scm/commit-style.md`. For a skill whose path is a single
+/// segment, the `SKILL.md` link `../references/scm/commit-style.md` then
+/// resolves, per RFC 3986, against `skill://<skill>/SKILL.md` to the
+/// copy; under a deeper path the same link climbs into the prefix.
 ///
 /// Each copy is a file of the skill like any other: listed with its own
-/// digest and counted toward the limits. A copy landing on a path the
-/// skill already has refuses the skill — one URI cannot serve two files.
-/// A declaration inside the bundle is already one of `files`; an
-/// absolute or missing one stays reachable as its `file://` reference.
-pub fn with_shared_references(
+/// digest and counted toward the limits. A copy landing on a path one of
+/// `files` already has refuses the skill — one URI cannot serve two
+/// files. A declaration inside the bundle is already one of `files`; an
+/// absolute or missing one, or one reached through a symlink (which the
+/// bundle walk never follows either), stays reachable only as its
+/// `file://` reference.
+pub fn shared_references(
     dir: &Path,
     declared: &[String],
-    mut files: Vec<BundleFile>,
+    files: &[BundleFile],
     previous: &HashMap<PathBuf, BundleFile>,
 ) -> Result<Vec<BundleFile>, BundleError> {
     let Ok(bundle) = std::fs::canonicalize(dir) else {
-        return Ok(files);
+        return Ok(Vec::new());
     };
+    let mut copies: Vec<BundleFile> = Vec::new();
     for declaration in declared {
         let Some(rel) = shared_rel(declaration) else { continue };
         let Ok(abs) = std::fs::canonicalize(dir.join(declaration)) else {
             continue;
         };
-        if abs.starts_with(&bundle) || !abs.is_file() {
+        // Lexically from the symlink-free bundle path, the declaration
+        // lands where it physically does only when nothing on the way is
+        // a link.
+        let direct = bundle
+            .join(declaration)
+            .absolutize()
+            .is_ok_and(|lexical| lexical == abs);
+        if !direct || abs.starts_with(&bundle) || !abs.is_file() {
             continue;
         }
-        if let Some(taken) = files.iter().find(|f| f.rel == rel) {
+        if let Some(taken) = files.iter().chain(&copies).find(|f| f.rel == rel) {
             if taken.abs == abs {
                 continue;
             }
             return Err(BundleError::Collision(rel));
         }
-        let Ok(meta) = std::fs::metadata(&abs) else { continue };
-        let modified = meta.modified().ok();
-        let file = match previous.get(&abs) {
-            Some(old) if old.modified == modified && old.size() == meta.len() => BundleFile { rel, ..old.clone() },
-            _ => match std::fs::read(&abs) {
-                Ok(bytes) => BundleFile {
-                    digest: digest(&bytes),
-                    bytes: bytes.into(),
-                    rel,
-                    abs,
-                    modified,
-                },
-                Err(err) => {
-                    warn!(path = %abs.display(), %err, "skills: unreadable shared reference — not served");
-                    continue;
-                }
-            },
+        let Some(copy) = load_file(abs, rel, previous) else {
+            continue;
         };
-        files.push(file);
+        copies.push(copy);
     }
-    within_limits(&files, files.iter().map(BundleFile::size).sum())?;
 
-    Ok(files)
+    Ok(copies)
 }
 
 /// A declaration that climbs out of the bundle (`../…`), minus the

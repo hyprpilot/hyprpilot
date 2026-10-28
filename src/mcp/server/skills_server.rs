@@ -72,7 +72,7 @@ use tokio::sync::RwLock;
 use crate::config::mcp::DEFAULT_SKILLS_SERVER_NAME;
 use crate::config::ResolvedSkillEntry;
 use crate::mcp::skills::prompts::{Prompt, PromptSources};
-use crate::mcp::skills::wire_files::{read_bundle, with_shared_references, BundleFile};
+use crate::mcp::skills::wire_files::{check_limits, read_bundle, shared_references, BundleFile};
 use crate::mcp::skills::SkillsRegistry;
 
 /// The receiver half `arm_watch` hands the relay.
@@ -432,8 +432,17 @@ impl LoadedSkill {
 
 /// What one scan read off disk, before the cache is built from it.
 struct Scan {
-    skills: Vec<(crate::mcp::skills::Skill, Vec<BundleFile>)>,
+    skills: Vec<ScannedSkill>,
     prompts: Vec<Prompt>,
+}
+
+struct ScannedSkill {
+    skill: crate::mcp::skills::Skill,
+    /// Every file the entry lists: the bundle, its shared reference
+    /// copies, and those of every skill nested in it.
+    files: Vec<BundleFile>,
+    /// Declared by the served `SKILL.md` bytes.
+    refs: FrontmatterRefs,
 }
 
 // ── Server ────────────────────────────────────────────────────────────
@@ -660,27 +669,28 @@ impl SkillsServer {
         let prompts = self.prompts.clone();
         let result = tokio::task::spawn_blocking(move || {
             registry.reload().map_err(|e| e.to_string())?;
-            let mut skills = Vec::new();
+            let mut scanned = Vec::new();
             for skill in registry.list() {
                 let Some(dir) = skill.path.parent() else { continue };
-                let files = read_bundle(dir, &previous).and_then(|files| {
+                let read = read_bundle(dir, &previous).and_then(|files| {
                     // Declared by the `SKILL.md` bytes being served, like
                     // everything else the entry says.
-                    let declared = files
+                    let refs = files
                         .iter()
                         .find(|f| f.rel == "SKILL.md")
                         .and_then(BundleFile::text)
-                        .map(|text| frontmatter_references(&crate::mcp::skills::split_frontmatter(text).0).references)
+                        .map(|text| frontmatter_references(&crate::mcp::skills::split_frontmatter(text).0))
                         .unwrap_or_default();
-                    with_shared_references(dir, &declared, files, &previous)
+                    let copies = shared_references(dir, &refs.references, &files, &previous)?;
+                    Ok((files, refs, copies))
                 });
-                match files {
-                    Ok(files) => skills.push((skill, files)),
+                match read {
+                    Ok((files, refs, copies)) => scanned.push((skill, files, refs, copies)),
                     Err(err) => tracing::warn!(slug = %skill.slug, %err, "mcp::server: skill not served"),
                 }
             }
             Ok::<Scan, String>(Scan {
-                skills,
+                skills: with_nested_copies(scanned),
                 prompts: prompts.load(),
             })
         })
@@ -879,7 +889,7 @@ fn build_cache(scan: Scan) -> SkillsCache {
         prompts: scan.prompts,
         ..SkillsCache::default()
     };
-    for (skill, files) in scan.skills {
+    for ScannedSkill { skill, files, refs } in scan.skills {
         let slug = skill.slug.to_string();
         // A key already taken by a DIFFERENT file would swap one URI's
         // bytes for another's under a digest a host already holds. The
@@ -922,7 +932,6 @@ fn build_cache(scan: Scan) -> SkillsCache {
             );
             continue;
         }
-        let refs = frontmatter_references(&yaml);
         // The single merged block, built ONCE per skill here — not per
         // request.
         let meta_block = skill_block(&frontmatter, &skill.path);
@@ -980,6 +989,51 @@ fn build_cache(scan: Scan) -> SkillsCache {
         );
     }
     cache
+}
+
+/// Each skill with its shared reference copies, plus those of every
+/// skill nested inside it: SEP-2640 makes a nested skill's files
+/// supporting files of the enclosing one, and a copy is one of its
+/// files. A copy landing on a path the enclosing skill already serves
+/// differently refuses the enclosing skill.
+fn with_nested_copies(
+    scanned: Vec<(
+        crate::mcp::skills::Skill,
+        Vec<BundleFile>,
+        FrontmatterRefs,
+        Vec<BundleFile>,
+    )>,
+) -> Vec<ScannedSkill> {
+    let copies: Vec<(String, Vec<BundleFile>)> = scanned
+        .iter()
+        .map(|(skill, _, _, copies)| (skill.slug.to_string(), copies.clone()))
+        .collect();
+    scanned
+        .into_iter()
+        .filter_map(|(skill, mut files, refs, own)| {
+            files.extend(own);
+            let prefix = format!("{}/", skill.slug);
+            for (slug, nested) in &copies {
+                let Some(inner) = slug.strip_prefix(&prefix) else { continue };
+                for copy in nested {
+                    let rel = format!("{inner}/{}", copy.rel);
+                    match files.iter().find(|f| f.rel == rel) {
+                        Some(taken) if taken.abs == copy.abs => {}
+                        Some(_) => {
+                            tracing::warn!(slug = %skill.slug, rel, "mcp::server: a nested skill's shared reference collides with a file of the skill — skill not served");
+                            return None;
+                        }
+                        None => files.push(copy.at(rel)),
+                    }
+                }
+            }
+            if let Err(err) = check_limits(&files) {
+                tracing::warn!(slug = %skill.slug, %err, "mcp::server: skill not served");
+                return None;
+            }
+            Some(ScannedSkill { skill, files, refs })
+        })
+        .collect()
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -2036,11 +2090,27 @@ mod tests {
         file
     }
 
+    /// A scan of exactly these skills and files, references declared as
+    /// each skill's frontmatter says.
+    fn scan_with(skills: Vec<(crate::mcp::skills::Skill, Vec<BundleFile>)>) -> Scan {
+        Scan {
+            skills: skills
+                .into_iter()
+                .map(|(skill, files)| ScannedSkill {
+                    refs: frontmatter_references(&skill.frontmatter),
+                    skill,
+                    files,
+                })
+                .collect(),
+            prompts: Vec::new(),
+        }
+    }
+
     /// Each skill with the `SKILL.md` its frontmatter and body make —
     /// the bytes `build_cache` reads them back from.
     fn scan_of(skills: Vec<crate::mcp::skills::Skill>) -> Scan {
-        Scan {
-            skills: skills
+        scan_with(
+            skills
                 .into_iter()
                 .map(|skill| {
                     let text = format!(
@@ -2051,8 +2121,7 @@ mod tests {
                     (skill, vec![bundle_file("SKILL.md", &text)])
                 })
                 .collect(),
-            prompts: Vec::new(),
-        }
+        )
     }
 
     fn loaded_skill(slug: &str, title: &str, description: &str, frontmatter_yaml: &str, path: &str) -> LoadedSkill {
@@ -2460,22 +2529,19 @@ mod tests {
             path: PathBuf::from(format!("/tmp/{slug}/SKILL.md")),
             frontmatter: yaml_serde::Value::Null,
         };
-        let cache = build_cache(Scan {
-            skills: vec![
-                (
-                    skill("team"),
-                    vec![
-                        bundle_file("SKILL.md", "---\nname: team\n---\nbody\n"),
-                        bundle_file("review/SKILL.md", "outer copy"),
-                    ],
-                ),
-                (
-                    skill("team/review"),
-                    vec![bundle_file("SKILL.md", "---\nname: review\n---\nanother file\n")],
-                ),
-            ],
-            prompts: Vec::new(),
-        });
+        let cache = build_cache(scan_with(vec![
+            (
+                skill("team"),
+                vec![
+                    bundle_file("SKILL.md", "---\nname: team\n---\nbody\n"),
+                    bundle_file("review/SKILL.md", "outer copy"),
+                ],
+            ),
+            (
+                skill("team/review"),
+                vec![bundle_file("SKILL.md", "---\nname: review\n---\nanother file\n")],
+            ),
+        ]));
 
         assert_eq!(cache.order, ["team"]);
         assert_eq!(cache.file("team/review/SKILL.md").unwrap().text(), Some("outer copy"));
@@ -2494,25 +2560,22 @@ mod tests {
             path: PathBuf::from(format!("/tmp/{slug}/SKILL.md")),
             frontmatter: yaml_serde::from_str(&format!("name: {slug}\ndescription: as the loader read it\n")).unwrap(),
         };
-        let cache = build_cache(Scan {
-            skills: vec![
-                (
-                    skill("edited"),
-                    vec![bundle_file(
-                        "SKILL.md",
-                        "---\nname: edited\ndescription: as served\n---\nbody\n",
-                    )],
-                ),
-                (
-                    skill("unmappable"),
-                    vec![bundle_file(
-                        "SKILL.md",
-                        "---\nname: unmappable\n? [1]\n: x\n---\nbody\n",
-                    )],
-                ),
-            ],
-            prompts: Vec::new(),
-        });
+        let cache = build_cache(scan_with(vec![
+            (
+                skill("edited"),
+                vec![bundle_file(
+                    "SKILL.md",
+                    "---\nname: edited\ndescription: as served\n---\nbody\n",
+                )],
+            ),
+            (
+                skill("unmappable"),
+                vec![bundle_file(
+                    "SKILL.md",
+                    "---\nname: unmappable\n? [1]\n: x\n---\nbody\n",
+                )],
+            ),
+        ]));
 
         assert_eq!(cache.order, ["edited"]);
         assert_eq!(cache.skills["edited"].frontmatter["description"], "as served");
@@ -3626,6 +3689,66 @@ mod sep_tests {
         assert_eq!(
             replies[2]["result"]["resources"],
             serde_json::json!([{ "uri": "skill://alpha/references/scm", "name": "scm", "mimeType": "inode/directory" }])
+        );
+    }
+
+    /// SEP-2640 completeness extends to nested skills: a nested skill's
+    /// shared copies are supporting files of the enclosing skill too,
+    /// under the same URIs. A symlinked shared file gets no copy.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_enclosing_skill_lists_its_nested_skills_shared_copies() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("references")).unwrap();
+        std::fs::write(root.path().join("references/x.md"), "x\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            root.path().join("references/x.md"),
+            root.path().join("references/link.md"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.path().join("team/review")).unwrap();
+        std::fs::write(
+            root.path().join("team/SKILL.md"),
+            "---\nname: team\ndescription: t\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("team/review/SKILL.md"),
+            "---\nname: review\ndescription: r\nreferences:\n  - ../../references/x.md\n  - ../../references/link.md\n---\n",
+        )
+        .unwrap();
+
+        let replies = exchange(root.path(), None, &[modern("skills/list", "")]).await;
+
+        let skills = replies[0]["result"]["skills"].as_array().expect("skills");
+        let resources = |uri: &str| -> Vec<(String, String)> {
+            skills.iter().find(|s| s["uri"] == uri).expect("listed")["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    (
+                        r["uri"].as_str().unwrap().to_string(),
+                        r["digest"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect()
+        };
+        let copy = (
+            "skill://team/review/references/x.md".to_string(),
+            crate::mcp::skills::wire_files::digest(b"x\n"),
+        );
+        assert!(resources("skill://team/review/SKILL.md").contains(&copy));
+        assert!(
+            resources("skill://team/SKILL.md").contains(&copy),
+            "{:?}",
+            resources("skill://team/SKILL.md")
+        );
+        assert!(
+            !resources("skill://team/SKILL.md")
+                .iter()
+                .any(|(uri, _)| uri.ends_with("link.md")),
+            "a symlinked shared file is not copied"
         );
     }
 
