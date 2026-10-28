@@ -27,7 +27,7 @@ pub mod wire_references;
 pub mod wire_time;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use anyhow::Result;
@@ -143,15 +143,13 @@ pub enum SlugError {
 }
 
 /// Whether one skill nests inside the other, by slug or by directory.
-fn overlaps(a: &Skill, b: &Skill) -> bool {
+fn overlaps((a_slug, a_dir): (&SkillSlug, &Path), (b_slug, b_dir): (&SkillSlug, &Path)) -> bool {
     let nested_slug = |outer: &str, inner: &str| inner.strip_prefix(outer).is_some_and(|rest| rest.starts_with('/'));
-    let (a_slug, b_slug) = (a.slug.as_str(), b.slug.as_str());
-    let nested_dir = match (a.path.parent(), b.path.parent()) {
-        (Some(a_dir), Some(b_dir)) => a_dir.starts_with(b_dir) || b_dir.starts_with(a_dir),
-        _ => false,
-    };
 
-    nested_slug(a_slug, b_slug) || nested_slug(b_slug, a_slug) || nested_dir
+    nested_slug(a_slug.as_str(), b_slug.as_str())
+        || nested_slug(b_slug.as_str(), a_slug.as_str())
+        || a_dir.starts_with(b_dir)
+        || b_dir.starts_with(a_dir)
 }
 
 /// One loaded skill. Carries the full body + frontmatter so the MCP
@@ -207,7 +205,10 @@ impl SkillsRegistry {
     pub fn reload(&self) -> Result<()> {
         let mut order = Vec::new();
         let mut map: HashMap<SkillSlug, Skill> = HashMap::new();
-        let mut roots: HashMap<SkillSlug, usize> = HashMap::new();
+        // Root index and canonical directory per kept skill — canonical,
+        // so a root reached through a symlink still overlaps the tree it
+        // points into.
+        let mut kept: HashMap<SkillSlug, (usize, PathBuf)> = HashMap::new();
         for (root, entry) in self.entries.iter().enumerate() {
             if !entry.dir.exists() {
                 warn!(dir = %entry.dir.display(), "skills root does not exist — skipping");
@@ -247,10 +248,15 @@ impl SkillsRegistry {
                     );
                     continue;
                 }
-                if let Some(prev) = map
-                    .values()
-                    .find(|prev| roots[&prev.slug] != root && overlaps(prev, &skill))
-                {
+                let dir = skill
+                    .path
+                    .parent()
+                    .and_then(|dir| std::fs::canonicalize(dir).ok())
+                    .unwrap_or_else(|| skill.path.clone());
+                if let Some(prev) = map.values().find(|prev| {
+                    let (prev_root, prev_dir) = &kept[&prev.slug];
+                    *prev_root != root && overlaps((&prev.slug, prev_dir), (&skill.slug, &dir))
+                }) {
                     warn!(
                         slug = %skill.slug,
                         kept = %prev.path.display(),
@@ -259,7 +265,7 @@ impl SkillsRegistry {
                     );
                     continue;
                 }
-                roots.insert(skill.slug.clone(), root);
+                kept.insert(skill.slug.clone(), (root, dir));
                 order.push(skill.slug.clone());
                 map.insert(skill.slug.clone(), skill);
             }
@@ -495,6 +501,19 @@ mod tests {
         let reg = SkillsRegistry::new(vec![entry(a.clone()), entry(a.join("b"))]);
         reg.reload().unwrap();
         assert_eq!(slugs(&reg), ["b", "b/x"], "within one root, nesting stays legal");
+
+        // The same, with the second root reached through a symlink.
+        #[cfg(unix)]
+        {
+            let link = tmp.path().join("link");
+            std::os::unix::fs::symlink(a.join("b"), &link).unwrap();
+            let alone = SkillsRegistry::new(vec![entry(link.clone())]);
+            alone.reload().unwrap();
+            assert_eq!(slugs(&alone), ["x"], "the linked root is walked");
+            let reg = SkillsRegistry::new(vec![entry(a.clone()), entry(link)]);
+            reg.reload().unwrap();
+            assert_eq!(slugs(&reg), ["b", "b/x"], "a symlinked root still overlaps");
+        }
 
         // Disjoint directories whose slugs nest: `team` would serve
         // `team/review/SKILL.md` from a different file than `team/review`.
