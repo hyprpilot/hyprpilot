@@ -153,17 +153,19 @@ For **claude** and **codex**, hyprpilot spawns the vendor, writes the prompt to 
 
 Available on every invocation, each with an environment twin, so you can pin them per shell or per session:
 
-| Flag                      | Env                        | Purpose                                                                      |
-| ------------------------- | -------------------------- | ---------------------------------------------------------------------------- |
-| `--config <path>`         | `HYPRPILOT_CONFIG`         | Override the global config path (format inferred from the extension).        |
-| `--config-profile <name>` | `HYPRPILOT_CONFIG_PROFILE` | Layer a named config-layer overlay (`profiles/<name>.{ext}`).                |
-| `--log-level <level>`     | `HYPRPILOT_LOG_LEVEL`      | Override the tracing filter (`trace` / `debug` / `info` / `warn` / `error`). |
+| Flag                      | Env                        | Purpose                                                                                                             |
+| ------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `--config <path>`         | `HYPRPILOT_CONFIG`         | Override the global config path (format inferred from the extension).                                               |
+| `--config-profile <name>` | `HYPRPILOT_CONFIG_PROFILE` | Layer a named config-layer overlay (`profiles/<name>.{ext}`). Repeatable; the env var takes a comma-separated list. |
+| `--log-level <level>`     | `HYPRPILOT_LOG_LEVEL`      | Override the tracing filter (`trace` / `debug` / `info` / `warn` / `error`).                                        |
 
 ```sh
 HYPRPILOT_CONFIG_PROFILE=work hyprpilot engineer
 ```
 
-`--config-profile` layers a named config file (`~/.config/hyprpilot/profiles/<name>.yaml`) on top of your global config — a **config-layer** profile, distinct from the session `profiles` you address with the positional `[PROFILE]`. See [Config → Layering](../config/layering).
+`--config-profile` layers a named config file (`~/.config/hyprpilot/profiles/<name>.yaml`) on top of your global config — a **config-layer** profile, distinct from the session `profiles` you address with the positional `[PROFILE]`. Pass it more than once (or `HYPRPILOT_CONFIG_PROFILE=base,work`) to stack overlays; they fold in the given order. See [Config → Layering](../config/layering).
+
+`hyprpilot completion <shell>` prints the shell completion script — see [Installation → Shell completion](./installation#shell-completion).
 
 Log filter precedence is `--log-level` → `RUST_LOG` → `logging.level` → the built-in `error` default (a fresh run is quiet — errors only — unless a level is explicitly requested); tracing always writes to stderr. See [Config → Logging](../config/logging).
 

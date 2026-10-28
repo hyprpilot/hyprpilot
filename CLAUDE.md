@@ -185,9 +185,20 @@ hyprpilot mcp harness --transport http --listen 127.0.0.1:7779 --token-file ~/.c
   free (K-747 made the profile a positional, so `-p` no longer means
   `--profile`).
 - **Global flags** (every subcommand): `--config <path>`
-  (`HYPRPILOT_CONFIG`), `--config-profile <name>`
-  (`HYPRPILOT_CONFIG_PROFILE`), `--log-level`
-  (`HYPRPILOT_LOG_LEVEL`).
+  (`HYPRPILOT_CONFIG`), `--config-profile <name>`, repeatable
+  (`HYPRPILOT_CONFIG_PROFILE`, comma-separated), `--log-level`
+  (`HYPRPILOT_LOG_LEVEL`). The injected `mcp harness` entry carries
+  `--config` / every `--config-profile` on its argv
+  (`ConfigSource::args`) — never rely on the vendor passing the env
+  through (codex filters it) — and `spawn` hands the same
+  `ConfigSource` to its delegates.
+- **Shell completion** is clap_complete's dynamic engine:
+  `CompleteEnv` at the top of `main` (`COMPLETE=<shell> hyprpilot`)
+  and `hyprpilot completion <shell>` print the same registration
+  script. Completers (`src/completion.rs`) re-parse the in-progress
+  line with `ignore_errors` to find the layer selection and the
+  positional profile, and must never print or fail — a config that
+  does not load yields no candidates.
 - **The `mcp` servers** are spawned by the agent vendor over stdio
   (via the auto-injected MCP entries), not run by hand.
 
@@ -202,9 +213,10 @@ fields they set (`merge` crate derive).
    or `--config <path>`. Extensions are searched in priority order
    (`.toml` → `.json` → `.yaml` → `.yml`); multiple coexisting files
    error at load. `--config <path>` infers format from the extension.
-3. **Named config-layer profile** —
-   `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.{ext}` when
-   `--config-profile <name>` / `HYPRPILOT_CONFIG_PROFILE` is set. Same
+3. **Config-layer overlays** —
+   `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.{ext}` for each
+   `--config-profile <name>` / `HYPRPILOT_CONFIG_PROFILE` entry, folded
+   in the given order (later wins by id, patches append). Same
    extension search + multi-format rejection. **Distinct** from the
    session `[[profiles]]` registry (addressed per-launch via the
    positional `[PROFILE]` argument).
