@@ -629,12 +629,21 @@ pub struct HarnessArgs {
     /// The launcher resolves the PICKED profile's `[mcp.harness]
     /// includeProfiles` and emits one occurrence per pattern, the same
     /// way `--skill-dir` carries the skill roots.
-    #[arg(long = "include-profile", value_name = "GLOB", conflicts_with = "no_delegates")]
+    #[arg(
+        long = "include-profile",
+        value_name = "GLOB",
+        conflicts_with = "no_delegates",
+        add = clap_complete::ArgValueCandidates::new(crate::completion::profile_ids)
+    )]
     pub include_profiles: Vec<String>,
 
     /// Glob over profile ids this session may NOT delegate to. Beats
     /// `--include-profile` on overlap. Repeatable.
-    #[arg(long = "exclude-profile", value_name = "GLOB")]
+    #[arg(
+        long = "exclude-profile",
+        value_name = "GLOB",
+        add = clap_complete::ArgValueCandidates::new(crate::completion::profile_ids)
+    )]
     pub exclude_profiles: Vec<String>,
 
     /// Delegate to nothing — `includeProfiles = []`.

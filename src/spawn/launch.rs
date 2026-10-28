@@ -2,7 +2,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
-use clap::Args;
+use clap::{Args, ValueHint};
+use clap_complete::ArgValueCandidates;
 use serde_json::Value;
 
 use super::SpawnRequest;
@@ -12,7 +13,7 @@ use crate::config::Config;
 #[derive(Args, Debug, Default)]
 pub struct LaunchArgs {
     /// Session profile id to resolve and launch directly in the provider TUI. Omit to pick interactively.
-    #[arg(value_name = "PROFILE")]
+    #[arg(value_name = "PROFILE", add = ArgValueCandidates::new(crate::completion::profile_ids))]
     profile_id: Option<String>,
     /// Inline prompt that runs the launch headless (non-interactive) —
     /// the non-pipe alternative to `echo … | hyprpilot <profile>`.
@@ -20,13 +21,13 @@ pub struct LaunchArgs {
     prompt: Option<String>,
     /// Read the headless prompt from a file (`~` / `$VAR` / relative
     /// paths expanded). Mutually exclusive with `--prompt`.
-    #[arg(short = 'f', long = "file", value_name = "PATH")]
+    #[arg(short = 'f', long = "file", value_name = "PATH", value_hint = ValueHint::FilePath)]
     file: Option<PathBuf>,
     /// Working directory for the provider process. Defaults to the current directory.
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
     cwd: Option<PathBuf>,
     /// Provider-specific mode override mapped to the direct CLI where supported.
-    #[arg(long)]
+    #[arg(long, add = ArgValueCandidates::new(crate::completion::modes))]
     mode: Option<String>,
     /// Continue a previous conversation: bare opens the vendor's session
     /// picker, `--resume=<session-id>` continues that one. opencode has

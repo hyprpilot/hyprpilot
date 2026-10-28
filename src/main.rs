@@ -1,3 +1,4 @@
+mod completion;
 mod config;
 mod logging;
 mod mcp;
@@ -11,7 +12,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueHint};
+use clap_complete::{ArgValueCandidates, CompleteEnv};
 use path_absolutize::Absolutize;
 
 #[derive(Parser, Debug)]
@@ -23,14 +25,15 @@ use path_absolutize::Absolutize;
 )]
 struct Cli {
     /// Path to the global config.toml (overrides the XDG default).
-    #[arg(long, global = true, env = "HYPRPILOT_CONFIG")]
+    #[arg(long, global = true, env = "HYPRPILOT_CONFIG", value_hint = ValueHint::FilePath)]
     config: Option<PathBuf>,
 
-    /// Name of a config-layer overlay (resolved to
-    /// `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.{toml,json,yaml,yml}`).
-    /// Repeatable; overlays fold in the given order after the root
-    /// config, so a later one wins by id. The env var takes a
-    /// comma-separated list. Distinct from the session `[[profiles]]`
+    /// Config-layer overlay to fold after the root config. Repeatable.
+    ///
+    /// Resolved to
+    /// `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.{toml,json,yaml,yml}`.
+    /// Overlays fold in the given order, so a later one wins by id. The
+    /// env var takes a comma-separated list. Distinct from the session `[[profiles]]`
     /// registry driving agent + system-prompt overlays — session
     /// profiles are addressed per call via the positional `[PROFILE]`
     /// argument.
@@ -39,7 +42,8 @@ struct Cli {
         value_name = "NAME",
         global = true,
         env = "HYPRPILOT_CONFIG_PROFILE",
-        value_delimiter = ','
+        value_delimiter = ',',
+        add = ArgValueCandidates::new(completion::config_profiles)
     )]
     config_profiles: Vec<String>,
 
@@ -63,10 +67,24 @@ enum Command {
 
     /// List configured session profiles.
     Profiles(profiles::ProfilesArgs),
+
+    /// Print the shell completion registration script, e.g.
+    /// `eval "$(hyprpilot completion zsh)"`. Same script as
+    /// `COMPLETE=zsh hyprpilot`.
+    Completion(completion::CompletionArgs),
 }
 
 fn main() -> Result<ExitCode> {
+    CompleteEnv::with_factory(Cli::command).complete();
     let cli = Cli::parse();
+
+    // Before the config loads: printing the script must not depend on
+    // a valid config.
+    if let Some(Command::Completion(args)) = &cli.command {
+        cli.launch.reject_launch_only_args("completion", false)?;
+        completion::run(args)?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
     // Load the config QUIETLY (before any subscriber is installed) so
     // its `[logging] level` can feed the one-and-only tracing filter —
@@ -136,6 +154,7 @@ fn main() -> Result<ExitCode> {
             runtime.block_on(args.run(source))?;
             Ok(ExitCode::SUCCESS)
         }
+        Some(Command::Completion(_)) => unreachable!("`completion` returns before the config loads"),
     }
 }
 

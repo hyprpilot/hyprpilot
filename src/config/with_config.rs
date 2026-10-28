@@ -61,7 +61,12 @@ pub struct WithConfigArgs {
     ///   usable at most once per invocation).
     ///
     /// See `config::patch` for `$patch` directive semantics.
-    #[arg(long = "with-config", value_name = "PATH|@INLINE|-", action = clap::ArgAction::Append)]
+    #[arg(
+        long = "with-config",
+        value_name = "PATH|@INLINE|-",
+        action = clap::ArgAction::Append,
+        value_hint = clap::ValueHint::FilePath
+    )]
     pub with_config: Vec<String>,
 
     /// Format for stdin (`-`), inline literals (`@...`), and any
