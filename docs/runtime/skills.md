@@ -191,8 +191,9 @@ Each declared reference outside the bundle is also served **as a file of every s
 
 - Each copy is listed in that skill's `skills/list` / `skills/get` `resources` with its own digest and size, counts toward the 512-file / 16 MiB limits, reads through `resources/read`, and appears in `resources/directory/read` under `skill://<skill>/references`. Two skills citing one file list the same digest under their own URIs.
 - A skill that ships its own `references/<x>` on the same path as a declared shared file is **not served**, with a warning — one URI cannot name two files.
-- A declaration that stays inside the bundle, is absolute, or points at a missing file gets no copy; it stays reachable as the `file://` reference below.
-- For a nested skill the copy still sits at `skill://<skill-path>/references/…`, but its `../../references/…` link resolves per RFC 3986 to `skill://acme/references/…`, outside the skill. The link reaches the copy only for a top-level skill.
+- A declaration that stays inside the bundle, is absolute, points at a missing file, or reaches it through a symlink gets no copy; it stays reachable as the `file://` reference below. Symlinks are refused for the same reason the bundle walk never follows them.
+- A nested skill's copies are also files of the skill enclosing it, listed in its `resources` under the same URIs, like the nested skill's own files.
+- For a nested skill (a multi-segment path such as `acme/billing`) the copy still sits at `skill://<skill-path>/references/…`, but its `../../references/…` link resolves per RFC 3986 to `skill://acme/references/…`, outside the skill. The link reaches the copy only for a single-segment skill path.
 
 The `file://` reference resources and `read_skill_references` below are unchanged: tool clients keep addressing a reference by its canonical path.
 
