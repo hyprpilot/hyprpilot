@@ -402,12 +402,8 @@ impl LoadedSkill {
         self.files.iter().filter(|f| f.rel != "SKILL.md")
     }
 
-    /// The SEP-2640 entry `skills/list` and `skills/get` return.
-    ///
-    /// `digest` at the top level is not in the final spec — it is the
-    /// SKILL.md digest Claude Code's client (2.1.286) reads from an
-    /// earlier draft. A result is an open map, so it costs a conforming
-    /// host nothing.
+    /// The SEP-2640 entry `skills/list` and `skills/get` return. Every
+    /// digest lives in `resources`, `SKILL.md`'s included.
     fn entry(&self) -> serde_json::Value {
         serde_json::json!({
             "uri": self.uri(),
@@ -417,7 +413,6 @@ impl LoadedSkill {
                 "digest": f.digest,
                 "size": f.size(),
             })).collect::<Vec<_>>(),
-            "digest": self.skill_md().map(|f| f.digest.clone()),
         })
     }
 }
@@ -2780,7 +2775,7 @@ metadata:
             entry["resources"][1]["digest"],
             crate::mcp::skills::wire_files::digest(b"x")
         );
-        assert_eq!(entry["digest"], entry["resources"][0]["digest"]);
+        assert!(entry.get("digest").is_none(), "no digest outside `resources`");
     }
 
     /// Every directory in the namespace lists its direct children —
