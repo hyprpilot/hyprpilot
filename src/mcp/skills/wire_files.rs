@@ -122,7 +122,9 @@ pub fn read_bundle(dir: &Path, previous: &HashMap<PathBuf, BundleFile>) -> Resul
         };
         let modified = meta.modified().ok();
         let file = match previous.get(&abs) {
-            Some(old) if old.modified == modified && old.size() == meta.len() => old.clone(),
+            // `rel` is this bundle's: a nested skill's file is also its
+            // enclosing skill's, under a different relative path.
+            Some(old) if old.modified == modified && old.size() == meta.len() => BundleFile { rel, ..old.clone() },
             _ => match std::fs::read(&abs) {
                 Ok(bytes) => BundleFile {
                     digest: digest(&bytes),
@@ -267,6 +269,23 @@ mod tests {
 
         let second = read_bundle(tmp.path(), &previous).unwrap();
         assert!(Arc::ptr_eq(&first[0].bytes, &second[0].bytes));
+    }
+
+    /// A nested skill's files are also its enclosing skill's. The carried
+    /// file must take the path relative to the bundle being read, or the
+    /// enclosing skill's `nested/SKILL.md` lands on its own `SKILL.md`.
+    #[test]
+    fn a_carried_over_file_takes_this_bundles_relative_path() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("nested")).unwrap();
+        fs::write(tmp.path().join("nested/SKILL.md"), "nested").unwrap();
+        let previous: HashMap<PathBuf, BundleFile> = read_bundle(&tmp.path().join("nested"), &HashMap::new())
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.abs.clone(), f))
+            .collect();
+
+        assert_eq!(rels(&read_bundle(tmp.path(), &previous).unwrap()), ["nested/SKILL.md"]);
     }
 
     #[cfg(unix)]

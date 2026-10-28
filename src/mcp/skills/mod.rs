@@ -141,6 +141,18 @@ pub enum SlugError {
     BadHyphen,
 }
 
+/// Whether one skill nests inside the other, by slug or by directory.
+fn overlaps(a: &Skill, b: &Skill) -> bool {
+    let nested_slug = |outer: &str, inner: &str| inner.strip_prefix(outer).is_some_and(|rest| rest.starts_with('/'));
+    let (a_slug, b_slug) = (a.slug.as_str(), b.slug.as_str());
+    let nested_dir = match (a.path.parent(), b.path.parent()) {
+        (Some(a_dir), Some(b_dir)) => a_dir.starts_with(b_dir) || b_dir.starts_with(a_dir),
+        _ => false,
+    };
+
+    nested_slug(a_slug, b_slug) || nested_slug(b_slug, a_slug) || nested_dir
+}
+
 /// One loaded skill. Carries the full body + frontmatter so the MCP
 /// `read_skill` tool can render everything.
 #[derive(Debug, Clone, Serialize)]
@@ -183,11 +195,19 @@ impl SkillsRegistry {
 
     /// Rescan the on-disk layout; replace the in-memory table on
     /// success. Roots are processed in iteration order — earlier
-    /// roots win on slug collision.
+    /// roots win on slug collision, and on overlap.
+    ///
+    /// Two skills OVERLAP when one's slug or directory nests inside the
+    /// other's. Within one root that is an ordinary nested skill. Across
+    /// roots it is not: the outer skill serves the inner one's files
+    /// under its own URIs, so the same `skill://` path would name two
+    /// different files, or one file would be two skills a host cannot
+    /// relate.
     pub fn reload(&self) -> Result<()> {
         let mut order = Vec::new();
         let mut map: HashMap<SkillSlug, Skill> = HashMap::new();
-        for entry in &self.entries {
+        let mut roots: HashMap<SkillSlug, usize> = HashMap::new();
+        for (root, entry) in self.entries.iter().enumerate() {
             if !entry.dir.exists() {
                 warn!(dir = %entry.dir.display(), "skills root does not exist — skipping");
                 continue;
@@ -226,6 +246,19 @@ impl SkillsRegistry {
                     );
                     continue;
                 }
+                if let Some(prev) = map
+                    .values()
+                    .find(|prev| roots[&prev.slug] != root && overlaps(prev, &skill))
+                {
+                    warn!(
+                        slug = %skill.slug,
+                        kept = %prev.path.display(),
+                        skipped = %skill.path.display(),
+                        "skills registry: skill nests with one from another root — first root wins",
+                    );
+                    continue;
+                }
+                roots.insert(skill.slug.clone(), root);
                 order.push(skill.slug.clone());
                 map.insert(skill.slug.clone(), skill);
             }
@@ -436,6 +469,44 @@ mod tests {
         let kept = reg.get(&SkillSlug::parse("shared").unwrap()).unwrap();
         assert!(kept.body.contains("FROM_A"));
         assert!(kept.path.starts_with(a.path()));
+    }
+
+    /// Overlays make overlapping roots ordinary. A skill nesting with
+    /// one from an EARLIER root would put two files behind one URI, or
+    /// serve one file as two unrelated skills, so it is refused.
+    #[test]
+    fn a_skill_nesting_with_one_from_another_root_is_refused() {
+        fn write(dir: &Path, name: &str) {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: d\n---\n\nbody\n"),
+            )
+            .unwrap();
+        }
+        let slugs = |reg: &SkillsRegistry| -> Vec<String> { reg.list().iter().map(|s| s.slug.to_string()).collect() };
+
+        // The same tree reached from roots `a` and `a/b`.
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("a");
+        write(&a.join("b"), "b");
+        write(&a.join("b/x"), "x");
+        let reg = SkillsRegistry::new(vec![entry(a.clone()), entry(a.join("b"))]);
+        reg.reload().unwrap();
+        assert_eq!(slugs(&reg), ["b", "b/x"], "within one root, nesting stays legal");
+
+        // Disjoint directories whose slugs nest: `team` would serve
+        // `team/review/SKILL.md` from a different file than `team/review`.
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        write(&first.path().join("team"), "team");
+        write(&second.path().join("team/review"), "review");
+        let reg = SkillsRegistry::new(vec![
+            entry(first.path().to_path_buf()),
+            entry(second.path().to_path_buf()),
+        ]);
+        reg.reload().unwrap();
+        assert_eq!(slugs(&reg), ["team"]);
     }
 
     #[test]

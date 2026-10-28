@@ -866,6 +866,23 @@ fn build_cache(scan: Scan) -> SkillsCache {
     };
     for (skill, files) in scan.skills {
         let slug = skill.slug.to_string();
+        // A key already taken by a DIFFERENT file would swap one URI's
+        // bytes for another's under a digest a host already holds. The
+        // registry refuses the overlaps that cause it; this is the
+        // backstop, and it refuses the whole skill rather than half of it.
+        if let Some(file) = files.iter().find(|file| {
+            cache
+                .files
+                .get(&format!("{slug}/{}", file.rel))
+                .is_some_and(|taken| taken.abs != file.abs)
+        }) {
+            tracing::error!(
+                slug,
+                file = %file.abs.display(),
+                "mcp::server: skill file URI already serves another file — skill not served"
+            );
+            continue;
+        }
         let refs = frontmatter_references(&skill.frontmatter);
         let frontmatter = frontmatter_json(&skill.frontmatter);
         // The single merged block, built ONCE per skill here — not per
@@ -2370,6 +2387,30 @@ mod tests {
         assert!(delta.is_empty());
         assert!(!delta.membership_changed);
         assert!(delta.updated.is_empty());
+    }
+
+    /// The backstop under the registry's overlap check: a URI already
+    /// serving one file is never re-pointed at another.
+    #[test]
+    fn build_cache_never_points_a_taken_uri_at_another_file() {
+        let skill = |slug: &str| crate::mcp::skills::Skill {
+            slug: crate::mcp::skills::SkillSlug::parse(slug).unwrap(),
+            title: String::new(),
+            description: "d".into(),
+            body: "body".into(),
+            path: PathBuf::from(format!("/tmp/{slug}/SKILL.md")),
+            frontmatter: yaml_serde::Value::Null,
+        };
+        let cache = build_cache(Scan {
+            skills: vec![
+                (skill("team"), vec![bundle_file("review/SKILL.md", "outer copy")]),
+                (skill("team/review"), vec![bundle_file("SKILL.md", "another file")]),
+            ],
+            prompts: Vec::new(),
+        });
+
+        assert_eq!(cache.order, ["team"]);
+        assert_eq!(cache.file("team/review/SKILL.md").unwrap().text(), Some("outer copy"));
     }
 
     #[test]
