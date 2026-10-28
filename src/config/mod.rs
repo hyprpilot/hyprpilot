@@ -249,10 +249,11 @@ fn parse_layer_body(body: &str, format: ConfigFormat, src: Option<&Path>) -> Res
 /// is installed (its `[logging] level` feeds the filter), so it stays
 /// quiet: failures surface through the returned `Result` and `main`
 /// emits the "config: loaded" summary AFTER logging init.
-pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
-    let mut cfg =
-        parse_layer_body(DEFAULTS, ConfigFormat::Toml, None).context("failed to parse compiled defaults.toml")?;
-
+///
+/// `profiles` are the config-layer overlays, folded in the given order
+/// after the root config — a later overlay wins by id, and its
+/// `[[patches]]` append after the earlier ones'.
+pub fn load(cli_path: Option<&Path>, profiles: &[String]) -> Result<Config> {
     let root_layer_path: Option<PathBuf> = match cli_path {
         Some(p) => {
             if !p.exists() {
@@ -263,22 +264,31 @@ pub fn load(cli_path: Option<&Path>, profile: Option<&str>) -> Result<Config> {
         None => paths::find_config_file().context("failed to locate root config")?,
     };
 
-    if let Some(p) = root_layer_path.as_deref() {
-        let layer = parse_layer_file(p)?;
-        cfg.merge(layer);
-    }
+    let overlays = profiles
+        .iter()
+        .map(|name| {
+            paths::find_profile_config_file(name)
+                .with_context(|| format!("failed to locate profile '{name}'"))?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "profile '{name}' not found at {} (tried .toml / .json / .yaml / .yml)",
+                        paths::profile_config_file(name).display()
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-    if let Some(name) = profile {
-        let resolved = paths::find_profile_config_file(name)
-            .with_context(|| format!("failed to locate profile '{name}'"))?
-            .ok_or_else(|| {
-                anyhow!(
-                    "profile '{name}' not found at {} (tried .toml / .json / .yaml / .yml)",
-                    paths::profile_config_file(name).display()
-                )
-            })?;
-        let layer = parse_layer_file(&resolved)?;
-        cfg.merge(layer);
+    load_layers(root_layer_path.as_deref(), &overlays)
+}
+
+/// Fold the compiled defaults, the root layer and the overlay files, in
+/// that order.
+fn load_layers(root: Option<&Path>, overlays: &[PathBuf]) -> Result<Config> {
+    let mut cfg =
+        parse_layer_body(DEFAULTS, ConfigFormat::Toml, None).context("failed to parse compiled defaults.toml")?;
+
+    for path in root.into_iter().chain(overlays.iter().map(PathBuf::as_path)) {
+        cfg.merge(parse_layer_file(path)?);
     }
 
     Ok(cfg)
@@ -435,7 +445,7 @@ mod tests {
 level = "debug"
 "#,
         );
-        let cfg = load(Some(&p), None).expect("load");
+        let cfg = load(Some(&p), &[]).expect("load");
         assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
         fs::remove_file(&p).ok();
     }
@@ -443,14 +453,14 @@ level = "debug"
     #[test]
     fn load_errors_when_cli_path_missing() {
         let missing = PathBuf::from("/nonexistent/hyprpilot-test-never.toml");
-        let err = load(Some(&missing), None).expect_err("should error");
+        let err = load(Some(&missing), &[]).expect_err("should error");
         assert!(err.to_string().contains("config file not found"));
     }
 
     #[test]
     fn load_rejects_unknown_fields() {
         let p = write_tmp("unknown.toml", "bogus = true\n");
-        let err = load(Some(&p), None).expect_err("should error");
+        let err = load(Some(&p), &[]).expect_err("should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("failed to parse TOML config"), "got: {msg}");
         fs::remove_file(&p).ok();
@@ -462,7 +472,7 @@ level = "debug"
     #[test]
     fn load_accepts_json_extension() {
         let p = write_tmp("json-cli.json", r#"{"logging": {"level": "debug"}}"#);
-        let cfg = load(Some(&p), None).expect("load json");
+        let cfg = load(Some(&p), &[]).expect("load json");
         assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
         fs::remove_file(&p).ok();
     }
@@ -472,7 +482,7 @@ level = "debug"
     #[test]
     fn load_accepts_yaml_extension() {
         let p = write_tmp("yaml-cli.yaml", "logging:\n  level: debug\n");
-        let cfg = load(Some(&p), None).expect("load yaml");
+        let cfg = load(Some(&p), &[]).expect("load yaml");
         assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
         fs::remove_file(&p).ok();
     }
@@ -483,7 +493,7 @@ level = "debug"
     #[test]
     fn load_rejects_unknown_fields_in_json() {
         let p = write_tmp("unknown.json", r#"{"bogus": true}"#);
-        let err = load(Some(&p), None).expect_err("should error");
+        let err = load(Some(&p), &[]).expect_err("should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("failed to parse JSON config"), "got: {msg}");
         fs::remove_file(&p).ok();
@@ -492,7 +502,7 @@ level = "debug"
     #[test]
     fn load_rejects_unknown_fields_in_yaml() {
         let p = write_tmp("unknown.yaml", "bogus: true\n");
-        let err = load(Some(&p), None).expect_err("should error");
+        let err = load(Some(&p), &[]).expect_err("should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("failed to parse YAML config"), "got: {msg}");
         fs::remove_file(&p).ok();
@@ -504,7 +514,7 @@ level = "debug"
     #[test]
     fn load_rejects_unsupported_extension() {
         let p = write_tmp("unsupported.ini", "ignored\n");
-        let err = load(Some(&p), None).expect_err("should error");
+        let err = load(Some(&p), &[]).expect_err("should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("unsupported config extension"), "got: {msg}");
         fs::remove_file(&p).ok();
@@ -523,7 +533,7 @@ level = "debug"
 level = "verbose"
 "#,
         );
-        let err = load(Some(&p), None).expect_err("should error on parse");
+        let err = load(Some(&p), &[]).expect_err("should error on parse");
         let chain = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
         assert!(chain.contains("verbose") || chain.contains("level"), "{chain}");
         fs::remove_file(&p).ok();
@@ -539,7 +549,7 @@ level = "{lvl}"
 "#
             );
             let p = write_tmp(&format!("level-{lvl}.toml"), &body);
-            let cfg = load(Some(&p), None).unwrap_or_else(|e| panic!("{lvl} parse: {e}"));
+            let cfg = load(Some(&p), &[]).unwrap_or_else(|e| panic!("{lvl} parse: {e}"));
             with_stub_profile(&cfg)
                 .validate()
                 .unwrap_or_else(|e| panic!("{lvl} validate: {e}"));
@@ -566,7 +576,7 @@ file = "~/.config/hyprpilot/prompts/global.md"
 inject = false
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         with_stub_profile(&cfg).validate().expect("root patches validate");
 
         let patches = cfg.patches.as_deref().expect("set");
@@ -609,7 +619,7 @@ agent = "claude-code"
 autoAcceptTools = ["read_*"]
 "#,
         );
-        let cfg = load(Some(&p), None).expect("load");
+        let cfg = load(Some(&p), &[]).expect("load");
         fs::remove_file(&p).ok();
 
         // Both the defaults-seeded patch AND the user layer's patch
@@ -671,7 +681,7 @@ dir = "~/.config/hyprpilot/skills"
 watch = false
 "#,
         );
-        let cfg = load(Some(&p), None).expect("load");
+        let cfg = load(Some(&p), &[]).expect("load");
         fs::remove_file(&p).ok();
 
         let patched = crate::resolve::resolve_effective_profile(&cfg, Some("engineer"), &[]).expect("resolve");
@@ -706,7 +716,7 @@ agent = "claude-code"
 dir = "~/.team/shared-skills"
 "#,
         );
-        let cfg = load(Some(&p), None).expect("load");
+        let cfg = load(Some(&p), &[]).expect("load");
         fs::remove_file(&p).ok();
 
         let patched = crate::resolve::resolve_effective_profile(&cfg, Some("engineer"), &[]).expect("resolve");
@@ -720,5 +730,76 @@ dir = "~/.team/shared-skills"
         assert_eq!(dirs.len(), 2, "a distinct root is an addition, not an override");
         assert_eq!(dirs[0].dir, PathBuf::from("~/.config/hyprpilot/skills"));
         assert_eq!(dirs[1].dir, PathBuf::from("~/.team/shared-skills"));
+    }
+
+    /// Personal and work accounts as two overlays carrying the SAME
+    /// profile ids: whichever comes later on the command line owns the
+    /// entry, and both layers' patches survive in command-line order.
+    #[test]
+    fn overlays_fold_in_order_later_wins_by_id_and_patches_append() {
+        let root = write_tmp(
+            "overlay-root.yaml",
+            "agents:\n  - id: claude\n    provider: claude-code\n    command: claude\n",
+        );
+        let personal = write_tmp(
+            "overlay-personal.yaml",
+            r#"
+profile:
+  default: claude/opus
+profiles:
+  - id: claude/opus
+    agent: claude
+    model: personal-opus
+patches:
+  - env:
+      ACCOUNT: personal
+"#,
+        );
+        let work = write_tmp(
+            "overlay-work.yaml",
+            r#"
+profiles:
+  - id: claude/opus
+    agent: claude
+    model: work-opus
+  - id: claude/haiku
+    agent: claude
+patches:
+  - env:
+      ACCOUNT: work
+"#,
+        );
+
+        let account_patches = |cfg: &Config| -> Vec<String> {
+            cfg.patches
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|p| p.pointer("/env/ACCOUNT")?.as_str().map(str::to_string))
+                .collect()
+        };
+        let opus_model = |cfg: &Config| {
+            cfg.profiles
+                .iter()
+                .find(|p| p.id == "claude/opus")
+                .and_then(|p| p.model.clone())
+        };
+
+        let cfg = load_layers(Some(&root), &[personal.clone(), work.clone()]).expect("load");
+        assert_eq!(opus_model(&cfg).as_deref(), Some("work-opus"));
+        assert_eq!(
+            cfg.profiles.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["claude/opus", "claude/haiku"]
+        );
+        assert_eq!(cfg.profile.default.as_deref(), Some("claude/opus"));
+        assert_eq!(account_patches(&cfg), ["personal", "work"]);
+
+        let cfg = load_layers(Some(&root), &[work.clone(), personal.clone()]).expect("load");
+        assert_eq!(opus_model(&cfg).as_deref(), Some("personal-opus"));
+        assert_eq!(account_patches(&cfg), ["work", "personal"]);
+
+        for p in [root, personal, work] {
+            fs::remove_file(&p).ok();
+        }
     }
 }
