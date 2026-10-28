@@ -72,7 +72,7 @@ use tokio::sync::RwLock;
 use crate::config::mcp::DEFAULT_SKILLS_SERVER_NAME;
 use crate::config::ResolvedSkillEntry;
 use crate::mcp::skills::prompts::{Prompt, PromptSources};
-use crate::mcp::skills::wire_files::{read_bundle, BundleFile};
+use crate::mcp::skills::wire_files::{read_bundle, with_shared_references, BundleFile};
 use crate::mcp::skills::SkillsRegistry;
 
 /// The receiver half `arm_watch` hands the relay.
@@ -663,13 +663,20 @@ impl SkillsServer {
             let mut skills = Vec::new();
             for skill in registry.list() {
                 let Some(dir) = skill.path.parent() else { continue };
-                match read_bundle(dir, &previous) {
+                let files = read_bundle(dir, &previous).and_then(|files| {
+                    // Declared by the `SKILL.md` bytes being served, like
+                    // everything else the entry says.
+                    let declared = files
+                        .iter()
+                        .find(|f| f.rel == "SKILL.md")
+                        .and_then(BundleFile::text)
+                        .map(|text| frontmatter_references(&crate::mcp::skills::split_frontmatter(text).0).references)
+                        .unwrap_or_default();
+                    with_shared_references(dir, &declared, files, &previous)
+                });
+                match files {
                     Ok(files) => skills.push((skill, files)),
-                    Err(err) => tracing::warn!(
-                        slug = %skill.slug,
-                        %err,
-                        "mcp::server: bundle past the SEP-2640 limits — not served"
-                    ),
+                    Err(err) => tracing::warn!(slug = %skill.slug, %err, "mcp::server: skill not served"),
                 }
             }
             Ok::<Scan, String>(Scan {
@@ -3043,7 +3050,10 @@ mod watch_tests {
 
     /// The reference-gap pin over the real wire. Editing a shared
     /// convention file moves no skill body, and before the fingerprint
-    /// diff this reached a client as silence for the full 24h ttl.
+    /// diff this reached a client as silence for the full 24h ttl. The
+    /// file is also served inside the citing skill, so its copy there
+    /// changes too — and with it the skill's entry, like any edit to one
+    /// of its files.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_reference_edit_on_disk_reaches_the_citing_skill() {
         let root = tempfile::tempdir().unwrap();
@@ -3071,13 +3081,8 @@ mod watch_tests {
             "a reference edit reached its subscriber as silence: {seen:?}"
         );
         assert!(
-            !updated_for(&seen, "skill://alpha/SKILL.md"),
-            "the citing skill's raw SKILL.md did not change: {seen:?}"
-        );
-        // The index renders a reference COUNT, not its content.
-        assert!(
-            !updated_for(&seen, "hyprpilot://skills"),
-            "the catalogue index was invalidated for a reference edit: {seen:?}"
+            updated_for(&seen, "skill://alpha/SKILL.md"),
+            "the citing skill's entry lists the copy's digest: {seen:?}"
         );
 
         relay.abort();
@@ -3553,6 +3558,75 @@ mod sep_tests {
             serde_json::json!([{ "uri": "skill://acme/refunds", "name": "refunds", "mimeType": "inode/directory" }])
         );
         assert_eq!(replies[3]["error"]["code"], -32602, "a file is not a directory");
+    }
+
+    /// A shared reference is served inside every skill citing it, at the
+    /// URI its `SKILL.md` link resolves to — one file, one digest, under
+    /// each skill's own path. A local file on that path refuses the skill.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shared_references_are_files_of_each_citing_skill() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("references/scm")).unwrap();
+        std::fs::write(root.path().join("references/scm/style.md"), "shared style\n").unwrap();
+        for name in ["alpha", "beta", "clash"] {
+            std::fs::create_dir_all(root.path().join(name)).unwrap();
+            std::fs::write(
+                root.path().join(name).join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: d\nreferences:\n  - ../references/scm/style.md\n---\n\n\
+                     See [style](../references/scm/style.md).\n"
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(root.path().join("clash/references/scm")).unwrap();
+        std::fs::write(root.path().join("clash/references/scm/style.md"), "local copy\n").unwrap();
+
+        let replies = exchange(
+            root.path(),
+            None,
+            &[
+                modern("skills/list", ""),
+                modern("resources/read", r#","uri":"skill://beta/references/scm/style.md""#),
+                modern("resources/directory/read", r#","uri":"skill://alpha/references""#),
+            ],
+        )
+        .await;
+
+        let skills = replies[0]["result"]["skills"].as_array().expect("skills");
+        let uris: Vec<&str> = skills.iter().filter_map(|s| s["uri"].as_str()).collect();
+        assert_eq!(
+            uris,
+            ["skill://alpha/SKILL.md", "skill://beta/SKILL.md"],
+            "clash is refused"
+        );
+        let shared = |skill: &serde_json::Value| {
+            skill["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| {
+                    r["uri"]
+                        .as_str()
+                        .is_some_and(|u| u.ends_with("/references/scm/style.md"))
+                })
+                .cloned()
+                .expect("the shared copy is listed")
+        };
+        let (alpha, beta) = (shared(&skills[0]), shared(&skills[1]));
+        assert_eq!(alpha["uri"], "skill://alpha/references/scm/style.md");
+        assert_eq!(beta["uri"], "skill://beta/references/scm/style.md");
+        assert_eq!(alpha["digest"], beta["digest"]);
+        assert_eq!(
+            alpha["digest"],
+            crate::mcp::skills::wire_files::digest(b"shared style\n")
+        );
+
+        assert_eq!(replies[1]["result"]["contents"][0]["text"], "shared style\n");
+        assert_eq!(
+            replies[2]["result"]["resources"],
+            serde_json::json!([{ "uri": "skill://alpha/references/scm", "name": "scm", "mimeType": "inode/directory" }])
+        );
     }
 
     /// The declared capability is the host's only way to know the

@@ -633,9 +633,9 @@ changed bundle file's `skill://` URI and the catalogue index, and a
 rescan that changed nothing emits **nothing**. Firing spuriously would
 make every rescan cost a full re-fetch and teach clients to ignore us.
 A changed reference FINGERPRINT updates that reference's own `file://`
-URI — never its citers, whose raw `SKILL.md` did not change — and NOT
-the index, which renders a reference count and never a reference's
-content. A changed prompt fires `prompts/list_changed` (MCP has no
+URI. A shared reference is also served as a file of every citing skill
+(`skill://<skill>/references/…`), so its copy there changes like any
+other bundle file: the copy's URI and the citing skill are updated. A changed prompt fires `prompts/list_changed` (MCP has no
 per-prompt update, so a body edit IS a list change) plus `updated` for
 its `hyprpilot://prompts/<name>`. A file shared by a skill and the skill
 nested in it is one path, announced once. The watcher drops `Access`

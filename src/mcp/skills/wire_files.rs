@@ -10,7 +10,7 @@
 //! mtime) are carried over from the previous scan instead of re-read.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -100,6 +100,8 @@ pub enum BundleError {
     TooManyFiles(usize),
     #[error("{0} bytes exceed the {MAX_BYTES}-byte limit")]
     TooLarge(u64),
+    #[error("`{0}` is both a file of the skill and a shared reference it declares")]
+    Collision(String),
 }
 
 /// Every served file under `dir`, in walk order: hidden and ignored
@@ -141,14 +143,104 @@ pub fn read_bundle(dir: &Path, previous: &HashMap<PathBuf, BundleFile>) -> Resul
         };
         total += file.size();
         files.push(file);
-        if files.len() > MAX_FILES {
-            return Err(BundleError::TooManyFiles(files.len()));
-        }
-        if total > MAX_BYTES {
-            return Err(BundleError::TooLarge(total));
-        }
+        within_limits(&files, total)?;
     }
     Ok(files)
+}
+
+fn within_limits(files: &[BundleFile], total: u64) -> Result<(), BundleError> {
+    if files.len() > MAX_FILES {
+        return Err(BundleError::TooManyFiles(files.len()));
+    }
+    if total > MAX_BYTES {
+        return Err(BundleError::TooLarge(total));
+    }
+    Ok(())
+}
+
+/// `files` plus a copy of every shared reference the skill declares
+/// outside its own directory, at the path its declaration names below
+/// the shared root: `../references/scm/commit-style.md` becomes
+/// `references/scm/commit-style.md`. The `SKILL.md` link
+/// `../references/scm/commit-style.md` then resolves, per RFC 3986,
+/// against `skill://<skill-path>/SKILL.md` to the copy.
+///
+/// Each copy is a file of the skill like any other: listed with its own
+/// digest and counted toward the limits. A copy landing on a path the
+/// skill already has refuses the skill — one URI cannot serve two files.
+/// A declaration inside the bundle is already one of `files`; an
+/// absolute or missing one stays reachable as its `file://` reference.
+pub fn with_shared_references(
+    dir: &Path,
+    declared: &[String],
+    mut files: Vec<BundleFile>,
+    previous: &HashMap<PathBuf, BundleFile>,
+) -> Result<Vec<BundleFile>, BundleError> {
+    let Ok(bundle) = std::fs::canonicalize(dir) else {
+        return Ok(files);
+    };
+    for declaration in declared {
+        let Some(rel) = shared_rel(declaration) else { continue };
+        let Ok(abs) = std::fs::canonicalize(dir.join(declaration)) else {
+            continue;
+        };
+        if abs.starts_with(&bundle) || !abs.is_file() {
+            continue;
+        }
+        if let Some(taken) = files.iter().find(|f| f.rel == rel) {
+            if taken.abs == abs {
+                continue;
+            }
+            return Err(BundleError::Collision(rel));
+        }
+        let Ok(meta) = std::fs::metadata(&abs) else { continue };
+        let modified = meta.modified().ok();
+        let file = match previous.get(&abs) {
+            Some(old) if old.modified == modified && old.size() == meta.len() => BundleFile { rel, ..old.clone() },
+            _ => match std::fs::read(&abs) {
+                Ok(bytes) => BundleFile {
+                    digest: digest(&bytes),
+                    bytes: bytes.into(),
+                    rel,
+                    abs,
+                    modified,
+                },
+                Err(err) => {
+                    warn!(path = %abs.display(), %err, "skills: unreadable shared reference — not served");
+                    continue;
+                }
+            },
+        };
+        files.push(file);
+    }
+    within_limits(&files, files.iter().map(BundleFile::size).sum())?;
+
+    Ok(files)
+}
+
+/// A declaration that climbs out of the bundle (`../…`), minus the
+/// climb. `None` for one that stays inside, is absolute, or climbs again
+/// after descending.
+fn shared_rel(declaration: &str) -> Option<String> {
+    let mut components = Path::new(declaration).components().peekable();
+    let mut climbed = false;
+    while let Some(component) = components.peek() {
+        match component {
+            Component::ParentDir => climbed = true,
+            Component::CurDir => {}
+            _ => break,
+        }
+        components.next();
+    }
+    let segments: Option<Vec<&str>> = components
+        .map(|component| match component {
+            Component::Normal(segment) => segment.to_str(),
+            _ => None,
+        })
+        .collect();
+    let segments = segments.filter(|segments| climbed && !segments.is_empty())?;
+
+    Some(segments.join("/"))
 }
 
 /// `sha256:<hex>` over `bytes`, the SEP-2640 digest format.
@@ -286,6 +378,22 @@ mod tests {
             .collect();
 
         assert_eq!(rels(&read_bundle(tmp.path(), &previous).unwrap()), ["nested/SKILL.md"]);
+    }
+
+    #[test]
+    fn a_shared_reference_maps_below_the_root_it_climbs_to() {
+        assert_eq!(
+            shared_rel("../references/scm/style.md").as_deref(),
+            Some("references/scm/style.md")
+        );
+        assert_eq!(
+            shared_rel("./../../references/x.md").as_deref(),
+            Some("references/x.md")
+        );
+        assert_eq!(shared_rel("references/local.md"), None, "inside the bundle already");
+        assert_eq!(shared_rel("/etc/refs/x.md"), None);
+        assert_eq!(shared_rel("../a/../b.md"), None);
+        assert_eq!(shared_rel(".."), None);
     }
 
     #[cfg(unix)]
