@@ -88,10 +88,6 @@ fn parse_skill(path: &Path, slug: SkillSlug) -> Result<Option<Skill>> {
     let text = fs::read_to_string(path)?;
     let (frontmatter, body) = split_frontmatter(&text);
     let body = body.trim().to_owned();
-    if body.is_empty() {
-        warn!(path = %path.display(), "skills loader: empty body — skipping");
-        return Ok(None);
-    }
     // SEP-2640 serves the frontmatter verbatim, requires `name` and
     // `description` in it, and makes the URI's last segment equal `name`
     // — a host refuses anything else, so serving it would only move the
@@ -251,11 +247,15 @@ Body. See [README](../README.md) for more.
         assert!(load_skills(tmp.path()).unwrap().is_empty());
     }
 
+    /// The Agent Skills format requires the frontmatter, not a body —
+    /// a description-only skill is still a skill.
     #[test]
-    fn skips_empty_body() {
+    fn an_empty_body_is_still_a_skill() {
         let tmp = TempDir::new().unwrap();
         write_skill(tmp.path(), "empty", "---\nname: empty\ndescription: d\n---\n\n");
-        assert!(load_skills(tmp.path()).unwrap().is_empty());
+        let skills = load_skills(tmp.path()).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert!(skills[0].body.is_empty());
     }
 
     /// The frontmatter is served verbatim and a SEP-2640 host refuses an
