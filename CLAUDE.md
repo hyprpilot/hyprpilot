@@ -41,8 +41,8 @@ harness stays off unless `[mcp.harness].enabled` says otherwise.
 ## Toolchain (mise-pinned)
 
 `mise install` at the repo root drops: `rust` (stable + `rustfmt` +
-`clippy`), `task` 3 (go-task), `usage` 3, `cargo-nextest`, plus
-`node` 24 + `pnpm` 10 **for the `docs/` VitePress site only** — that
+`clippy`), `task` 3 (go-task), `usage` 7, `cargo-nextest`, plus
+`node` 24 + `pnpm` 12 **for the `docs/` VitePress site only** — that
 is the sole Node consumer in the repo. `rust-toolchain.toml` pins the
 toolchain for `cargo` invocations outside mise.
 
@@ -185,9 +185,23 @@ hyprpilot mcp harness --transport http --listen 127.0.0.1:7779 --token-file ~/.c
   free (K-747 made the profile a positional, so `-p` no longer means
   `--profile`).
 - **Global flags** (every subcommand): `--config <path>`
-  (`HYPRPILOT_CONFIG`), `--config-profile <name>`
-  (`HYPRPILOT_CONFIG_PROFILE`), `--log-level`
-  (`HYPRPILOT_LOG_LEVEL`).
+  (`HYPRPILOT_CONFIG`), `--config-profile <name>`, repeatable
+  (`HYPRPILOT_CONFIG_PROFILE`, comma-separated), `--log-level`
+  (`HYPRPILOT_LOG_LEVEL`). The injected `mcp harness` entry carries
+  `--config` / every `--config-profile` on its argv
+  (`ConfigSource::args`) — never rely on the vendor passing the env
+  through (codex filters it) — and `spawn` hands the same
+  `ConfigSource` to its delegates.
+- **Shell completion** is clap_complete's dynamic engine:
+  `CompleteEnv` at the top of `main` (`COMPLETE=<shell> hyprpilot`)
+  and `hyprpilot completion <shell>` print the same registration
+  script (both through `completion::SHELLS`). The zsh engine is
+  wrapped so the script defines `_hyprpilot` and guards its own
+  `compdef` — the contract lazy zsh loaders (znap) rely on. Completers
+  (`src/completion.rs`) re-parse the in-progress
+  line with `ignore_errors` to find the layer selection and the
+  positional profile, and must never print or fail — a config that
+  does not load yields no candidates.
 - **The `mcp` servers** are spawned by the agent vendor over stdio
   (via the auto-injected MCP entries), not run by hand.
 
@@ -202,9 +216,10 @@ fields they set (`merge` crate derive).
    or `--config <path>`. Extensions are searched in priority order
    (`.toml` → `.json` → `.yaml` → `.yml`); multiple coexisting files
    error at load. `--config <path>` infers format from the extension.
-3. **Named config-layer profile** —
-   `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.{ext}` when
-   `--config-profile <name>` / `HYPRPILOT_CONFIG_PROFILE` is set. Same
+3. **Config-layer overlays** —
+   `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.{ext}` for each
+   `--config-profile <name>` / `HYPRPILOT_CONFIG_PROFILE` entry, folded
+   in the given order (later wins by id, patches append). Same
    extension search + multi-format rejection. **Distinct** from the
    session `[[profiles]]` registry (addressed per-launch via the
    positional `[PROFILE]` argument).
@@ -618,9 +633,9 @@ changed bundle file's `skill://` URI and the catalogue index, and a
 rescan that changed nothing emits **nothing**. Firing spuriously would
 make every rescan cost a full re-fetch and teach clients to ignore us.
 A changed reference FINGERPRINT updates that reference's own `file://`
-URI — never its citers, whose raw `SKILL.md` did not change — and NOT
-the index, which renders a reference count and never a reference's
-content. A changed prompt fires `prompts/list_changed` (MCP has no
+URI. A shared reference is also served as a file of every citing skill
+(`skill://<skill>/references/…`), so its copy there changes like any
+other bundle file: the copy's URI and the citing skill are updated. A changed prompt fires `prompts/list_changed` (MCP has no
 per-prompt update, so a body edit IS a list change) plus `updated` for
 its `hyprpilot://prompts/<name>`. A file shared by a skill and the skill
 nested in it is one path, announced once. The watcher drops `Access`

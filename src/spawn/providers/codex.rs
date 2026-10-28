@@ -16,6 +16,14 @@ use super::{
 const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never", "on-failure"];
 const CODEX_SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
 
+pub(super) fn known_modes() -> Vec<&'static str> {
+    CODEX_APPROVAL_POLICIES
+        .iter()
+        .chain(CODEX_SANDBOX_MODES)
+        .copied()
+        .collect()
+}
+
 pub(super) fn build_codex(
     resolved: &ResolvedProfile,
     system_prompt: Option<&str>,

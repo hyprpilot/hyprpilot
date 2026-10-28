@@ -83,6 +83,46 @@ bindsym $mod+Shift+Return exec foot -e hyprpilot engineer
 
 Swap `foot` for your terminal of choice (`kitty -e`, `alacritty -e`, `wezterm start --`, `gnome-terminal --`, …). The vendor TUI takes over that terminal until you exit it.
 
+## Shell completion
+
+Completion is dynamic: the shell calls hyprpilot back on every `<Tab>`, so it offers the session profile ids from your resolved config (agent and model as the description, the default marked), the overlay names under `~/.config/hyprpilot/profiles/` for `--config-profile`, and, for a codex profile, its approval and sandbox modes for `--mode`. claude and opencode get no `--mode` candidates: hyprpilot passes their modes through as-is and keeps no list of them. The candidates follow the command line — `hyprpilot --config-profile work <Tab>` lists the work overlay's profiles. A config that does not load yields no candidates rather than an error.
+
+Register it from your shell's startup file:
+
+::: code-group
+
+```sh [zsh]
+# ~/.zshrc
+eval "$(hyprpilot completion zsh)"
+```
+
+```sh [bash]
+# ~/.bashrc
+eval "$(hyprpilot completion bash)"
+```
+
+```fish [fish]
+# ~/.config/fish/config.fish
+hyprpilot completion fish | source
+```
+
+:::
+
+`elvish` and `powershell` are supported too. `COMPLETE=<shell> hyprpilot` prints the same script.
+
+The zsh script defines the completer as `_hyprpilot`, the name zsh plugin managers expect, and only calls `compdef` itself once `compinit` has run. So it also loads lazily, for example with znap:
+
+```sh
+znap function _hyprpilot '_hyprpilot() { :; }; eval "$(hyprpilot completion zsh 2>/dev/null)"'
+compdef _hyprpilot hyprpilot
+```
+
+It also works as an autoload file: save it as `_hyprpilot` in a directory on `fpath` before `compinit` runs.
+
+```sh
+hyprpilot completion zsh > ~/.zfunc/_hyprpilot   # with fpath=(~/.zfunc $fpath) in ~/.zshrc
+```
+
 ## After install
 
 1. **Install a vendor CLI** — hyprpilot launches `claude`, `codex`, or `opencode`; at least one must be on your `$PATH`.

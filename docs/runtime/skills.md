@@ -31,13 +31,13 @@ The skills catalogue is configured under the [`mcp` block](../config/mcp#the-mcp
             └── SKILL.md      # the skill `acme/billing/refunds`
 ```
 
-A skill is identified by its **path** under the root — `git-commit`, or `acme/billing/refunds` for a nested one. That path is its slug on every tool and the `<skill-path>` of its `skill://` URIs. A skill may also nest inside another; the enclosing skill then ships the nested one's files as its own, as [SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2640-skills-extension.md) requires.
+A skill is identified by its **path** under the root — `git-commit`, or `acme/billing/refunds` for a nested one. That path is its slug on every tool and the `<skill-path>` of its `skill://` URIs. A skill may also nest inside another; the enclosing skill then ships the nested one's files as its own, as the [Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx) requires.
 
-A `SKILL.md` must carry YAML frontmatter with a `name` equal to its directory and a non-empty `description`. A skill missing either, or whose `name` differs from its directory, is skipped with a warning: the frontmatter is served verbatim, and a SEP-2640 host refuses an entry like that. The name follows the Agent Skills rule — 1-64 of `[a-z0-9-]`, no leading, trailing or doubled hyphen. Organizational prefixes are lowercase too, because the first one becomes a URI authority.
+A `SKILL.md` must carry YAML frontmatter with a `name` equal to its directory and a non-empty `description`. A skill missing either, or whose `name` differs from its directory, is skipped with a warning: the frontmatter is served verbatim, and a SEP-2640 host refuses an entry like that. The body may be empty — a description-only skill is still served. The name follows the Agent Skills rule — 1-64 of `[a-z0-9-]`, no leading, trailing or doubled hyphen. Organizational prefixes are lowercase too, because the first one becomes a URI authority.
 
 Hidden entries and anything a `.gitignore` (or `.ignore`) excludes are never discovered or served, so a script's `.venv` stays out. Symlinks are not followed. A bundle past SEP-2640's limits — 512 files or 16 MiB — is not served, and a warning says so.
 
-Per-root `include` globs keep only matching skill paths and per-root `ignore` globs skip them; a path matching both is skipped. Globs match the whole path and `*` crosses `/`, so `acme/*` matches every skill under `acme`. Ignoring a skill does not ignore skills nested inside it — each is matched on its own path. On a path collision across roots, the first root wins. Missing roots warn and are skipped.
+Per-root `include` globs keep only matching skill paths and per-root `ignore` globs skip them; a path matching both is skipped. Globs match the whole path and `*` crosses `/`, so `acme/*` matches every skill under `acme`. Ignoring a skill does not ignore skills nested inside it — each is matched on its own path. On a path collision across roots, the first root wins. The first root also wins when a skill would nest with one from another root — by path (`team` in one root, `team/review` in another) or by directory (roots `a` and `a/b` reaching the same tree): the later skill is skipped with a warning, because its files would otherwise sit behind URIs the earlier skill already serves. Nesting within one root is unaffected. Two skills sharing a name (`acme/refunds` and `billing/refunds`) are both served, with a warning, since a host shows the name and must tell them apart by path. Missing roots warn and are skipped.
 
 The compiled defaults seed the XDG skills root `~/.config/hyprpilot/skills` (via a root [`patches`](../config/patches) entry), and the built-in `mcp` defaults (`enabled: true`, `autoAcceptTools: ['*']`) fill in the rest — so skills work out of the box once you drop a `SKILL.md` in. A profile's own `mcp` block wholesale-replaces the global one — point a profile at a different skills root, or disable the server entirely.
 
@@ -78,12 +78,14 @@ The injected entry runs the current binary with one `--skill-dir` per skill root
 
 ### SEP-2640 skills
 
-The server implements the [Skills Extension](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2640-skills-extension.md) and declares it as `capabilities.extensions["io.modelcontextprotocol/skills"] = { "directoryRead": true }`:
+The server implements the stable [Skills extension](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/stable/skills.mdx) (overview: [modelcontextprotocol.io/extensions/skills/overview](https://modelcontextprotocol.io/extensions/skills/overview)), which started as SEP-2640, and declares it as `capabilities.extensions["io.modelcontextprotocol/skills"] = { "directoryRead": true }`:
 
 - Every file of a bundle is a resource at `skill://<skill-path>/<file-path>`, served **raw** — `SKILL.md` frontmatter included — because a host verifies what it reads against a digest and re-parses the frontmatter against the listing.
 - `skills/list` returns every skill as `{ uri, frontmatter, resources }`: the `SKILL.md` URI, the frontmatter verbatim as JSON, and every file with its `sha256:` digest and byte size. The listing is a single page and carries `ttlMs` and `cacheScope`.
+- **Digests live in `resources` only**, `SKILL.md`'s included. An earlier draft also put a top-level `digest` on each entry; nothing reads it now (Claude Code's client is behind a disabled flag), so it is gone.
+- The frontmatter in an entry is parsed from the same `SKILL.md` bytes the server serves and hashed, so a host's re-parse of the file it reads always matches. A skill whose frontmatter has no JSON form is not served rather than listed as `{}`.
 - `skills/get { uri }` returns one entry; a URI that is not a skill's `SKILL.md` is `-32602`.
-- `resources/directory/read { uri }` lists a directory's direct children: files with their metadata, subdirectories as `inode/directory`. Every directory counts — a skill's root, any subdirectory, and an organizational prefix such as `skill://acme`. A file or an unknown path is `-32602`.
+- `resources/directory/read { uri }` lists a directory's direct children: files with their metadata (a skill's `SKILL.md` named and described by its frontmatter), subdirectories as `inode/directory`. Every directory counts — a skill's root, any subdirectory, and an organizational prefix such as `skill://acme`. A file or an unknown path is `-32602`.
 
 File bytes are read once per rescan and served from memory, so what a read returns always matches the digest the listing promised. An unchanged file (same size and modification time) is carried over rather than read and hashed again.
 
@@ -146,14 +148,14 @@ Two cases a watch cannot cover, both of which are what `reload` is for:
 
 Results carry a `ttlMs` of 24 hours — longer than a sidecar lives — so a client caches until told otherwise. Every rescan — the watcher's, or a `reload` — earns that by **diffing** and firing only what actually changed:
 
-| What you changed                  | What fires                                                                                                                           |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| A skill's `SKILL.md`              | `resources/updated` for its `SKILL.md` URI and for the catalogue index, plus `resources/list_changed`                                |
-| A file a skill ships              | `resources/updated` for that file's URI, the skill's `SKILL.md` URI (its `resources` set changed) and the index, plus `list_changed` |
-| Added or removed a skill          | `resources/list_changed`, plus `resources/updated` for the index                                                                     |
-| A reference file a skill declares | `resources/updated` for the reference's `file://` URI, plus `resources/list_changed` — but **not** the index                         |
-| A prompt                          | `prompts/list_changed`, `resources/updated` for its `hyprpilot://prompts/<name>` URI, plus `resources/list_changed`                  |
-| Nothing                           | nothing — a rescan that moved nothing never invalidates a client's cache                                                             |
+| What you changed                  | What fires                                                                                                                                                                                                      |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A skill's `SKILL.md`              | `resources/updated` for its `SKILL.md` URI and for the catalogue index, plus `resources/list_changed`                                                                                                           |
+| A file a skill ships              | `resources/updated` for that file's URI, the skill's `SKILL.md` URI (its `resources` set changed) and the index, plus `list_changed`                                                                            |
+| Added or removed a skill          | `resources/list_changed`, plus `resources/updated` for the index                                                                                                                                                |
+| A reference file a skill declares | `resources/updated` for the reference's `file://` URI, and — since a copy is a file of each citing skill — for each copy's URI, each citing skill's `SKILL.md` URI and the index, plus `resources/list_changed` |
+| A prompt                          | `prompts/list_changed`, `resources/updated` for its `hyprpilot://prompts/<name>` URI, plus `resources/list_changed`                                                                                             |
+| Nothing                           | nothing — a rescan that moved nothing never invalidates a client's cache                                                                                                                                        |
 
 A file a skill shares with a skill nested inside it is one path, so it is announced once. MCP has no per-prompt update, so an edited prompt body is a prompt **list** change — the only way a client learns to re-fetch it.
 
@@ -181,7 +183,19 @@ references:
 ---
 ```
 
-`references:` is hyprpilot's own key, not part of the Agent Skills specification: it names files outside the bundle, which many skills share. A file a skill ships inside its own directory needs no declaration — it is a bundle file, served at its `skill://` URI.
+`references:` is hyprpilot's own key, not part of the Agent Skills specification: it names files outside the bundle, which many skills share. A file a skill ships inside its own directory needs no declaration — it is a bundle file, served at its `skill://` URI. Like `argumentHint`, `disableModelInvocation` and `scripts`, the key passes through the frontmatter verbatim.
+
+### Shared references inside each skill
+
+Each declared reference outside the bundle is also served **as a file of every skill citing it**, at the path its declaration names below the shared root: `../references/scm/commit-style.md` becomes `skill://git-commit/references/scm/commit-style.md`. That is exactly where the `SKILL.md` link `../references/scm/commit-style.md` resolves against `skill://git-commit/SKILL.md` (RFC 3986 — the first path segment is the URI authority, so `..` cannot climb above the skill), so a host following the link stays inside the skill it approved.
+
+- Each copy is listed in that skill's `skills/list` / `skills/get` `resources` with its own digest and size, counts toward the 512-file / 16 MiB limits, reads through `resources/read`, and appears in `resources/directory/read` under `skill://<skill>/references`. Two skills citing one file list the same digest under their own URIs.
+- A skill that ships its own `references/<x>` on the same path as a declared shared file is **not served**, with a warning — one URI cannot name two files.
+- A declaration that stays inside the bundle, is absolute, points at a missing file, or reaches it through a symlink gets no copy; it stays reachable as the `file://` reference below. Symlinks are refused for the same reason the bundle walk never follows them.
+- A nested skill's copies are also files of the skill enclosing it, listed in its `resources` under the same URIs, like the nested skill's own files.
+- For a nested skill (a multi-segment path such as `acme/billing`) the copy still sits at `skill://<skill-path>/references/…`, but its `../../references/…` link resolves per RFC 3986 to `skill://acme/references/…`, outside the skill. The link reaches the copy only for a single-segment skill path.
+
+The `file://` reference resources and `read_skill_references` below are unchanged: tool clients keep addressing a reference by its canonical path.
 
 ### The path is the address, and the identity
 
@@ -260,6 +274,8 @@ The loader keeps **every** frontmatter key losslessly. `skills/list` carries the
 
 - **Spec `Resource` fields** are canonical: `uri`, `name` (the frontmatter name, which is the skill path's last segment), `title`, `description`, `mimeType`, `size`.
 - **`io.hyprpilot/skill`** (resource `_meta`) / **`metadata`** (tool output) — the same single block: the entire frontmatter map **verbatim** (keys pass through unchanged — no camelCasing; nested maps, arrays, numbers, and booleans all convert), **minus** the keys another field already carries, **plus** the runtime-derived `path`, `bundleDir`, `size`, `modified`, and `created`.
+
+The block's key is deliberately `io.hyprpilot/skill`, not the extension's reserved `io.modelcontextprotocol.skills/` prefix: it carries hyprpilot's own runtime data, not frontmatter the extension defines. It includes **absolute filesystem paths** (`path`, `bundleDir`), which tell any client the layout of the machine serving the skills — fine for the local stdio sidecar the launcher injects, worth knowing before serving over HTTP.
 
 Three frontmatter keys are dropped from the block as duplicates. `title` and `description` equal the canonical `Resource.title` / `Resource.description`. `references` is superseded by the resolved [reference manifest](#references), which addresses each one by its canonical path.
 

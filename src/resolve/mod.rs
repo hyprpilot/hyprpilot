@@ -95,6 +95,7 @@ pub(crate) fn build_mcp_registry_with(
     profile: &ProfileConfig,
     skills: Option<&Arc<crate::mcp::skills::SkillsRegistry>>,
     spawn_depth: usize,
+    config: &crate::mcp::server::ConfigSource,
 ) -> Vec<crate::mcp::MCPDefinition> {
     let mcp_cfg = effective_mcp_with(profile);
     let files = effective_mcp_files_with(profile);
@@ -117,6 +118,7 @@ pub(crate) fn build_mcp_registry_with(
             &mcp_cfg,
             std::path::PathBuf::from("<auto-injected:hyprpilot mcp harness>"),
             spawn_depth,
+            config,
         ) {
             prepend_auto_mcp_definition(&mut defs, harness);
             auto_injected.push("harness");
@@ -425,14 +427,14 @@ mod tests {
             ..McpConfig::default()
         });
 
-        assert!(build_mcp_registry_with(&profile, None, 0).is_empty());
+        assert!(build_mcp_registry_with(&profile, None, 0, &Default::default()).is_empty());
     }
 
     /// With no `mcp` block at all the typed defaults apply: general
     /// tools on, harness off.
     #[test]
     fn defaults_inject_tools_but_not_harness() {
-        let names: Vec<_> = build_mcp_registry_with(&bare_profile(), None, 0)
+        let names: Vec<_> = build_mcp_registry_with(&bare_profile(), None, 0, &Default::default())
             .into_iter()
             .map(|d| d.name)
             .collect();

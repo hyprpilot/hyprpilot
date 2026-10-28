@@ -104,7 +104,7 @@ pub enum McpSubcommand {
 #[derive(Debug, Clone, Default)]
 pub struct ConfigSource {
     pub path: Option<std::path::PathBuf>,
-    pub profile: Option<String>,
+    pub profiles: Vec<String>,
 }
 
 impl ConfigSource {
@@ -112,10 +112,22 @@ impl ConfigSource {
     /// config the captain fixes mid-session is picked up without
     /// restarting the sidecar.
     pub fn load(&self) -> anyhow::Result<crate::config::Config> {
-        let cfg = crate::config::load(self.path.as_deref(), self.profile.as_deref())?;
+        let cfg = crate::config::load(self.path.as_deref(), &self.profiles)?;
         cfg.validate()?;
 
         Ok(cfg)
+    }
+
+    /// The selection as `hyprpilot` argv, for a sidecar the vendor
+    /// spawns. A vendor may filter the environment it hands an MCP
+    /// server (codex does), and an inherited `HYPRPILOT_CONFIG_PROFILE`
+    /// can name a different overlay than this launch's flags.
+    pub fn args(&self) -> Vec<String> {
+        self.path
+            .iter()
+            .map(|path| format!("--config={}", path.display()))
+            .chain(self.profiles.iter().map(|name| format!("--config-profile={name}")))
+            .collect()
     }
 }
 

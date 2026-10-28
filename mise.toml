@@ -7,7 +7,7 @@ node = "24"
 # (pnpm ships standalone executables in its GitHub releases, not
 # tarballs), breaking `mise install` on every CI run. `github:`
 # matches the platform-suffixed binary directly.
-"github:pnpm/pnpm" = { version = "10", matching = "linux-x64" }
+"github:pnpm/pnpm" = { version = "12", matching = "linux-x64" }
 task = "3"
-usage = "3"
+usage = "7"
 "cargo:cargo-nextest" = "latest"

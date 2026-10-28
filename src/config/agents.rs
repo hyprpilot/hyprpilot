@@ -310,7 +310,7 @@ command = "local-codex"
 args = []
 "#,
         );
-        let cfg = load(Some(&p), None).expect("load");
+        let cfg = load(Some(&p), &[]).expect("load");
 
         let ids: Vec<&str> = cfg.agents.agents.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(
@@ -350,7 +350,7 @@ provider = "codex"
 command = "b"
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
         assert!(msg.contains("duplicate agent id 'dupe'"), "{msg}");
@@ -403,7 +403,7 @@ provider = "custom"
 command = "some-cli"
 "#,
         );
-        let err = load(Some(&p), None).expect_err("unknown provider must fail to load");
+        let err = load(Some(&p), &[]).expect_err("unknown provider must fail to load");
         let msg = err.to_string();
         assert!(msg.contains("custom") || msg.contains("provider"), "{msg}");
         fs::remove_file(&p).ok();
@@ -425,7 +425,7 @@ id = "bare"
 agent = "bare"
 "##,
         );
-        let cfg = load(Some(&p), None).expect("load");
+        let cfg = load(Some(&p), &[]).expect("load");
         let bare = cfg.agents.agents.iter().find(|a| a.id == "bare").expect("bare entry");
         assert_eq!(bare.model, None, "model must be absent when not set in TOML");
         cfg.validate().expect("valid");
@@ -467,7 +467,7 @@ id = "ghost"
 agent = "does-not-exist"
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
         assert!(msg.contains("profile 'ghost'"), "{msg}");
@@ -489,7 +489,7 @@ id = "dupe"
 agent = "codex"
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
         assert!(msg.contains("duplicate profile id 'dupe'"), "{msg}");
@@ -505,7 +505,7 @@ agent = "codex"
 default = "ghost-profile"
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         let msg = err.to_string();
         assert!(msg.contains("default = 'ghost-profile'"), "{msg}");
@@ -540,7 +540,7 @@ FOO = "bar"
 BAZ = "qux"
 "#,
         );
-        let cfg = load(Some(&p), None).expect("load");
+        let cfg = load(Some(&p), &[]).expect("load");
         let full = cfg.profiles.iter().find(|p| p.id == "full").expect("full entry");
         assert_eq!(full.model.as_deref(), Some("claude-opus-4-5"));
         let prompts = full.system_prompt.as_deref().expect("system_prompt set");
@@ -594,7 +594,7 @@ id = "bare"
 agent = "claude-code"
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let bare = cfg.profiles.iter().find(|p| p.id == "bare").expect("bare entry");
         assert!(bare.command.is_none(), "command must default to None when absent");
         assert!(bare.args.is_none(), "args must default to None when absent");
@@ -619,7 +619,7 @@ agent = "claude-code"
 args = ["--flag", ""]
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let err = cfg.validate().expect_err("empty-string arg must reject");
         assert!(err.to_string().contains("args"), "{err}");
     }
@@ -637,7 +637,7 @@ agent = "claude-code"
 command = ""
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let err = cfg.validate().expect_err("empty command must reject");
         assert!(err.to_string().contains("command"), "{err}");
     }
@@ -656,7 +656,7 @@ mcps = [
 ]
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let work = cfg.profiles.iter().find(|p| p.id == "work").expect("work entry");
         let mcps = work.mcps.as_deref().expect("set");
         assert_eq!(mcps.len(), 2);
@@ -678,7 +678,7 @@ agent = "claude-code"
 mcps = []
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let minimal = cfg.profiles.iter().find(|p| p.id == "minimal").expect("minimal");
         assert_eq!(
             minimal.mcps,
@@ -700,7 +700,7 @@ agent = "claude-code"
 mcps = [{ file = "/etc/hyprpilot/x.json", ignore = ["[unterminated"] }]
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         assert!(err.to_string().contains("not a valid glob"), "{err}");
         fs::remove_file(&p).ok();
@@ -722,7 +722,7 @@ skills.dirs = [
 ]
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let team = cfg.profiles.iter().find(|p| p.id == "team").expect("team entry");
         let mcp_block = team.mcp.as_ref().expect("[profiles.mcp] parsed");
         let skills = mcp_block.skills.as_ref().and_then(|s| s.dirs.as_deref()).expect("set");
@@ -747,7 +747,7 @@ agent = "claude-code"
 skills.dirs = [{ dir = "~/x", ignore = ["[unterminated"] }]
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let err = cfg.validate().expect_err("should reject");
         assert!(err.to_string().contains("not a valid glob"), "{err}");
         fs::remove_file(&p).ok();
@@ -768,7 +768,7 @@ agent = "claude-code"
 harness = { enabled = false }
 "#,
         );
-        let cfg = load(Some(&p), None).expect("parses");
+        let cfg = load(Some(&p), &[]).expect("parses");
         let open = cfg.profiles.iter().find(|p| p.id == "open").expect("open");
         let closed = cfg.profiles.iter().find(|p| p.id == "closed").expect("closed");
 
@@ -800,7 +800,7 @@ agent = "claude-code"
 skills.dirs = []
 "#,
         );
-        let cfg = load(Some(&p), None).expect("load");
+        let cfg = load(Some(&p), &[]).expect("load");
         let deny = cfg.profiles.iter().find(|p| p.id == "deny").expect("deny entry");
         let mcp_block = deny.mcp.as_ref().expect("[profiles.mcp] block present");
         assert_eq!(mcp_block.skills.as_ref().and_then(|s| s.dirs.as_deref()), Some(&[][..]));
@@ -827,7 +827,7 @@ id = "my-profile"
 agent = "claude-code"
 "#,
         );
-        let cfg = load(Some(&p), None).expect("load");
+        let cfg = load(Some(&p), &[]).expect("load");
 
         let ids: Vec<&str> = cfg.profiles.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(

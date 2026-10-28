@@ -37,30 +37,24 @@ pub const META_KEY_SKILL: &str = "io.hyprpilot/skill";
 /// that failed to parse and fell back to `Null` per
 /// `loader.rs::split_frontmatter`) converts to an empty object.
 ///
-/// A conversion failure — frontmatter that parsed as YAML but isn't
-/// map-shaped at the top level, or a mapping key JSON can't represent
-/// (JSON object keys must be strings; YAML mapping keys don't have to
-/// be) — logs a warning and returns an empty object. This mirrors the
-/// loader's own bad-frontmatter policy: never fail the request over a
-/// malformed frontmatter block, just treat it as absent.
+/// `None`, with a warning, when the frontmatter has no JSON form: it
+/// parsed as YAML but is not map-shaped at the top level, or a mapping
+/// key JSON can't represent (JSON object keys must be strings; YAML
+/// mapping keys don't have to be). An empty object would be a lie
+/// there — SEP-2640 lists the frontmatter verbatim, and a host compares
+/// it against the file it reads.
 #[must_use]
-pub fn frontmatter_json(frontmatter: &yaml_serde::Value) -> Map<String, Value> {
+pub fn frontmatter_json(frontmatter: &yaml_serde::Value) -> Option<Map<String, Value>> {
     match serde_json::to_value(frontmatter) {
-        Ok(Value::Object(map)) => map,
-        Ok(Value::Null) => Map::new(),
+        Ok(Value::Object(map)) => Some(map),
+        Ok(Value::Null) => Some(Map::new()),
         Ok(other) => {
-            tracing::warn!(
-                value = %other,
-                "mcp::skills::wire_metadata: frontmatter is not map-shaped — treating as empty"
-            );
-            Map::new()
+            tracing::warn!(value = %other, "mcp::skills::wire_metadata: frontmatter is not map-shaped");
+            None
         }
         Err(err) => {
-            tracing::warn!(
-                %err,
-                "mcp::skills::wire_metadata: frontmatter -> JSON conversion failed — treating as empty"
-            );
-            Map::new()
+            tracing::warn!(%err, "mcp::skills::wire_metadata: frontmatter -> JSON conversion failed");
+            None
         }
     }
 }
@@ -125,7 +119,7 @@ metadata:
         )
         .unwrap();
 
-        let json = frontmatter_json(&value);
+        let json = frontmatter_json(&value).unwrap();
 
         assert_eq!(json.get("name").and_then(Value::as_str), Some("plan-hard"));
         assert_eq!(
@@ -141,7 +135,7 @@ metadata:
 
     #[test]
     fn frontmatter_json_null_becomes_empty_object() {
-        assert_eq!(frontmatter_json(&yaml_serde::Value::Null), Map::new());
+        assert_eq!(frontmatter_json(&yaml_serde::Value::Null), Some(Map::new()));
     }
 
     #[test]
@@ -158,7 +152,7 @@ x-vendor-extension:
         )
         .unwrap();
 
-        let json = frontmatter_json(&value);
+        let json = frontmatter_json(&value).unwrap();
 
         let ext = json.get("x-vendor-extension").and_then(Value::as_object).unwrap();
         assert_eq!(
@@ -184,7 +178,7 @@ x-vendor-extension:
 "#,
         )
         .unwrap();
-        let block = skill_block(&frontmatter_json(&value), Path::new("/tmp/plan-hard/SKILL.md"));
+        let block = skill_block(&frontmatter_json(&value).unwrap(), Path::new("/tmp/plan-hard/SKILL.md"));
 
         // Spec-duplicated keys are gone.
         assert!(!block.contains_key("title"));
@@ -209,7 +203,7 @@ x-vendor-extension:
     #[test]
     fn skill_meta_has_single_namespaced_key_without_frontmatter_key() {
         let block = skill_block(
-            &frontmatter_json(&yaml_serde::from_str("name: plan-hard\n").unwrap()),
+            &frontmatter_json(&yaml_serde::from_str("name: plan-hard\n").unwrap()).unwrap(),
             Path::new("/tmp/plan-hard/SKILL.md"),
         );
         let meta = skill_meta(&block);
@@ -242,7 +236,10 @@ references:
         )
         .unwrap();
 
-        let block = skill_block(&frontmatter_json(&value), Path::new("/tmp/git-commit/SKILL.md"));
+        let block = skill_block(
+            &frontmatter_json(&value).unwrap(),
+            Path::new("/tmp/git-commit/SKILL.md"),
+        );
 
         assert!(!block.contains_key("references"));
         let rendered = serde_json::to_string(&block).unwrap();
@@ -270,7 +267,7 @@ references:
     }
 
     #[test]
-    fn frontmatter_json_conversion_failure_falls_back_to_empty() {
+    fn frontmatter_json_conversion_failure_has_no_object() {
         // JSON object keys must be strings; a YAML mapping key that is
         // itself a sequence has no JSON representation.
         let mut mapping = yaml_serde::Mapping::new();
@@ -278,6 +275,6 @@ references:
         mapping.insert(bad_key, yaml_serde::Value::from("x"));
         let value = yaml_serde::Value::Mapping(mapping);
 
-        assert_eq!(frontmatter_json(&value), Map::new());
+        assert_eq!(frontmatter_json(&value), None);
     }
 }

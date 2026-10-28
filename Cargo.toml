@@ -48,7 +48,7 @@ serde_json = "1"
 yaml_serde = "0.10"
 shellexpand = "3"
 thiserror = "2"
-tokio = { version = "1.53", features = ["full"] }
+tokio = { version = "1.54", features = ["full"] }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "tracing-log"] }
@@ -59,7 +59,7 @@ merge = { version = "0.2.0", features = ["derive"] }
 # Skills MCP server. `transport-io` adds the stdio transport on top of the
 # default `server` + `macros` + `base64`. Used by `hyprpilot mcp serve`.
 # The `http` feature adds `transport-streamable-http-server` on top.
-rmcp = { version = "3", features = ["transport-io"] }
+rmcp = { version = "3.8", features = ["transport-io"] }
 # `--transport http` only. rmcp ships the protocol half as a
 # `tower_service::Service` and binds no socket of its own - every
 # `TcpListener` in its source is test code and its only axum dependency
@@ -109,11 +109,17 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 # Skill discovery and bundle walks. ripgrep's walker, so hidden entries
 # and `.gitignore`d trees (a script's `.venv`, `__pycache__`) never become
 # skills or served files without a second, hand-rolled filter.
-ignore = "0.4.33"
+ignore = "0.4.34"
 # SEP-2640 resource digests (`sha256:<hex>`), which a host verifies every
 # served skill file against.
-sha2 = "0.11.0"
+sha2 = "0.11.1"
+# Shell completion. `unstable-dynamic` is the engine that calls the
+# binary back per `<Tab>`: profile ids depend on the config overlays on
+# the line being completed, which a script generated ahead of time
+# cannot know.
+# Pinned: `unstable-dynamic` is outside semver and `completion::Zsh` rewrites its template.
+clap_complete = { version = "=4.6.11", features = ["unstable-dynamic"] }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1.53", features = ["full", "test-util"] }
+tokio = { version = "1.54", features = ["full", "test-util"] }

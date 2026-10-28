@@ -7,7 +7,7 @@
     "format": "pnpm -r --parallel --if-present run format",
     "lint": "pnpm -r --parallel --if-present run lint"
   },
-  "packageManager": "pnpm@10.33.2",
+  "packageManager": "pnpm@12.15.0",
   "engines": {
     "node": ">=24.0.0"
   }

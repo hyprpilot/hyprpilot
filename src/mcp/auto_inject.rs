@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::McpConfig;
+use crate::mcp::server::ConfigSource;
 use crate::mcp::skills::prompts::PromptSources;
 use crate::mcp::skills::SkillsRegistry;
 use crate::mcp::{HyprpilotExtension, MCPDefinition};
@@ -146,7 +147,12 @@ pub fn build_passthrough_definition(cfg: &McpConfig, source: PathBuf) -> Option<
 /// Then the captain's `enabled`, which is deliberately off by default —
 /// see [`HarnessServerConfig`].
 #[must_use]
-pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf, spawn_depth: usize) -> Option<MCPDefinition> {
+pub fn build_harness_definition(
+    cfg: &McpConfig,
+    source: PathBuf,
+    spawn_depth: usize,
+    config: &ConfigSource,
+) -> Option<MCPDefinition> {
     let harness = cfg.harness.clone().unwrap_or_default();
     if !harness.is_enabled() {
         return None;
@@ -165,6 +171,10 @@ pub fn build_harness_definition(cfg: &McpConfig, source: PathBuf, spawn_depth: u
     }
     let exe = std::env::current_exe().ok()?;
     let mut args = vec!["mcp".to_string(), "harness".to_string()];
+    // The one sidecar that loads config: `list_profiles` and `spawn`
+    // must see the overlays this launch resolved, not whatever the
+    // vendor's environment would select.
+    args.extend(config.args());
     args.push("--max-sessions".to_string());
     args.push(harness.max_sessions().to_string());
     args.push("--max-live-sessions".to_string());
@@ -528,7 +538,7 @@ mod tests {
     /// get an entry for it.
     #[test]
     fn harness_is_not_injected_by_default() {
-        assert!(build_harness_definition(&default_cfg(), PathBuf::from("<test>"), 0).is_none());
+        assert!(harness_def(&default_cfg(), 0).is_none());
     }
 
     #[test]
@@ -540,7 +550,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0).expect("enabled harness injects");
+        let def = harness_def(&cfg, 0).expect("enabled harness injects");
         assert_eq!(def.name, crate::config::mcp::DEFAULT_HARNESS_SERVER_NAME);
     }
 
@@ -557,7 +567,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0).expect("injects");
+        let def = harness_def(&cfg, 0).expect("injects");
         assert_eq!(def.hyprpilot.auto_accept_tools, vec!["*".to_string()]);
     }
 
@@ -572,7 +582,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0).expect("injects");
+        let def = harness_def(&cfg, 0).expect("injects");
         let args = def.raw["args"].as_array().expect("args");
         assert!(
             !args.iter().any(|a| a == "--no-notify-on-complete"),
@@ -593,13 +603,59 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0).expect("injects");
+        let def = harness_def(&cfg, 0).expect("injects");
         let args = def.raw["args"].as_array().expect("args");
         assert!(args.iter().any(|a| a == "--no-notify-on-complete"), "got: {args:?}");
     }
 
+    /// The sidecar must resolve the layers the launcher did, whatever
+    /// its inherited environment says — so the selection rides argv and
+    /// parses back through the real CLI to the same path and order.
+    #[test]
+    fn the_config_selection_rides_the_harness_argv() {
+        let cfg = McpConfig {
+            harness: Some(HarnessServerConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..McpConfig::default()
+        };
+        let selection = ConfigSource {
+            path: Some(PathBuf::from("/etc/hyprpilot/config.yaml")),
+            profiles: vec!["personal".into(), "work".into()],
+        };
+        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0, &selection).expect("injects");
+        let argv: Vec<&str> = std::iter::once("hyprpilot")
+            .chain(
+                def.raw["args"]
+                    .as_array()
+                    .expect("args")
+                    .iter()
+                    .filter_map(|a| a.as_str()),
+            )
+            .collect();
+
+        let parsed = <crate::Cli as clap::Parser>::try_parse_from(&argv).expect("the sidecar argv parses");
+        assert_eq!(parsed.config, selection.path);
+        assert_eq!(parsed.config_profiles, selection.profiles);
+
+        let bare = harness_def(&cfg, 0).expect("injects");
+        assert!(
+            !bare.raw["args"]
+                .as_array()
+                .expect("args")
+                .iter()
+                .any(|a| a.as_str().is_some_and(|a| a.starts_with("--config"))),
+            "no selection, no flags: the sidecar resolves the same XDG default"
+        );
+    }
+
+    fn harness_def(cfg: &McpConfig, spawn_depth: usize) -> Option<MCPDefinition> {
+        build_harness_definition(cfg, PathBuf::from("<test>"), spawn_depth, &ConfigSource::default())
+    }
+
     fn harness_args(cfg: &McpConfig) -> Vec<String> {
-        let def = build_harness_definition(cfg, PathBuf::from("<test>"), 0).expect("injects");
+        let def = harness_def(cfg, 0).expect("injects");
         def.raw["args"]
             .as_array()
             .expect("args")
@@ -679,7 +735,7 @@ mod tests {
     /// candidate list a separate question.
     #[test]
     fn an_empty_scope_still_injects_the_server() {
-        assert!(build_harness_definition(&scoped(Some(vec![]), None), PathBuf::from("<test>"), 0).is_some());
+        assert!(harness_def(&scoped(Some(vec![]), None), 0).is_some());
     }
 
     #[test]
@@ -711,7 +767,7 @@ mod tests {
             }),
             ..McpConfig::default()
         };
-        let def = build_harness_definition(&cfg, PathBuf::from("<test>"), 0).expect("injects");
+        let def = harness_def(&cfg, 0).expect("injects");
         assert_eq!(
             def.hyprpilot.auto_accept_tools,
             vec!["list_profiles".to_string()],
@@ -733,9 +789,9 @@ mod tests {
             ..McpConfig::default()
         };
 
-        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 0).is_some());
+        assert!(harness_def(&cfg, 0).is_some());
         assert!(
-            build_harness_definition(&cfg, PathBuf::from("<test>"), 1).is_none(),
+            harness_def(&cfg, 1).is_none(),
             "a session at the default maxDepth of 1 must get no harness"
         );
     }
@@ -754,8 +810,8 @@ mod tests {
             ..McpConfig::default()
         };
 
-        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 1).is_some());
-        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 2).is_none());
+        assert!(harness_def(&cfg, 1).is_some());
+        assert!(harness_def(&cfg, 2).is_none());
     }
 
     /// The sidecar enforces the same cap on `spawn` that this function
@@ -876,7 +932,7 @@ mod tests {
             ..McpConfig::default()
         };
         assert!(build_tools_definition(&cfg, PathBuf::from("<test>")).is_none());
-        assert!(build_harness_definition(&cfg, PathBuf::from("<test>"), 0).is_some());
+        assert!(harness_def(&cfg, 0).is_some());
     }
 
     #[test]

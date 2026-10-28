@@ -105,7 +105,7 @@ fn entry_for(path: &Path) -> ReferenceEntry {
         path: std::fs::canonicalize(path).ok().map(|p| p.display().to_string()),
         name: resolve_name(&frontmatter, path),
         stat,
-        metadata: frontmatter_json(&frontmatter),
+        metadata: frontmatter_json(&frontmatter).unwrap_or_default(),
         missing,
         body,
     }

@@ -145,6 +145,17 @@ pub(crate) fn build_command(
     }
 }
 
+/// The `mode` values a provider's projection knows, for completion.
+/// Empty where the set is not ours to list: claude passes `mode`
+/// through to `--permission-mode` verbatim, and an opencode mode names
+/// one of the captain's own agents.
+pub(crate) fn known_modes(provider: AgentProvider) -> Vec<&'static str> {
+    match provider {
+        AgentProvider::Codex => codex::known_modes(),
+        AgentProvider::ClaudeCode | AgentProvider::OpenCode => Vec::new(),
+    }
+}
+
 /// Test shim for the CLI-shaped call — `build_command` with no harness
 /// projection. Keeps the vendor projection tests asserting what they
 /// actually care about (argv shape) instead of restating `None` for a
