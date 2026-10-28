@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.0](https://github.com/hyprpilot/hyprpilot/compare/v4.0.2...v4.1.0) (2026-10-28)
+
+
+### Features
+
+* stacked config overlays, harness config propagation, shell completion, skills extension conformance ([#278](https://github.com/hyprpilot/hyprpilot/issues/278)) ([8a4f7d5](https://github.com/hyprpilot/hyprpilot/commit/8a4f7d55c0c6a95f948a234506d4ec17691c696a))
+
 ## [4.0.2](https://github.com/hyprpilot/hyprpilot/compare/v4.0.1...v4.0.2) (2026-10-26)
 
 
