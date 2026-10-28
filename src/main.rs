@@ -30,12 +30,10 @@ struct Cli {
 
     /// Config-layer overlay to fold after the root config. Repeatable.
     ///
-    /// Resolved to
-    /// `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.{toml,json,yaml,yml}`.
+    /// Resolved to `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.<ext>`.
     /// Overlays fold in the given order, so a later one wins by id. The
     /// env var takes a comma-separated list. Distinct from the session
-    /// `[[profiles]]` registry driving agent + system-prompt overlays —
-    /// session profiles are addressed per call via the positional
+    /// `[[profiles]]` registry, addressed per call via the positional
     /// `[PROFILE]` argument.
     #[arg(
         long = "config-profile",
@@ -74,56 +72,59 @@ enum Command {
     Completion(completion::CompletionArgs),
 }
 
+impl Cli {
+    /// Load the config QUIETLY (before any subscriber is installed) so
+    /// its `[logging] level` can feed the one-and-only tracing filter —
+    /// no early-init/late-reload dance. `init` then installs the
+    /// subscriber once with the fully-resolved level, and the
+    /// "config: loaded" line is emitted AFTER, so it honours that level
+    /// (e.g. `--log-level error` / `[logging] level = "error"` suppress
+    /// it along with every other info line).
+    fn load_config(&self) -> Result<config::Config> {
+        let cfg = config::load(self.config.as_deref(), &self.config_profiles)?;
+        logging::init(self.log_level, cfg.logging.level)?;
+        tracing::info!(
+            config = ?self.config,
+            config_profiles = ?self.config_profiles,
+            agents = cfg.agents.agents.len(),
+            profiles = cfg.profiles.len(),
+            default_profile = ?cfg.profile.default,
+            "config: loaded"
+        );
+
+        Ok(cfg)
+    }
+
+    /// The layer selection, for the sidecars this launch injects.
+    /// Absolute, because the injected harness re-reads it from the
+    /// launch's `--cwd`, not from here.
+    fn config_source(&self) -> Result<mcp::server::ConfigSource> {
+        Ok(mcp::server::ConfigSource {
+            path: self
+                .config
+                .as_deref()
+                .map(|path| path.absolutize().map(|p| p.into_owned()))
+                .transpose()?,
+            profiles: self.config_profiles.clone(),
+        })
+    }
+}
+
 fn main() -> Result<ExitCode> {
     CompleteEnv::with_factory(Cli::command)
         .var(completion::VAR)
         .shells(completion::SHELLS)
         .complete();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
-    // Before the config loads: printing the script must not depend on
-    // a valid config.
-    if let Some(Command::Completion(args)) = &cli.command {
-        cli.launch.reject_launch_only_args("completion", false)?;
-        completion::run(args)?;
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    // Load the config QUIETLY (before any subscriber is installed) so
-    // its `[logging] level` can feed the one-and-only tracing filter —
-    // no early-init/late-reload dance. `init` then installs the
-    // subscriber once with the fully-resolved level, and the
-    // "config: loaded" line is emitted AFTER, so it honours that level
-    // (e.g. `--log-level error` / `[logging] level = "error"` suppress
-    // it along with every other info line).
-    let cfg = config::load(cli.config.as_deref(), &cli.config_profiles)?;
-    logging::init(cli.log_level, cfg.logging.level)?;
-    tracing::info!(
-        config = ?cli.config,
-        config_profiles = ?cli.config_profiles,
-        agents = cfg.agents.agents.len(),
-        profiles = cfg.profiles.len(),
-        default_profile = ?cfg.profile.default,
-        "config: loaded"
-    );
-
-    // Absolute, because the injected harness re-reads it from the
-    // launch's `--cwd`, not from here.
-    let source = mcp::server::ConfigSource {
-        path: cli
-            .config
-            .as_deref()
-            .map(|path| path.absolutize().map(|p| p.into_owned()))
-            .transpose()?,
-        profiles: cli.config_profiles.clone(),
-    };
-
-    match cli.command {
+    match cli.command.take() {
         // Bare `hyprpilot [PROFILE]` IS the launch: pick the profile
         // interactively when none is given, then exec into the
         // resolved vendor CLI.
         None => {
+            let cfg = cli.load_config()?;
             cfg.validate()?;
+            let source = cli.config_source()?;
             spawn::run(cfg, cli.launch, source)
         }
         Some(Command::Profiles(args)) => {
@@ -134,6 +135,7 @@ fn main() -> Result<ExitCode> {
             // listing honors — the table reflects the same overlay a
             // launch would fold.
             cli.launch.reject_launch_only_args("profiles", true)?;
+            let cfg = cli.load_config()?;
             cfg.validate()?;
             let patches = cli.launch.into_config_patches()?;
             profiles::run(cfg, patches, args)
@@ -153,10 +155,16 @@ fn main() -> Result<ExitCode> {
             // report a failure as a tool error, preserving the
             // "invalid config must not kill the skills sidecar"
             // invariant above.
+            cli.load_config()?;
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(args.run(source))?;
+            runtime.block_on(args.run(cli.config_source()?))?;
             Ok(ExitCode::SUCCESS)
         }
-        Some(Command::Completion(_)) => unreachable!("`completion` returns before the config loads"),
+        // Printing the script must not depend on a valid config.
+        Some(Command::Completion(args)) => {
+            cli.launch.reject_launch_only_args("completion", false)?;
+            completion::run(&args)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
