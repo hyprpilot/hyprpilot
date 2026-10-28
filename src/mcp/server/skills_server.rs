@@ -883,17 +883,40 @@ fn build_cache(scan: Scan) -> SkillsCache {
             );
             continue;
         }
-        let refs = frontmatter_references(&skill.frontmatter);
-        let frontmatter = frontmatter_json(&skill.frontmatter);
+        // Everything the entry says about the skill comes from the
+        // `SKILL.md` bytes this scan serves and hashed. The loader read
+        // the file on its own, and an edit between the two reads would
+        // otherwise list frontmatter a host's re-parse of the served
+        // file contradicts.
+        let Some(text) = files.iter().find(|f| f.rel == "SKILL.md").and_then(BundleFile::text) else {
+            tracing::warn!(
+                slug,
+                "mcp::server: SKILL.md vanished or is not UTF-8 — skill not served"
+            );
+            continue;
+        };
+        let (yaml, body) = crate::mcp::skills::split_frontmatter(text);
+        let Some(frontmatter) = frontmatter_json(&yaml) else {
+            tracing::warn!(slug, "mcp::server: frontmatter has no JSON form — skill not served");
+            continue;
+        };
+        if frontmatter.get("name").and_then(serde_json::Value::as_str) != Some(skill.slug.name()) {
+            tracing::warn!(
+                slug,
+                "mcp::server: SKILL.md `name` changed since the scan — skill not served"
+            );
+            continue;
+        }
+        let refs = frontmatter_references(&yaml);
         // The single merged block, built ONCE per skill here — not per
         // request.
         let meta_block = skill_block(&frontmatter, &skill.path);
         // Title falls back to the frontmatter `name`, then the slug.
-        let title = if skill.title.trim().is_empty() {
-            frontmatter_string(&skill.frontmatter, "name").unwrap_or_else(|| slug.clone())
-        } else {
-            skill.title.clone()
-        };
+        let title = frontmatter_string(&yaml, "title")
+            .or_else(|| frontmatter_string(&yaml, "name"))
+            .unwrap_or_else(|| slug.clone());
+        let description = frontmatter_string(&yaml, "description").unwrap_or_default();
+        let body = body.trim().to_owned();
         if let Some(dir) = skill.path.parent() {
             for path in wire_references::declared_paths(dir, &refs) {
                 cache
@@ -917,10 +940,10 @@ fn build_cache(scan: Scan) -> SkillsCache {
                 slug,
                 path: skill.path,
                 title,
-                description: skill.description,
+                description,
                 frontmatter,
                 meta_block,
-                body: skill.body,
+                body,
                 refs,
                 files,
             },
@@ -1984,9 +2007,21 @@ mod tests {
         file
     }
 
+    /// Each skill with the `SKILL.md` its frontmatter and body make —
+    /// the bytes `build_cache` reads them back from.
     fn scan_of(skills: Vec<crate::mcp::skills::Skill>) -> Scan {
         Scan {
-            skills: skills.into_iter().map(|skill| (skill, Vec::new())).collect(),
+            skills: skills
+                .into_iter()
+                .map(|skill| {
+                    let text = format!(
+                        "---\n{}---\n\n{}\n",
+                        yaml_serde::to_string(&skill.frontmatter).unwrap(),
+                        skill.body
+                    );
+                    (skill, vec![bundle_file("SKILL.md", &text)])
+                })
+                .collect(),
             prompts: Vec::new(),
         }
     }
@@ -1996,8 +2031,8 @@ mod tests {
         let path = PathBuf::from(path);
         LoadedSkill {
             slug: slug.to_string(),
-            meta_block: skill_block(&frontmatter_json(&frontmatter), &path),
-            frontmatter: frontmatter_json(&frontmatter),
+            meta_block: skill_block(&frontmatter_json(&frontmatter).unwrap(), &path),
+            frontmatter: frontmatter_json(&frontmatter).unwrap(),
             path,
             title: title.to_string(),
             description: description.to_string(),
@@ -2304,12 +2339,7 @@ mod tests {
                 path,
                 title: slug.to_string(),
                 description: "d".into(),
-                frontmatter: yaml_serde::from_str(
-                    "references:
-  - ../shared.md
-",
-                )
-                .unwrap(),
+                frontmatter: yaml_serde::from_str(&format!("name: {slug}\nreferences:\n  - ../shared.md\n")).unwrap(),
                 body: "body".into(),
             });
         }
@@ -2346,11 +2376,11 @@ mod tests {
         let mut before = cache_of(&[("alpha", "same")]);
         let mut after = cache_of(&[("alpha", "same")]);
         before.skills.get_mut("alpha").unwrap().meta_block = skill_block(
-            &frontmatter_json(&yaml_serde::from_str("name: old\n").unwrap()),
+            &frontmatter_json(&yaml_serde::from_str("name: old\n").unwrap()).unwrap(),
             std::path::Path::new("/tmp/a"),
         );
         after.skills.get_mut("alpha").unwrap().meta_block = skill_block(
-            &frontmatter_json(&yaml_serde::from_str("name: new\n").unwrap()),
+            &frontmatter_json(&yaml_serde::from_str("name: new\n").unwrap()).unwrap(),
             std::path::Path::new("/tmp/a"),
         );
 
@@ -2403,8 +2433,17 @@ mod tests {
         };
         let cache = build_cache(Scan {
             skills: vec![
-                (skill("team"), vec![bundle_file("review/SKILL.md", "outer copy")]),
-                (skill("team/review"), vec![bundle_file("SKILL.md", "another file")]),
+                (
+                    skill("team"),
+                    vec![
+                        bundle_file("SKILL.md", "---\nname: team\n---\nbody\n"),
+                        bundle_file("review/SKILL.md", "outer copy"),
+                    ],
+                ),
+                (
+                    skill("team/review"),
+                    vec![bundle_file("SKILL.md", "---\nname: review\n---\nanother file\n")],
+                ),
             ],
             prompts: Vec::new(),
         });
@@ -2413,9 +2452,47 @@ mod tests {
         assert_eq!(cache.file("team/review/SKILL.md").unwrap().text(), Some("outer copy"));
     }
 
+    /// The entry describes the bytes a host reads and hashes, not the
+    /// loader's earlier read of the same file; frontmatter with no JSON
+    /// form is not served as `{}`.
+    #[test]
+    fn the_entry_frontmatter_comes_from_the_served_skill_md() {
+        let skill = |slug: &str| crate::mcp::skills::Skill {
+            slug: crate::mcp::skills::SkillSlug::parse(slug).unwrap(),
+            title: String::new(),
+            description: "as the loader read it".into(),
+            body: "body".into(),
+            path: PathBuf::from(format!("/tmp/{slug}/SKILL.md")),
+            frontmatter: yaml_serde::from_str(&format!("name: {slug}\ndescription: as the loader read it\n")).unwrap(),
+        };
+        let cache = build_cache(Scan {
+            skills: vec![
+                (
+                    skill("edited"),
+                    vec![bundle_file(
+                        "SKILL.md",
+                        "---\nname: edited\ndescription: as served\n---\nbody\n",
+                    )],
+                ),
+                (
+                    skill("unmappable"),
+                    vec![bundle_file(
+                        "SKILL.md",
+                        "---\nname: unmappable\n? [1]\n: x\n---\nbody\n",
+                    )],
+                ),
+            ],
+            prompts: Vec::new(),
+        });
+
+        assert_eq!(cache.order, ["edited"]);
+        assert_eq!(cache.skills["edited"].frontmatter["description"], "as served");
+        assert_eq!(cache.skills["edited"].description, "as served");
+    }
+
     #[test]
     fn build_cache_falls_back_to_frontmatter_name_for_title() {
-        let frontmatter: yaml_serde::Value = yaml_serde::from_str("name: myskill\n").unwrap();
+        let frontmatter: yaml_serde::Value = yaml_serde::from_str("name: myskill\ndescription: desc\n").unwrap();
         let skill = crate::mcp::skills::Skill {
             slug: crate::mcp::skills::SkillSlug::parse("myskill").unwrap(),
             title: String::new(),

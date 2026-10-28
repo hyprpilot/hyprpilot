@@ -15,6 +15,7 @@
 //! serve before injecting it.
 
 mod loader;
+pub(crate) use loader::split_frontmatter;
 pub mod prompts;
 /// Wire-shape projection for the MCP skills server — kept beside the
 /// loader because it reads the frontmatter the loader parsed, and
