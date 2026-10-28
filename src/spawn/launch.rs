@@ -135,7 +135,7 @@ impl LaunchArgs {
     }
 }
 
-pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
+pub fn run(cfg: Config, args: LaunchArgs, config: crate::mcp::server::ConfigSource) -> Result<ExitCode> {
     // Resolve the explicit `--prompt` / `--file` override BEFORE
     // `into_patches()` moves `args.with_config`.
     let prompt = args.prompt_override()?;
@@ -171,6 +171,7 @@ pub fn run(cfg: Config, args: LaunchArgs) -> Result<ExitCode> {
             // No launching harness on this path to speak for delegates.
             mcp_overlay: None,
             resume,
+            config,
         },
     )
 }

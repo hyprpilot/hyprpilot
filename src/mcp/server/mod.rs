@@ -117,6 +117,19 @@ impl ConfigSource {
 
         Ok(cfg)
     }
+
+    /// The selection as `hyprpilot` argv, for a sidecar the vendor
+    /// spawns. Explicit rather than inherited: a vendor may filter the
+    /// environment it hands an MCP server (codex does), and an inherited
+    /// `HYPRPILOT_CONFIG_PROFILE` can name a different overlay than the
+    /// flags this launch was given.
+    pub fn args(&self) -> Vec<String> {
+        self.path
+            .iter()
+            .map(|path| format!("--config={}", path.display()))
+            .chain(self.profiles.iter().map(|name| format!("--config-profile={name}")))
+            .collect()
+    }
 }
 
 impl McpArgs {

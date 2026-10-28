@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use path_absolutize::Absolutize;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -85,13 +86,24 @@ fn main() -> Result<ExitCode> {
         "config: loaded"
     );
 
+    // Absolute, because the injected harness re-reads it from the
+    // launch's `--cwd`, not from here.
+    let source = mcp::server::ConfigSource {
+        path: cli
+            .config
+            .as_deref()
+            .map(|path| path.absolutize().map(|p| p.into_owned()))
+            .transpose()?,
+        profiles: cli.config_profiles.clone(),
+    };
+
     match cli.command {
         // Bare `hyprpilot [PROFILE]` IS the launch: pick the profile
         // interactively when none is given, then exec into the
         // resolved vendor CLI.
         None => {
             cfg.validate()?;
-            spawn::run(cfg, cli.launch)
+            spawn::run(cfg, cli.launch, source)
         }
         Some(Command::Profiles(args)) => {
             // A subcommand is not a launch: launch-only args (positional
@@ -120,10 +132,6 @@ fn main() -> Result<ExitCode> {
             // report a failure as a tool error, preserving the
             // "invalid config must not kill the skills sidecar"
             // invariant above.
-            let source = mcp::server::ConfigSource {
-                path: cli.config.clone(),
-                profiles: cli.config_profiles.clone(),
-            };
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(args.run(source))?;
             Ok(ExitCode::SUCCESS)

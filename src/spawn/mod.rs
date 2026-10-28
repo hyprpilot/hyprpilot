@@ -51,6 +51,10 @@ pub(crate) struct SpawnRequest {
     /// Which conversation to continue, if any. Vendor-neutral — the
     /// builders own the per-CLI spelling.
     pub resume: Option<providers::Resume>,
+    /// The `--config` / `--config-profile` selection `cfg` was loaded
+    /// from, handed on to the injected harness so it reads the same
+    /// layers.
+    pub config: crate::mcp::server::ConfigSource,
 }
 
 /// Which front end is driving a launch. Closed set — the two differ in
@@ -107,6 +111,7 @@ pub(crate) fn prepare(
         spawn_depth,
         mcp_overlay,
         resume,
+        config,
     } = request;
 
     // A harness launch has no real stdin to inspect: claiming "TTY" is
@@ -214,7 +219,7 @@ pub(crate) fn prepare(
     }
 
     let skills = build_skills_registry_with(&profile);
-    let mcp_defs = build_mcp_registry_with(&profile, Some(&skills), spawn_depth);
+    let mcp_defs = build_mcp_registry_with(&profile, Some(&skills), spawn_depth, &config);
 
     let provider = resolved.agent.provider;
     let model = resolved.model.clone();
@@ -543,6 +548,7 @@ mod tests {
                 spawn_depth,
                 mcp_overlay,
                 resume: None,
+                config: Default::default(),
             },
             LaunchOrigin::Harness,
             None,
@@ -569,6 +575,7 @@ mod tests {
                 spawn_depth: 0,
                 mcp_overlay: None,
                 resume: Some(providers::Resume::Picker),
+                config: Default::default(),
             },
             LaunchOrigin::Harness,
             None,
@@ -599,6 +606,54 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    /// The harness builds a delegate's launch through `prepare` with its
+    /// own selection, so the delegate's harness must carry it on too —
+    /// otherwise the second hop falls back to the vendor's environment.
+    #[test]
+    fn prepare_hands_the_config_selection_to_the_injected_harness() {
+        let config = crate::mcp::server::ConfigSource {
+            path: Some(PathBuf::from("/etc/hyprpilot/config.yaml")),
+            profiles: vec!["personal".into(), "work".into()],
+        };
+        let prepared = prepare(
+            &cfg_with_harness_on_every_profile(),
+            SpawnRequest {
+                profile_id: Some("engineer".into()),
+                prompt: Some("hi".into()),
+                cwd: None,
+                mode: None,
+                config_patches: Vec::new(),
+                provider_args: Vec::new(),
+                stdin_consumed: true,
+                spawn_depth: 0,
+                mcp_overlay: None,
+                resume: None,
+                config: config.clone(),
+            },
+            LaunchOrigin::Harness,
+            None,
+        )
+        .expect("the fixture prepares");
+        let config_path = prepared
+            .command
+            .args
+            .iter()
+            .find(|a| a.ends_with(".json"))
+            .expect("an --mcp-config file");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(config_path).expect("readable")).expect("valid json");
+        let args: Vec<String> = parsed["mcpServers"][crate::config::mcp::DEFAULT_HARNESS_SERVER_NAME]["args"]
+            .as_array()
+            .expect("harness args")
+            .iter()
+            .filter_map(|a| a.as_str().map(str::to_string))
+            .collect();
+
+        for flag in config.args() {
+            assert!(args.contains(&flag), "missing {flag} in {args:?}");
+        }
     }
 
     /// Without the stamp every delegate reports depth 0, and the two

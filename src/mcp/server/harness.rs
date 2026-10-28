@@ -433,6 +433,8 @@ impl Harness {
             // gates the delegate's own harness injection on it.
             spawn_depth: self.depth + 1,
             mcp_overlay: self.delegate_mcp.clone(),
+            // A delegate's own harness reads the layers this one does.
+            config: self.config.clone(),
             resume: resume
                 .as_ref()
                 .map(|target| crate::spawn::providers::Resume::Session(target.resume_token.clone())),
