@@ -113,6 +113,10 @@ ignore = "0.4.34"
 # SEP-2640 resource digests (`sha256:<hex>`), which a host verifies every
 # served skill file against.
 sha2 = "0.11.1"
+# Shell completion. `unstable-dynamic` is the engine that calls the
+# binary back per `<Tab>`: profile ids depend on the config overlays on
+# the line being completed, which a script generated ahead of time
+# cannot know.
 clap_complete = { version = "4.6.11", features = ["unstable-dynamic"] }
 
 [dev-dependencies]

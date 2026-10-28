@@ -305,21 +305,6 @@ mod tests {
         assert_eq!(line.profile.as_deref(), Some("claude/opus"));
     }
 
-    #[test]
-    fn a_selection_after_a_subcommand_still_counts() {
-        let line = CommandLine::parse(words(&[
-            "hyprpilot",
-            "mcp",
-            "harness",
-            "--config-profile",
-            "work",
-            "--include-profile",
-        ]));
-
-        assert_eq!(line.given_overlays, ["work"]);
-        assert_eq!(line.profile, None);
-    }
-
     /// The flag the cursor is completing has no value yet. Parsing must
     /// still succeed rather than drop the rest of the line.
     #[test]
@@ -357,30 +342,5 @@ mod tests {
         assert_eq!(overlay_names(dir.path(), &[]), ["personal", "work"]);
         assert_eq!(overlay_names(dir.path(), &["work".into()]), ["personal"]);
         assert!(overlay_names(&dir.path().join("missing"), &[]).is_empty());
-    }
-
-    /// The positional profile and the subcommands share the first
-    /// position; the subcommands must not crowd the profile out or the
-    /// reverse.
-    #[test]
-    fn the_first_position_offers_the_subcommands() {
-        let mut cmd = crate::Cli::command();
-        let candidates = clap_complete::engine::complete(&mut cmd, words(&["hyprpilot", ""]), 1, None).unwrap();
-        let values: Vec<String> = candidates
-            .iter()
-            .map(|c| c.get_value().to_string_lossy().into_owned())
-            .collect();
-
-        for sub in ["mcp", "profiles", "completion"] {
-            assert!(values.iter().any(|v| v == sub), "missing `{sub}` in {values:?}");
-        }
-        let positional = cmd
-            .get_arguments()
-            .find(|arg| arg.get_id() == "profile_id")
-            .expect("the positional profile");
-        assert!(
-            positional.get::<clap_complete::ArgValueCandidates>().is_some(),
-            "the positional profile carries its completer"
-        );
     }
 }

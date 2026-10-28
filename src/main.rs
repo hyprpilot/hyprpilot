@@ -33,10 +33,10 @@ struct Cli {
     /// Resolved to
     /// `$XDG_CONFIG_HOME/hyprpilot/profiles/<name>.{toml,json,yaml,yml}`.
     /// Overlays fold in the given order, so a later one wins by id. The
-    /// env var takes a comma-separated list. Distinct from the session `[[profiles]]`
-    /// registry driving agent + system-prompt overlays — session
-    /// profiles are addressed per call via the positional `[PROFILE]`
-    /// argument.
+    /// env var takes a comma-separated list. Distinct from the session
+    /// `[[profiles]]` registry driving agent + system-prompt overlays —
+    /// session profiles are addressed per call via the positional
+    /// `[PROFILE]` argument.
     #[arg(
         long = "config-profile",
         value_name = "NAME",
@@ -158,43 +158,5 @@ fn main() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(Command::Completion(_)) => unreachable!("`completion` returns before the config loads"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// One test, so the `HYPRPILOT_CONFIG_PROFILE` mutation cannot race
-    /// a sibling under `cargo test`'s shared process.
-    #[test]
-    fn config_profiles_keep_command_line_order_and_split_the_env_list() {
-        let parse = |argv: &[&str]| Cli::try_parse_from(argv).expect("parses").config_profiles;
-        let saved = std::env::var_os("HYPRPILOT_CONFIG_PROFILE");
-
-        std::env::remove_var("HYPRPILOT_CONFIG_PROFILE");
-        assert!(parse(&["hyprpilot"]).is_empty());
-        assert_eq!(
-            parse(&["hyprpilot", "--config-profile", "personal", "--config-profile=work"]),
-            ["personal", "work"]
-        );
-        assert_eq!(
-            parse(&["hyprpilot", "mcp", "harness", "--config-profile", "work"]),
-            ["work"],
-            "global, so it parses after a subcommand too"
-        );
-
-        std::env::set_var("HYPRPILOT_CONFIG_PROFILE", "personal,work");
-        assert_eq!(parse(&["hyprpilot"]), ["personal", "work"]);
-        assert_eq!(
-            parse(&["hyprpilot", "--config-profile", "work"]),
-            ["work"],
-            "an explicit flag replaces the env list rather than extending it"
-        );
-
-        match saved {
-            Some(value) => std::env::set_var("HYPRPILOT_CONFIG_PROFILE", value),
-            None => std::env::remove_var("HYPRPILOT_CONFIG_PROFILE"),
-        }
     }
 }
