@@ -104,7 +104,7 @@ profiles:
     mode: high
 ```
 
-`AMP_API_KEY` takes precedence over the account `amp login` saved, so two profiles run side by side under different accounts. Forward `--no-tui` to start an Amp runner from a profile — `hyprpilot amp/high -- --no-tui` — and the threads it serves get the profile's env and MCP servers.
+`AMP_API_KEY` takes precedence over the account `amp login` saved, so two profiles run side by side under different accounts. To log in to the account a profile uses, run the vendor's own login through the profile's environment: `hyprpilot run amp/high -- login` (see [Running the bare command](../runtime/launch#running-the-bare-command)). Forward `--no-tui` to start an Amp runner from a profile — `hyprpilot amp/high -- --no-tui` — and the threads it serves get the profile's env and MCP servers.
 
 ## Swapping the agent per launch
 

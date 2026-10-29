@@ -101,6 +101,18 @@ hyprpilot review -- --dangerously-skip-permissions
 
 Any provider-native argument you pass this way suppresses hyprpilot's generated equivalent, so your hand-written flag always wins over the projection.
 
+## Running the bare command
+
+`hyprpilot run` resolves a profile like a launch, patches and overlays included, then runs its command with the profile's environment and **only** the arguments after `--`. Nothing is projected: no model, mode, system prompt, MCP servers or prompt, and not the agent's own `args`. Use it for the vendor's account and maintenance subcommands, which then land in the same config and login folders the profile's launches use:
+
+```sh
+hyprpilot --config-profile work run claude/opus -- setup-token
+hyprpilot --config-profile work run amp/high -- login
+hyprpilot --config-profile personal run codex/gpt-6-luna -- login
+```
+
+Omit the profile to pick one interactively. Launch flags such as `--cwd`, `--mode` and `--with-config` do not apply and are rejected; the profile's configured `cwd` still does.
+
 ## Headless / prompt delivery
 
 Give hyprpilot a prompt and it launches the vendor **non-interactively** — one shot, then exit, like `claude --print`. There are three ways to supply the prompt:
