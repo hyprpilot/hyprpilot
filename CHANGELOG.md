@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.0](https://github.com/hyprpilot/hyprpilot/compare/v4.3.0...v4.4.0) (2026-10-29)
+
+
+### Features
+
+* **cli:** pick the config-layer overlay interactively with --select-config-profile ([#284](https://github.com/hyprpilot/hyprpilot/issues/284)) ([069f6bb](https://github.com/hyprpilot/hyprpilot/commit/069f6bb93df51e017371fb1c45240dfbf1e7deca))
+
 ## [4.3.0](https://github.com/hyprpilot/hyprpilot/compare/v4.2.0...v4.3.0) (2026-10-29)
 
 
