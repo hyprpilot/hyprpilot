@@ -14,7 +14,7 @@ use anyhow::{bail, Context, Result};
 use merge::Merge;
 use serde_json::Value;
 
-pub use launch::{run, LaunchArgs};
+pub use launch::{run, run_bare, LaunchArgs, RunArgs};
 
 use crate::config::Config;
 use crate::resolve::{
@@ -279,6 +279,22 @@ pub(crate) fn launch_profile(cfg: Config, request: SpawnRequest) -> Result<ExitC
     }
 
     providers::exec(command)
+}
+
+/// The resolved profile's command, env and cwd with `args` as its whole
+/// argv: none of the vendor projection and none of the agent's `args`,
+/// which are launch flags a vendor subcommand such as `login` would
+/// reject.
+fn bare_command(cfg: &Config, profile_id: Option<String>, args: Vec<String>) -> Result<providers::SpawnCommand> {
+    let profile_id = match profile_id {
+        Some(id) => id,
+        None => select_profile_without_positional(cfg, std::io::stdin().is_terminal(), false, None, &[])?,
+    };
+    let (resolved, _profile) = resolve_into_instance_and_profile(cfg, Some(profile_id.as_str()), &[])?;
+    let mut command = providers::base_command(&resolved);
+    command.args = args;
+
+    Ok(command)
 }
 
 /// cwd precedence for the launch: explicit `--cwd` flag wins, then
@@ -759,6 +775,28 @@ mod tests {
             resolve_launch_cwd(None, Some(PathBuf::from("/configured"))),
             Some(PathBuf::from("/configured"))
         );
+    }
+
+    #[test]
+    fn bare_command_carries_the_patched_env_and_only_the_given_args() {
+        let mut cfg = cfg_with_profile_cwd();
+        cfg.agents.agents[0].args = vec!["--agent-flag".into()];
+        cfg.profiles[0].model = Some("opus".into());
+        cfg.profiles[0].mode = Some("plan".into());
+        cfg.patches = Some(vec![
+            serde_json::json!({ "$match": { "profile": "engineer" }, "env": { "CLAUDE_CONFIG_DIR": "/accounts/work" } }),
+            serde_json::json!({ "$match": { "profile": "other" }, "env": { "CLAUDE_CONFIG_DIR": "/accounts/personal" } }),
+        ]);
+
+        let command = bare_command(&cfg, Some("engineer".into()), vec!["setup-token".into()]).unwrap();
+
+        assert_eq!(command.program, "claude");
+        assert_eq!(command.args, ["setup-token"]);
+        assert_eq!(
+            command.env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
+            Some("/accounts/work")
+        );
+        assert!(command.stdin_prompt.is_none() && command.temp_config.is_none());
     }
 
     #[test]

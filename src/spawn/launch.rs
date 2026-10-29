@@ -136,6 +136,21 @@ impl LaunchArgs {
     }
 }
 
+/// `hyprpilot run`: a profile's command and environment, nothing else.
+#[derive(Args, Debug)]
+pub struct RunArgs {
+    /// Session profile whose command and environment to use. Omit to pick interactively.
+    #[arg(value_name = "PROFILE", add = ArgValueCandidates::new(crate::completion::profile_ids))]
+    profile_id: Option<String>,
+    /// Arguments for the command, e.g. `-- login`. The only arguments it gets.
+    #[arg(last = true, allow_hyphen_values = true, value_name = "ARG")]
+    args: Vec<String>,
+}
+
+pub fn run_bare(cfg: Config, args: RunArgs) -> Result<ExitCode> {
+    super::providers::exec(super::bare_command(&cfg, args.profile_id, args.args)?)
+}
+
 pub fn run(cfg: Config, args: LaunchArgs, config: crate::mcp::server::ConfigSource) -> Result<ExitCode> {
     // Resolve the explicit `--prompt` / `--file` override BEFORE
     // `into_patches()` moves `args.with_config`.

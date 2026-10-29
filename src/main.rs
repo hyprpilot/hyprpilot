@@ -66,6 +66,11 @@ enum Command {
     /// List configured session profiles.
     Profiles(profiles::ProfilesArgs),
 
+    /// Run a profile's command with its environment and nothing else —
+    /// no model, mode, prompt or MCP flags. Everything after `--` is the
+    /// whole argument list, e.g. `hyprpilot run amp/high -- login`.
+    Run(spawn::RunArgs),
+
     /// Print the shell completion registration script, e.g.
     /// `eval "$(hyprpilot completion zsh)"`. Same script as
     /// `COMPLETE=zsh hyprpilot`.
@@ -159,6 +164,12 @@ fn main() -> Result<ExitCode> {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(args.run(cli.config_source()?))?;
             Ok(ExitCode::SUCCESS)
+        }
+        Some(Command::Run(args)) => {
+            cli.launch.reject_launch_only_args("run", false)?;
+            let cfg = cli.load_config()?;
+            cfg.validate()?;
+            spawn::run_bare(cfg, args)
         }
         // Printing the script must not depend on a valid config.
         Some(Command::Completion(args)) => {
