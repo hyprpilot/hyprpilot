@@ -10,7 +10,7 @@ coding agents** — a single Rust binary. It resolves a session
 *profile* from layered config, projects that profile onto the chosen
 vendor's **native** CLI flags / env, optionally renames the
 tmux/zellij window, and `exec()`s into the vendor CLI
-(`claude` / `codex` / `opencode`) — replacing its own process. There
+(`claude` / `codex` / `opencode` / `amp`) — replacing its own process. There
 is **no background daemon, no unix socket, no overlay window, no
 desktop UI, no in-process agent bridge**. Those were removed in the
 strip refactor (K-725→734); do not reintroduce that vocabulary.
@@ -84,8 +84,8 @@ Key `src/` modules:
   `run`), `mod.rs` (orchestration), `providers/` (per-vendor
   native-flag projection + `exec`: `mod.rs` = dispatch / `exec` /
   `base_command` / redaction / shared helpers, `argv.rs` =
-  flag-detection, `claude.rs` / `codex.rs` / `opencode.rs` = the
-  three vendor builders, `temp.rs` = the 0600 `TempConfig` guard +
+  flag-detection, `claude.rs` / `codex.rs` / `opencode.rs` /
+  `amp.rs` = the four vendor builders, `temp.rs` = the 0600 `TempConfig` guard +
   reaper), `picker.rs` (interactive profile picker), `multiplexer.rs`
   (tmux/zellij rename).
 - `mcp/` — MCP catalogue (`mod.rs`, `loader.rs`), `auto_inject.rs`
@@ -276,12 +276,12 @@ system_prompt = [
 
 - **`[[agents]]`** (`AgentConfig`): `id`, `provider`, `model?`,
   `effort?`, `command` (mandatory native binary), `args`, `cwd?`,
-  `env`. `defaults.toml` seeds the three built-ins (`claude`, `codex`,
-  `opencode`, all `args = []`). There is no `[agent]` singleton.
+  `env`. `defaults.toml` seeds the four built-ins (`claude`, `codex`,
+  `opencode`, `amp`, all `args = []`). There is no `[agent]` singleton.
 - **`AgentProvider`** — closed enum keyed by wire name:
-  `claude-code` / `codex` / `opencode` (per-vendor native-CLI
+  `claude-code` / `codex` / `opencode` / `amp` (per-vendor native-CLI
   projection). There is no generic/`custom` escape hatch — every agent
-  is one of these three, so every profile gets the full native
+  is one of these four, so every profile gets the full native
   projection; a hand-rolled CLI declares its own `command` / `args`
   under one of these providers (or per-profile via the flat
   `command`/`args`/`env` override). New named vendor = new variant +
@@ -410,7 +410,8 @@ an optional `hyprpilot` namespace key:
   codex gets `-c mcp_servers.<name>.*` config overrides; opencode gets
   `mcp.servers` + an ordered `permissions` ruleset (last match wins,
   action `<server>_<tool>`, resource `*`) inside
-  `OPENCODE_CONFIG_CONTENT`. Transport is
+  `OPENCODE_CONFIG_CONTENT`; amp gets `--mcp-config` (a bare server
+  map, by path) and no tool policy — it has no flag for one. Transport is
   inferred by field presence (`command` → stdio, `url` → http/sse).
   Provider args the captain passed suppress the generated equivalents.
   Reserved names: each in-tree server's resolved name — see
@@ -1674,4 +1675,5 @@ Baseline smokes:
   agent's `command` at a stub on `$PATH` — e.g. `[[agents]] provider =
   "claude-code"`, `command = "echo"` — so the launch execs the stub and
   the projected argv is observable. (`provider` must still be one of
-  `claude-code` / `codex` / `opencode`; there is no `custom` provider.)
+  `claude-code` / `codex` / `opencode` / `amp`; there is no `custom`
+  provider.)

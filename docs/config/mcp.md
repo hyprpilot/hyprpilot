@@ -314,11 +314,12 @@ input_schema = { type = "object", properties = { question = { type = "string" } 
 
 The merged catalogue and policy are projected into each vendor's native shape at launch:
 
-| Vendor        | Servers via                             | Policy via                                                      |
-| ------------- | --------------------------------------- | --------------------------------------------------------------- |
-| `claude-code` | `--mcp-config <path>` (0600 temp file)  | `--allowedTools` / `--disallowedTools` (`mcp__server__tool`)    |
-| `codex`       | `-c mcp_servers.<name>.*` overrides     | exact-name `enabled_tools` / `disabled_tools` / `approval_mode` |
-| `opencode`    | `OPENCODE_CONFIG_CONTENT` `mcp.servers` | ordered `permissions` rules in the same config (`server_tool`)  |
+| Vendor        | Servers via                             | Policy via                                                       |
+| ------------- | --------------------------------------- | ---------------------------------------------------------------- |
+| `claude-code` | `--mcp-config <path>` (0600 temp file)  | `--allowedTools` / `--disallowedTools` (`mcp__server__tool`)     |
+| `codex`       | `-c mcp_servers.<name>.*` overrides     | exact-name `enabled_tools` / `disabled_tools` / `approval_mode`  |
+| `opencode`    | `OPENCODE_CONFIG_CONTENT` `mcp.servers` | ordered `permissions` rules in the same config (`server_tool`)   |
+| `amp`         | `--mcp-config <path>` (0600 temp file)  | **not projected** — set `amp.tools.disable` in the settings file |
 
 Codex does not support wildcard tool patterns in those fields, so wildcard patterns are skipped for Codex with a warning. Provider-native arguments you pass after `--` (or env you set on the agent) suppress the generated equivalents.
 
@@ -328,4 +329,5 @@ MCP server entries commonly carry secrets — bearer tokens in HTTP `headers`, A
 
 - **`claude-code`** — the resolved MCP config (with `${VAR}` header/env references already expanded) is written to a per-launch **0600 temp file** and passed as `--mcp-config <path>`. The file is created owner-only from the start, so the secret never lands in argv. A launch that waits on the vendor — a headless `--prompt` / `--file` run, or a turn the [agent harness](../runtime/harness) drives — deletes the file as soon as the vendor exits. An interactive launch `exec()`s into the vendor, which leaves nothing behind to delete it, so each launch sweeps `hyprpilot-mcp-*.json` files older than 24 hours from the temp dir before writing its own.
 - **`codex`** — bearer tokens are projected as `mcp_servers.<name>.bearer_token_env_var` / `env_http_headers` references (the env var name, not its value), so codex resolves the secret from its own environment.
+- **`amp`** — the same 0600 temp file as `claude-code`, holding a bare `{ "<name>": { … } }` server map. An `amp --no-tui` runner launched this way reads the file when it starts, and Amp restarts runners into CLI updates with the same flags, so a runner that outlives the 24-hour sweep restarts without the file — relaunch it through hyprpilot, or set `amp.runner.autoUpdate.enabled` to `false`.
 - **`opencode`** — the generated config rides the `OPENCODE_CONFIG_CONTENT` env var. Env is not world-readable like argv, but does inherit into child processes; this is the residual, lower-risk surface.

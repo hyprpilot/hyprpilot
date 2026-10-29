@@ -75,11 +75,11 @@ hyprpilot engineer --resume-last         # straight back into the most recent on
 hyprpilot engineer --resume=<session-id> # a specific session
 ```
 
-| Intent        | `claude`        | `codex`         | `opencode`       |
-| ------------- | --------------- | --------------- | ---------------- |
-| Picker        | `--resume`      | `resume`        | **unsupported**  |
-| Most recent   | `--continue`    | `resume --last` | `--continue`     |
-| By session id | `--resume <id>` | `resume <id>`   | `--session <id>` |
+| Intent        | `claude`        | `codex`         | `opencode`       | `amp`                     |
+| ------------- | --------------- | --------------- | ---------------- | ------------------------- |
+| Picker        | `--resume`      | `resume`        | **unsupported**  | `threads continue`        |
+| Most recent   | `--continue`    | `resume --last` | `--continue`     | `threads continue --last` |
+| By session id | `--resume <id>` | `resume <id>`   | `--session <id>` | `threads continue <id>`   |
 
 Two refusals, both loud rather than silent:
 
@@ -125,8 +125,9 @@ hyprpilot delivers the resolved prompt on the vendor's **stdin** where the vendo
 | `claude`   | `claude --print` (prompt on stdin) | **stdin** (spawned, then EOF) |
 | `codex`    | `codex exec` (prompt on stdin)     | **stdin** (spawned, then EOF) |
 | `opencode` | `opencode run "<prompt>"`          | positional argument           |
+| `amp`      | `amp --execute` (prompt on stdin)  | **stdin** (spawned, then EOF) |
 
-For **claude** and **codex**, hyprpilot spawns the vendor, writes the prompt to its stdin, and closes the pipe (EOF). This is deliberate: claude's `--allowedTools` / `--disallowedTools` are **variadic** flags that would greedily swallow a trailing positional prompt as a tool entry, and a positional never reaches the model; stdin has no such ambiguity. **opencode** has no stdin prompt support (its `run [message…]` is positional-only), so the prompt stays a positional argument there. The interactive (non-headless) path always `exec()`s, unchanged.
+For **claude**, **codex** and **amp**, hyprpilot spawns the vendor, writes the prompt to its stdin, and closes the pipe (EOF). This is deliberate: claude's `--allowedTools` / `--disallowedTools` are **variadic** flags that would greedily swallow a trailing positional prompt as a tool entry, and a positional never reaches the model; stdin has no such ambiguity. **opencode** has no stdin prompt support (its `run [message…]` is positional-only), so the prompt stays a positional argument there. The interactive (non-headless) path always `exec()`s, unchanged.
 
 - **Profile selection.** A headless launch never opens the interactive picker (there may be no TTY, and stdin may be a consumed pipe). With no positional profile it resolves [`profile.default`](../config/profiles#picking-the-default) directly, and errors cleanly when no default is configured — pass a positional profile or set a default.
 - **Headless without a prompt.** If headless is forced (profile `headless = true`, or `--prompt`/`--file` — though those always carry a prompt) but no prompt resolves — e.g. `headless = true` on an interactive TTY with no pipe and no `--prompt`/`--file` — the launch **errors** rather than opening a picker it can't drive. An empty prompt (empty pipe, or empty `--prompt`/`--file`) errors too.

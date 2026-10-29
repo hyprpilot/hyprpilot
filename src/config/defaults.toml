@@ -144,6 +144,12 @@ provider = "opencode"
 command = "opencode"
 args = []
 
+[[agents]]
+id = "amp"
+provider = "amp"
+command = "amp"
+args = []
+
 # `[[profiles]]` — captain-supplied. NOT seeded by defaults so a
 # fresh install presents a single source of truth for "which profiles
 # exist": the captain's on-disk config. Validation rejects an empty

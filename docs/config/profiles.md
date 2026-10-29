@@ -166,7 +166,7 @@ It is a block rather than a bare `harness: true` so later per-profile harness po
 
 ## Headless
 
-`headless: true` forces the profile to launch **non-interactively** — hyprpilot buffers stdin as the prompt and projects the vendor's one-shot invocation (`claude --print` / `codex exec` / `opencode run`), then the vendor exits:
+`headless: true` forces the profile to launch **non-interactively** — hyprpilot buffers stdin as the prompt and projects the vendor's one-shot invocation (`claude --print` / `codex exec` / `opencode run` / `amp --execute`), then the vendor exits:
 
 ```yaml
 profiles:
