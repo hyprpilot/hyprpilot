@@ -38,6 +38,10 @@ pub struct LaunchArgs {
     /// resume shape every vendor supports.
     #[arg(long = "resume-last")]
     resume_last: bool,
+    /// Pick the config-layer overlay interactively before the launch,
+    /// replacing `--config-profile` / `HYPRPILOT_CONFIG_PROFILE`.
+    #[arg(long = "select-config-profile")]
+    select_config_profile: bool,
     #[command(flatten)]
     with_config: WithConfigArgs,
     /// Extra arguments forwarded verbatim to the spawned provider CLI.
@@ -82,6 +86,9 @@ impl LaunchArgs {
         if self.resume_last {
             offenders.push("--resume-last");
         }
+        if self.select_config_profile {
+            offenders.push("--select-config-profile");
+        }
         if !self.provider_args.is_empty() {
             offenders.push("trailing `-- <provider args>`");
         }
@@ -96,6 +103,17 @@ impl LaunchArgs {
             );
         }
         Ok(())
+    }
+
+    /// The overlay selection for the launch: `current` untouched, or the
+    /// one `--select-config-profile` picks, with `current` under the cursor.
+    pub fn config_profiles(&self, current: Vec<String>) -> Result<Vec<String>> {
+        if !self.select_config_profile {
+            return Ok(current);
+        }
+        let names = crate::completion::overlay_names(&crate::paths::config_dir().join("profiles"), &[]);
+
+        Ok(vec![super::picker::pick_config_profile(names, &current)?])
     }
 
     /// The `--with-config` overlay patches — the one launch flag a

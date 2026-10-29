@@ -79,6 +79,27 @@ fn default_first(profiles: Vec<ProfileSummary>) -> Vec<ProfileSummary> {
     profiles
 }
 
+pub(super) fn pick_config_profile(names: Vec<String>, current: &[String]) -> Result<String> {
+    pick_display(
+        current_first(names, current),
+        "no config profiles found under the config dir's `profiles/`",
+        "config profile selection cancelled",
+        "config profile picker requires an interactive terminal",
+    )
+}
+
+/// Hoist the first overlay of the current selection to the front, so
+/// Enter keeps it — same cursor trick as [`default_first`].
+fn current_first(names: Vec<String>, current: &[String]) -> Vec<String> {
+    let Some(index) = current.first().and_then(|c| names.iter().position(|n| n == c)) else {
+        return names;
+    };
+    let mut names = names;
+    let current = names.remove(index);
+    names.insert(0, current);
+    names
+}
+
 fn pick_display<T: Clone + fmt::Display + Send + Sync + 'static>(
     items: Vec<T>,
     empty_message: &str,
@@ -140,6 +161,20 @@ mod tests {
         // Default lands at index 0 (under the picker cursor); the rest
         // keep their relative order.
         assert_eq!(ids, vec!["d", "a", "b", "c"]);
+    }
+
+    #[test]
+    fn current_first_hoists_the_selected_overlay() {
+        let names = vec!["a".to_string(), "personal".to_string(), "work".to_string()];
+
+        assert_eq!(current_first(names, &["work".into()]), vec!["work", "a", "personal"]);
+    }
+
+    #[test]
+    fn current_first_leaves_list_untouched_for_an_unknown_overlay() {
+        let names = vec!["personal".to_string(), "work".to_string()];
+
+        assert_eq!(current_first(names, &["gone".into()]), vec!["personal", "work"]);
     }
 
     #[test]

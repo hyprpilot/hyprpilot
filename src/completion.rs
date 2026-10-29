@@ -231,7 +231,7 @@ pub fn config_profiles() -> Vec<CompletionCandidate> {
         .collect()
 }
 
-fn overlay_names(dir: &Path, exclude: &[String]) -> Vec<String> {
+pub(crate) fn overlay_names(dir: &Path, exclude: &[String]) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };

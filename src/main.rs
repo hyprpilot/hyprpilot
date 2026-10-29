@@ -127,6 +127,7 @@ fn main() -> Result<ExitCode> {
         // interactively when none is given, then exec into the
         // resolved vendor CLI.
         None => {
+            cli.config_profiles = cli.launch.config_profiles(std::mem::take(&mut cli.config_profiles))?;
             let cfg = cli.load_config()?;
             cfg.validate()?;
             let source = cli.config_source()?;
