@@ -5,7 +5,7 @@ order: 10
 
 # {{ $frontmatter.title }}
 
-Hyprpilot is a single Rust binary. It resolves a session profile from layered config and `exec()`s into the vendor's native agent CLI — so the only hard runtime dependency is the vendor CLI you want to launch (`claude`, `codex`, or `opencode`).
+Hyprpilot is a single Rust binary. It resolves a session profile from layered config and `exec()`s into the vendor's native agent CLI — so the only hard runtime dependency is the vendor CLI you want to launch (`claude`, `codex`, `opencode`, or `amp`).
 
 <!-- more -->
 
@@ -85,7 +85,7 @@ Swap `foot` for your terminal of choice (`kitty -e`, `alacritty -e`, `wezterm st
 
 ## Shell completion
 
-Completion is dynamic: the shell calls hyprpilot back on every `<Tab>`, so it offers the session profile ids from your resolved config (agent and model as the description, the default marked), the overlay names under `~/.config/hyprpilot/profiles/` for `--config-profile`, and, for a codex profile, its approval and sandbox modes for `--mode`. claude and opencode get no `--mode` candidates: hyprpilot passes their modes through as-is and keeps no list of them. The candidates follow the command line — `hyprpilot --config-profile work <Tab>` lists the work overlay's profiles. A config that does not load yields no candidates rather than an error.
+Completion is dynamic: the shell calls hyprpilot back on every `<Tab>`, so it offers the session profile ids from your resolved config (agent and model as the description, the default marked), the overlay names under `~/.config/hyprpilot/profiles/` for `--config-profile`, and, for a codex profile, its approval and sandbox modes for `--mode`. claude, opencode and amp get no `--mode` candidates: hyprpilot passes their modes through as-is and keeps no list of them. The candidates follow the command line — `hyprpilot --config-profile work <Tab>` lists the work overlay's profiles. A config that does not load yields no candidates rather than an error.
 
 Register it from your shell's startup file:
 
@@ -125,7 +125,7 @@ hyprpilot completion zsh > ~/.zfunc/_hyprpilot   # with fpath=(~/.zfunc $fpath) 
 
 ## After install
 
-1. **Install a vendor CLI** — hyprpilot launches `claude`, `codex`, or `opencode`; at least one must be on your `$PATH`.
+1. **Install a vendor CLI** — hyprpilot launches `claude`, `codex`, `opencode`, or `amp`; at least one must be on your `$PATH`.
 2. **Configure at least one profile** — fresh installs ship agent defaults but **no** profile, and hyprpilot refuses to launch until one exists. The [Quickstart](./quickstart) walks you through it.
 
 Because hyprpilot `exec()`s into the vendor CLI, it inherits your shell environment as-is — API keys, `$PATH`, and everything else the vendor needs are already present when you run it from a terminal. There is no long-lived process to keep hydrated.

@@ -13,7 +13,7 @@
 hyprpilot is a config-driven, fire-and-exec launcher for terminal coding agents — a single Rust binary. No daemon, no socket, no UI.
 
 - Resolves a **profile** from layered TOML / JSON / YAML config (compiled defaults → global config → named config-layer), folding root `[[patches]]` and ad-hoc `--with-config` overlays.
-- Projects the profile's model / effort / mode / system-prompt / MCP catalogue / tool-policy onto the chosen vendor's **native** CLI — `claude`, `codex`, or `opencode`.
+- Projects the profile's model / effort / mode / system-prompt / MCP catalogue / tool-policy onto the chosen vendor's **native** CLI — `claude`, `codex`, `opencode`, or `amp`.
 - `exec()`s into that vendor CLI, replacing its own process, after optionally renaming the tmux window / zellij tab.
 
 Pick a profile from an interactive fuzzy picker, name it directly (`hyprpilot engineer`), or run headless — `echo "fix the test" | hyprpilot engineer`, `hyprpilot engineer --prompt "…"`, or `hyprpilot engineer --file task.md`. Skills reach the agent over an in-tree MCP server the launcher auto-injects.

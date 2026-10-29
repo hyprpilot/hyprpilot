@@ -5,7 +5,7 @@ order: 20
 
 # {{ $frontmatter.title }}
 
-A fresh install already knows the three vendors — the compiled defaults seed `agents` entries for `claude-code`, `codex`, and `opencode` — but ships **zero** profiles, and hyprpilot refuses to launch until you configure one. This page gets you from nothing to a working launch.
+A fresh install already knows the four vendors — the compiled defaults seed `agents` entries for `claude-code`, `codex`, `opencode`, and `amp` — but ships **zero** profiles, and hyprpilot refuses to launch until you configure one. This page gets you from nothing to a working launch.
 
 <!-- more -->
 

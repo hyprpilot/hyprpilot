@@ -6,7 +6,7 @@ prev: false
 
 # {{ $frontmatter.title }}
 
-Hyprpilot is a **config-driven, fire-and-exec launcher for terminal coding agents**, shipped as a single Rust binary. It resolves a session _profile_ from layered config, projects that profile onto the chosen vendor's **native** CLI flags and environment, and `exec()`s into the vendor CLI — `claude`, `codex`, or `opencode` — replacing its own process.
+Hyprpilot is a **config-driven, fire-and-exec launcher for terminal coding agents**, shipped as a single Rust binary. It resolves a session _profile_ from layered config, projects that profile onto the chosen vendor's **native** CLI flags and environment, and `exec()`s into the vendor CLI — `claude`, `codex`, `opencode`, or `amp` — replacing its own process.
 
 <!-- more -->
 
