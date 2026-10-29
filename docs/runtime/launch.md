@@ -178,6 +178,8 @@ HYPRPILOT_CONFIG_PROFILE=work hyprpilot engineer
 
 `--config-profile` layers a named config file (`~/.config/hyprpilot/profiles/<name>.yaml`) on top of your global config — a **config-layer** profile, distinct from the session `profiles` you address with the positional `[PROFILE]`. Pass it more than once (or `HYPRPILOT_CONFIG_PROFILE=base,work`) to stack overlays; they fold in the given order. See [Config → Layering](../config/layering).
 
+`--select-config-profile` picks the overlay interactively instead, from the files under `~/.config/hyprpilot/profiles/`, before the session profile is resolved. It replaces whatever `--config-profile` or `HYPRPILOT_CONFIG_PROFILE` selected, with that selection under the cursor, and the pick follows the launch into the [Agent Harness](./harness) like any other. It is launch-only and needs an interactive terminal.
+
 `hyprpilot completion <shell>` prints the shell completion script — see [Installation → Shell completion](./installation#shell-completion).
 
 Log filter precedence is `--log-level` → `RUST_LOG` → `logging.level` → the built-in `error` default (a fresh run is quiet — errors only — unless a level is explicitly requested); tracing always writes to stderr. See [Config → Logging](../config/logging).
