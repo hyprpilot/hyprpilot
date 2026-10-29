@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.0](https://github.com/hyprpilot/hyprpilot/compare/v4.1.0...v4.2.0) (2026-10-29)
+
+
+### Features
+
+* **spawn:** add the amp provider ([#280](https://github.com/hyprpilot/hyprpilot/issues/280)) ([beb31b0](https://github.com/hyprpilot/hyprpilot/commit/beb31b04d591bbf62ace2135869372e000e26b38))
+
 ## [4.1.0](https://github.com/hyprpilot/hyprpilot/compare/v4.0.2...v4.1.0) (2026-10-28)
 
 
