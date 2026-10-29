@@ -91,6 +91,8 @@ pub enum AgentProvider {
     Codex,
     #[serde(rename = "opencode")]
     OpenCode,
+    #[serde(rename = "amp")]
+    Amp,
 }
 
 impl AgentProvider {
@@ -103,6 +105,7 @@ impl AgentProvider {
             Self::ClaudeCode => "claude-code",
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
+            Self::Amp => "amp",
         }
     }
 }
@@ -262,8 +265,8 @@ mod tests {
         let ids: Vec<&str> = cfg.agents.agents.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec!["claude-code", "codex", "opencode"],
-            "defaults must seed the three built-in vendors"
+            vec!["claude-code", "codex", "opencode", "amp"],
+            "defaults must seed the four built-in vendors"
         );
 
         for a in &cfg.agents.agents {
@@ -276,6 +279,7 @@ mod tests {
         assert_eq!(by_id["claude-code"], AgentProvider::ClaudeCode);
         assert_eq!(by_id["codex"], AgentProvider::Codex);
         assert_eq!(by_id["opencode"], AgentProvider::OpenCode);
+        assert_eq!(by_id["amp"], AgentProvider::Amp);
 
         // Defaults now `exec` the vendors' NATIVE CLIs directly — not
         // the old `bunx …-acp` bridge invocations.
@@ -288,6 +292,7 @@ mod tests {
         assert_eq!(by_cmd["claude-code"], "claude");
         assert_eq!(by_cmd["codex"], "codex");
         assert_eq!(by_cmd["opencode"], "opencode");
+        assert_eq!(by_cmd["amp"], "amp");
     }
 
     #[test]
@@ -315,7 +320,7 @@ args = []
         let ids: Vec<&str> = cfg.agents.agents.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec!["claude-code", "codex", "opencode", "my-local"],
+            vec!["claude-code", "codex", "opencode", "amp", "my-local"],
             "overrides keep position, new ids append"
         );
 
@@ -382,6 +387,7 @@ command = "b"
             (AgentProvider::ClaudeCode, "\"claude-code\""),
             (AgentProvider::Codex, "\"codex\""),
             (AgentProvider::OpenCode, "\"opencode\""),
+            (AgentProvider::Amp, "\"amp\""),
         ] {
             assert_eq!(serde_json::to_string(&v).unwrap(), literal);
             let back: AgentProvider = serde_json::from_str(literal).unwrap();

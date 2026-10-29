@@ -66,7 +66,8 @@ pub(crate) fn extract(turn: &str, provider: crate::config::AgentProvider) -> Ans
     }
 
     let text = match provider {
-        crate::config::AgentProvider::ClaudeCode => claude_answer(&events),
+        // amp's `--stream-json` is Claude Code's stream format.
+        crate::config::AgentProvider::ClaudeCode | crate::config::AgentProvider::Amp => claude_answer(&events),
         crate::config::AgentProvider::Codex => last_field(&events, |event| {
             let is_message = event.get("type").and_then(Value::as_str) == Some("item.completed")
                 && event.get("item").and_then(|i| i.get("type")).and_then(Value::as_str) == Some("agent_message");
@@ -166,6 +167,18 @@ mod tests {
         ]);
 
         assert_eq!(extract(&body, AgentProvider::Codex), Answer::Text("the answer".into()));
+    }
+
+    /// Captured from `amp --execute --stream-json`.
+    #[test]
+    fn amp_reads_the_result_event() {
+        let body = lines(&[
+            serde_json::json!({ "type": "system", "subtype": "init", "session_id": "T-01a1" }),
+            serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": "pong" }] }, "session_id": "T-01a1" }),
+            serde_json::json!({ "type": "result", "subtype": "success", "is_error": false, "result": "pong", "session_id": "T-01a1" }),
+        ]);
+
+        assert_eq!(extract(&body, AgentProvider::Amp), Answer::Text("pong".into()));
     }
 
     /// The failure the answer query goes blind on. A provider failure

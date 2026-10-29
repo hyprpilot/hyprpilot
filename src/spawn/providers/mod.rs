@@ -10,9 +10,10 @@
 //! - [`codex`] — `codex` `-c` config overrides + `exec` subcommand.
 //! - [`opencode`] — `opencode --standalone`, `OPENCODE_CONFIG_CONTENT`
 //!   env + `run` subcommand.
-//! - [`argv`] — flag-detection predicates shared by all three.
+//! - [`amp`] — `amp` `--mode` / by-path `--mcp-config` + `--execute`.
+//! - [`argv`] — flag-detection predicates shared by every builder.
 //! - [`temp`] — the launch-scoped 0600 temp-config guard + reaper
-//!   backing claude's by-path `--mcp-config`.
+//!   backing claude's and amp's by-path `--mcp-config`.
 //!
 //! This module keeps the dispatch, the `exec` handoff (with its
 //! secret-tiered tracing + argv redaction), the infallible
@@ -30,6 +31,7 @@ use crate::config::AgentProvider;
 use crate::mcp::{project_transport, MCPDefinition, McpTransport};
 use crate::resolve::profile::ResolvedProfile;
 
+mod amp;
 mod argv;
 mod claude;
 mod codex;
@@ -142,17 +144,27 @@ pub(crate) fn build_command(
             resume,
             harness,
         ),
+        AgentProvider::Amp => amp::build_amp(
+            resolved,
+            system_prompt,
+            mcp_defs,
+            provider_args,
+            prompt,
+            resume,
+            harness,
+        ),
     }
 }
 
 /// The `mode` values a provider's projection knows, for completion.
 /// Empty where the set is not ours to list: claude passes `mode`
-/// through to `--permission-mode` verbatim, and an opencode mode names
-/// one of the captain's own agents.
+/// through to `--permission-mode` verbatim, an opencode mode names
+/// one of the captain's own agents, and an amp mode may name a plugin
+/// mode.
 pub(crate) fn known_modes(provider: AgentProvider) -> Vec<&'static str> {
     match provider {
         AgentProvider::Codex => codex::known_modes(),
-        AgentProvider::ClaudeCode | AgentProvider::OpenCode => Vec::new(),
+        AgentProvider::ClaudeCode | AgentProvider::OpenCode | AgentProvider::Amp => Vec::new(),
     }
 }
 
