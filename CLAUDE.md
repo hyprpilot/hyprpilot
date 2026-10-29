@@ -69,8 +69,8 @@ crate dir are gone).
 
 Key `src/` modules:
 
-- `main.rs` — `clap`-derive CLI. Bare invocation launches; `mcp` /
-  `profiles` are the only subcommands.
+- `main.rs` — `clap`-derive CLI. Bare invocation launches; `mcp`,
+  `profiles`, `run` and `completion` are the subcommands.
 - `config/` — layered load (`mod.rs`), `merge` crate strategies,
   `garde` validation, `agents.rs` (`[[agents]]` / `[profile]` /
   `[[profiles]]`), `mcp.rs` (`[mcp]`), `extensions.rs`
@@ -156,6 +156,7 @@ hyprpilot review -- --resume    # everything after `--` is forwarded verbatim
 
 # Subcommands
 hyprpilot profiles              # table of configured profiles
+hyprpilot run amp/high -- login # the profile's command + env, only these args
 hyprpilot profiles --json       # machine-readable
 hyprpilot mcp serve             # general tools (`open`)
 hyprpilot mcp skills --skill-dir '{"dir":"/abs/path","ignore":[],"watch":true}' --prompt-file ~/AGENTS.md
@@ -202,6 +203,14 @@ hyprpilot mcp harness --transport http --listen 127.0.0.1:7779 --token-file ~/.c
   line with `ignore_errors` to find the layer selection and the
   positional profile, and must never print or fail — a config that
   does not load yields no candidates.
+- **`run [PROFILE] -- <args>`** resolves the profile exactly like a
+  launch (patches, overlays, flat `command`/`env` override) and `exec()`s
+  `spawn::bare_command`: the resolved command, env and cwd with the
+  trailing args as the WHOLE argv. No projection and none of the agent's
+  `args` — those are launch flags, and a vendor subcommand (`login`,
+  `setup-token`) rejects them. It is how a captain logs a profile's
+  account in under that profile's config dirs. Root launch flags are
+  rejected like any subcommand's.
 - **The `mcp` servers** are spawned by the agent vendor over stdio
   (via the auto-injected MCP entries), not run by hand.
 
