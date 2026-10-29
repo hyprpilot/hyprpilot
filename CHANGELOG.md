@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.3.0](https://github.com/hyprpilot/hyprpilot/compare/v4.2.0...v4.3.0) (2026-10-29)
+
+
+### Features
+
+* **cli:** add a run subcommand for a profile's bare command ([#282](https://github.com/hyprpilot/hyprpilot/issues/282)) ([234fae2](https://github.com/hyprpilot/hyprpilot/commit/234fae25814565b98a232d27b2c28e40b2297ca7))
+
 ## [4.2.0](https://github.com/hyprpilot/hyprpilot/compare/v4.1.0...v4.2.0) (2026-10-29)
 
 
