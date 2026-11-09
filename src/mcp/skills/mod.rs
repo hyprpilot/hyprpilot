@@ -14,6 +14,8 @@
 //! CONTENT, so the launcher has to know whether there is anything to
 //! serve before injecting it.
 
+/// Per-request slug filter the HTTP transport reads from request headers.
+pub mod filter;
 mod loader;
 pub(crate) use loader::split_frontmatter;
 pub mod prompts;
