@@ -62,7 +62,7 @@ impl SkillFilter {
         }
         self.include
             .as_ref()
-            .map_or(true, |inc| inc.iter().any(|m| m.matches(slug)))
+            .is_none_or(|inc| inc.iter().any(|m| m.matches(slug)))
     }
 }
 

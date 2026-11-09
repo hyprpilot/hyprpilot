@@ -294,7 +294,7 @@ pub fn patch_applies(patch: &Value, ctx: PatchMatchContext<'_>) -> bool {
     let Some(obj) = patch.as_object() else {
         return false;
     };
-    obj.get("$match").map_or(true, |m| match_matches_context(m, ctx))
+    obj.get("$match").is_none_or(|m| match_matches_context(m, ctx))
 }
 
 /// `true` when every present `$match` field matches `ctx`. Absent

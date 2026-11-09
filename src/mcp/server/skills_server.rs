@@ -59,11 +59,12 @@ use std::sync::Arc;
 
 use clap::Args;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CustomRequest, CustomResult, ErrorCode, GetPromptRequestParams,
-    GetPromptResponse, GetPromptResult, Implementation, ListPromptsResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, PromptMessage, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents, Role, ServerCapabilities,
-    ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, ErrorCode, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
+    GetSkillRequestParams, GetSkillResult, Implementation, ListPromptsResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListSkillsResult, ListToolsResult, PaginatedRequestParams, PromptMessage,
+    ReadResourceDirectoryRequestParams, ReadResourceDirectoryResult, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, ResourceContents, Role, ServerCapabilities, ServerConfig, Skill, SkillFrontmatter,
+    SkillResource, SkillResources, Tool,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ServerHandler, ServiceExt};
@@ -536,16 +537,24 @@ impl LoadedSkill {
 
     /// The SEP-2640 entry `skills/list` and `skills/get` return. Every
     /// digest lives in `resources`, `SKILL.md`'s included.
-    fn entry(&self) -> serde_json::Value {
-        serde_json::json!({
-            "uri": self.uri(),
-            "frontmatter": self.frontmatter,
-            "resources": self.files.iter().map(|f| serde_json::json!({
-                "uri": skill_file_uri(&self.slug, &f.rel),
-                "digest": f.digest,
-                "size": f.size(),
-            })).collect::<Vec<_>>(),
-        })
+    fn entry(&self) -> Skill {
+        let mut extra = self.frontmatter.clone();
+        extra.remove("name");
+        let description = match extra.remove("description") {
+            Some(serde_json::Value::String(description)) => description,
+            _ => String::new(),
+        };
+        let frontmatter = extra
+            .into_iter()
+            .fold(SkillFrontmatter::new(self.name(), description), |fm, (key, value)| {
+                fm.with_field(key, value)
+            });
+        let resources = self
+            .files
+            .iter()
+            .map(|f| SkillResource::new(skill_file_uri(&self.slug, &f.rel), f.digest.clone(), f.size()))
+            .collect();
+        Skill::new(self.uri(), frontmatter, SkillResources::Files(resources))
     }
 }
 
@@ -918,7 +927,7 @@ impl CatalogueDelta {
         let mut files_changed: Vec<String> = after
             .files
             .iter()
-            .filter(|(path, file)| before.files.get(*path).map_or(true, |old| old.digest != file.digest))
+            .filter(|(path, file)| before.files.get(*path).is_none_or(|old| old.digest != file.digest))
             .map(|(path, _)| path.clone())
             .collect();
         files_changed.extend(
@@ -933,7 +942,7 @@ impl CatalogueDelta {
         let mut references_changed: Vec<String> = after
             .declared
             .iter()
-            .filter(|(path, entry)| before.declared.get(*path).map_or(true, |old| old.stat != entry.stat))
+            .filter(|(path, entry)| before.declared.get(*path).is_none_or(|old| old.stat != entry.stat))
             .map(|(path, _)| path.clone())
             .collect();
         // A vanished path is served text changing too: a surviving
@@ -1218,53 +1227,6 @@ fn parse_uri(uri: &str) -> Option<ParsedUri<'_>> {
         return (!path.is_empty()).then_some(ParsedUri::Skill(path));
     }
     path_from_file_uri(uri).map(ParsedUri::Reference)
-}
-
-/// Whether this request runs at `2026-07-28` or later, which decides
-/// whether a hand-built result carries `resultType`. rmcp strips that
-/// field from its own result types for an older peer but passes a
-/// `CustomResult` through untouched, so the custom methods have to make
-/// the same call themselves.
-fn negotiated_modern(context: &RequestContext<RoleServer>) -> bool {
-    context
-        .protocol_version()
-        .is_some_and(|v| v.as_str() >= ProtocolVersion::V_2026_07_28.as_str())
-}
-
-/// Stamp a hand-built result the way rmcp stamps its own: the cache
-/// fields `2026-07-28` requires on a cacheable result, and `resultType`
-/// only for a peer that negotiated that revision.
-fn custom_result(
-    mut body: serde_json::Map<String, serde_json::Value>,
-    ttl_ms: u64,
-    modern: bool,
-) -> Result<CustomResult, rmcp::ErrorData> {
-    body.insert("ttlMs".into(), ttl_ms.into());
-    body.insert(
-        "cacheScope".into(),
-        serde_json::to_value(RESULT_CACHE_SCOPE).map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?,
-    );
-    if modern {
-        body.insert("resultType".into(), "complete".into());
-    }
-    Ok(CustomResult::new(serde_json::Value::Object(body)))
-}
-
-/// `params.uri` of a custom request, required.
-fn require_uri(params: Option<&serde_json::Value>) -> Result<&str, rmcp::ErrorData> {
-    params
-        .and_then(|p| p.get("uri"))
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| rmcp::ErrorData::invalid_params("`uri` is required", None))
-}
-
-/// Every listing here is a single page, so no cursor this server could
-/// have issued exists — refusing one is more honest than ignoring it.
-fn refuse_cursor(params: Option<&serde_json::Value>) -> Result<(), rmcp::ErrorData> {
-    match params.and_then(|p| p.get("cursor")) {
-        None | Some(serde_json::Value::Null) => Ok(()),
-        Some(_) => Err(rmcp::ErrorData::invalid_params("unknown cursor", None)),
-    }
 }
 
 fn list_skills_payload(cache: &SkillsCache) -> serde_json::Value {
@@ -1564,7 +1526,7 @@ impl ServerHandler for SkillsServer {
         // scan is what decides it anyway.
         let cache = self.skills_cache.try_read().ok();
         let mut accepted = super::rpc::accept_resource_subscriptions(requested, |uri| match parse_uri(uri) {
-            Some(ParsedUri::Reference(path)) => cache.as_ref().map_or(true, |c| c.declared.contains_key(&path)),
+            Some(ParsedUri::Reference(path)) => cache.as_ref().is_none_or(|c| c.declared.contains_key(&path)),
             Some(_) => true,
             None => false,
         })?;
@@ -2089,62 +2051,65 @@ impl ServerHandler for SkillsServer {
         .into())
     }
 
-    /// The SEP-2640 methods. rmcp has no model for them, so they arrive
-    /// as custom requests on every transport and are answered with
-    /// hand-built results — stamped by `custom_result` the way rmcp
-    /// stamps its own.
-    async fn on_custom_request(
+    /// SEP-2640 `skills/list`. A single page, so no cursor this server
+    /// could have issued exists — refusing one is more honest than
+    /// ignoring it.
+    async fn list_skills(
         &self,
-        request: CustomRequest,
+        request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
-    ) -> Result<CustomResult, rmcp::ErrorData> {
-        let params = request.params.as_ref();
-        let modern = negotiated_modern(&context);
-        let ttl = self.transport.result_ttl_ms();
-        let cache = self.view(&context).await?;
-        let mut body = serde_json::Map::new();
-        match request.method.as_str() {
-            "skills/list" => {
-                refuse_cursor(params)?;
-                body.insert(
-                    "skills".into(),
-                    cache
-                        .order
-                        .iter()
-                        .filter_map(|slug| cache.skills.get(slug))
-                        .map(LoadedSkill::entry)
-                        .collect(),
-                );
-            }
-            "skills/get" => {
-                let uri = require_uri(params)?;
-                let Some(skill) = cache.skills.values().find(|s| s.uri() == uri) else {
-                    return Err(rmcp::ErrorData::invalid_params(format!("not a skill: {uri}"), None));
-                };
-                body.insert("skill".into(), skill.entry());
-            }
-            "resources/directory/read" => {
-                refuse_cursor(params)?;
-                let uri = require_uri(params)?;
-                let children = match parse_uri(uri) {
-                    Some(ParsedUri::Skill(path)) => cache.directory(path),
-                    _ => None,
-                }
-                .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("not a directory: {uri}"), None))?;
-                body.insert(
-                    "resources".into(),
-                    serde_json::to_value(children).map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?,
-                );
-            }
-            method => {
-                return Err(rmcp::ErrorData::new(
-                    ErrorCode::METHOD_NOT_FOUND,
-                    method.to_string(),
-                    None,
-                ))
-            }
+    ) -> Result<ListSkillsResult, rmcp::ErrorData> {
+        if request.and_then(|r| r.cursor).is_some() {
+            return Err(rmcp::ErrorData::invalid_params("unknown cursor", None));
         }
-        custom_result(body, ttl, modern)
+        let cache = self.view(&context).await?;
+        let skills = cache
+            .order
+            .iter()
+            .filter_map(|slug| cache.skills.get(slug))
+            .map(LoadedSkill::entry)
+            .collect();
+        Ok(ListSkillsResult::with_all_items(skills)
+            .with_ttl_ms(self.transport.result_ttl_ms())
+            .with_cache_scope(RESULT_CACHE_SCOPE))
+    }
+
+    async fn get_skill(
+        &self,
+        request: GetSkillRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetSkillResult, rmcp::ErrorData> {
+        let cache = self.view(&context).await?;
+        let Some(skill) = cache.skills.values().find(|s| s.uri() == request.uri) else {
+            return Err(rmcp::ErrorData::invalid_params(
+                format!("not a skill: {}", request.uri),
+                None,
+            ));
+        };
+        Ok(GetSkillResult::new(skill.entry())
+            .with_ttl_ms(self.transport.result_ttl_ms())
+            .with_cache_scope(RESULT_CACHE_SCOPE))
+    }
+
+    /// SEP-2640 `resources/directory/read`: the direct children of any
+    /// directory in the namespace. A single page, like `skills/list`.
+    async fn read_resource_directory(
+        &self,
+        request: ReadResourceDirectoryRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceDirectoryResult, rmcp::ErrorData> {
+        if request.cursor.is_some() {
+            return Err(rmcp::ErrorData::invalid_params("unknown cursor", None));
+        }
+        let cache = self.view(&context).await?;
+        let children = match parse_uri(&request.uri) {
+            Some(ParsedUri::Skill(path)) => cache.directory(path),
+            _ => None,
+        }
+        .ok_or_else(|| rmcp::ErrorData::invalid_params(format!("not a directory: {}", request.uri), None))?;
+        Ok(ReadResourceDirectoryResult::with_all_items(children)
+            .with_ttl_ms(self.transport.result_ttl_ms())
+            .with_cache_scope(RESULT_CACHE_SCOPE))
     }
 }
 
@@ -3019,7 +2984,7 @@ metadata:
             "/tmp/acme/refunds/SKILL.md",
         );
         skill.files = vec![bundle_file("SKILL.md", "raw"), bundle_file("scripts/x.py", "x")];
-        let entry = skill.entry();
+        let entry = serde_json::to_value(skill.entry()).unwrap();
 
         assert_eq!(entry["uri"], "skill://acme/refunds/SKILL.md");
         assert_eq!(
@@ -3110,29 +3075,6 @@ metadata:
         assert_eq!(children[0].description.as_deref(), Some("Process refunds"));
         assert_eq!(children[1].name, "notes.md");
         assert_eq!(children[1].description, None);
-    }
-
-    /// A single page, so there is no cursor this server issued.
-    #[test]
-    fn a_cursor_is_refused() {
-        assert!(refuse_cursor(None).is_ok());
-        assert!(refuse_cursor(Some(&serde_json::json!({ "cursor": null }))).is_ok());
-        let err = refuse_cursor(Some(&serde_json::json!({ "cursor": "x" }))).unwrap_err();
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-    }
-
-    /// rmcp strips `resultType` from its own results for an older peer
-    /// and passes a custom result through untouched, so ours must make
-    /// the same call — and always carry the cache stamps.
-    #[test]
-    fn a_custom_result_carries_result_type_only_when_modern() {
-        let legacy = custom_result(serde_json::Map::new(), 5, false).unwrap().0;
-        assert!(legacy.get("resultType").is_none());
-        assert_eq!(legacy["ttlMs"], 5);
-        assert_eq!(legacy["cacheScope"], "private");
-
-        let modern = custom_result(serde_json::Map::new(), 5, true).unwrap().0;
-        assert_eq!(modern["resultType"], "complete");
     }
 }
 #[cfg(test)]
@@ -3758,6 +3700,25 @@ mod sep_tests {
                 .starts_with("---\nname: alpha"),
             "SKILL.md is served raw, frontmatter included"
         );
+    }
+
+    /// A single page, so there is no cursor this server issued.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cursor_is_refused() {
+        let root = seed();
+        let replies = exchange(
+            root.path(),
+            None,
+            &[
+                modern("skills/list", r#","cursor":"x""#),
+                modern("resources/directory/read", r#","cursor":"x","uri":"skill://acme""#),
+            ],
+        )
+        .await;
+
+        for reply in &replies {
+            assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

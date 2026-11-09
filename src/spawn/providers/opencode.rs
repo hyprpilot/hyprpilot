@@ -195,7 +195,7 @@ fn opencode_model_ref(model: Option<&str>, effort: Option<&str>) -> Result<Optio
             !provider.is_empty()
                 && !provider.contains('#')
                 && parts.next().is_some_and(|model| !model.is_empty())
-                && parts.next().map_or(true, |variant| !variant.is_empty())
+                && parts.next().is_none_or(|variant| !variant.is_empty())
                 && parts.next().is_none()
         });
         if !valid {

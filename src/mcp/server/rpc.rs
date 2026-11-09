@@ -41,9 +41,9 @@ pub(super) fn supported_protocol_versions() -> Cow<'static, [ProtocolVersion]> {
 /// **`2026-07-28` makes `ttlMs` and `cacheScope` REQUIRED**, not
 /// optional: `ListToolsResult extends PaginatedResult, CacheableResult`,
 /// and `CacheableResult` declares both without `?`. rmcp models them as
-/// `Option` for backward compatibility and defaults them to `None`, so a
-/// server that just calls `with_all_items` emits neither and a client
-/// validating the revision it negotiated rejects the listing outright:
+/// `Option` for backward compatibility; before 3.5.1 a server that just
+/// called `with_all_items` emitted neither and a client validating the
+/// revision it negotiated rejected the listing outright:
 ///
 /// ```text
 /// Invalid result for tools/list:

@@ -259,10 +259,7 @@ fn codex_mcp_tool_policy(def: &MCPDefinition) -> CodexToolPolicy {
             }
             Some(leaf)
                 if is_exact_tool_name(leaf)
-                    && policy
-                        .enabled_tools
-                        .as_ref()
-                        .map_or(true, |enabled| !enabled.is_empty()) =>
+                    && policy.enabled_tools.as_ref().is_none_or(|enabled| !enabled.is_empty()) =>
             {
                 policy.disabled_tools.insert(leaf.to_string());
             }
