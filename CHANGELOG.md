@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.0](https://github.com/hyprpilot/hyprpilot/compare/v4.5.0...v4.6.0) (2026-11-09)
+
+
+### Features
+
+* **skills:** filter the catalogue per request by include/exclude headers ([#288](https://github.com/hyprpilot/hyprpilot/issues/288)) ([d60fea7](https://github.com/hyprpilot/hyprpilot/commit/d60fea7f7f18a03babbaab9b90f706de4ab3fabb))
+
 ## [4.5.0](https://github.com/hyprpilot/hyprpilot/compare/v4.4.0...v4.5.0) (2026-11-09)
 
 
