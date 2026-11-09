@@ -1341,7 +1341,7 @@ drive hyprpilot profiles: `list_profiles` (discovery), `spawn`,
 
 `hyprpilot mcp passthrough` serves exactly the tools
 `[[mcp.passthrough.tools]]` declares (`PassthroughTool { name,
-description?, inputSchema, url, body? }`). A call POSTs `body` with the
+description?, inputSchema, url, body?, forwardHeaders? }`). A call POSTs `body` with the
 call arguments laid over it (shallow, argument wins) to `url` as JSON;
 a 2xx returns the response body VERBATIM as the tool's text, anything
 else is `isError` — `<url> returned <status>: <body>` or `<url>
@@ -1367,8 +1367,13 @@ logic here — a new upstream is a config entry.
   config entry and the argv decode type, and `parse_tool_arg` re-runs
   garde, so a bad `--tool` fails startup rather than listing a tool that
   cannot be called. Consequence: argv is world-readable, so `body` and
-  `url` must not carry credentials, and there is deliberately no header
-  support.
+  `url` must not carry credentials, and a tool can never declare a header
+  value.
+- **`forwardHeaders` copies inbound headers by name** onto the upstream
+  POST, read from the `Parts` rmcp's HTTP transport puts on the request
+  context, so only the names ride argv. An absent header stays absent, so
+  the upstream keeps its own default, and stdio forwards nothing. Names
+  that frame the upstream request (`host`, `content-*`, ...) fail garde.
 - **`[[mcp.passthrough.tools]]` is keyed by `name`** in the patch engine
   (`patch::entry_key` gained `name` beside `id` / `dir`), so a later
   layer retargets a tool instead of listing a second one dispatch could

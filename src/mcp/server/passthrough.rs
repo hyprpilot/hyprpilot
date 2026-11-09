@@ -5,7 +5,9 @@
 //! with the call arguments laid over it to the tool's `url`, and the
 //! response body comes back verbatim as the tool's text. A non-2xx
 //! status or an unreachable upstream is `isError`, carrying the url,
-//! the status and whatever the upstream said.
+//! the status and whatever the upstream said. A tool's `forwardHeaders`
+//! are copied from the inbound HTTP request onto that POST, so a caller
+//! can pick the upstream credential per request.
 //!
 //! Knows nothing about any upstream. What a tool means lives in its
 //! description and schema, which are listed as written; the server's
@@ -23,6 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Args;
+use reqwest::header::HeaderMap;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode, Implementation, ListToolsResult,
     PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
@@ -79,7 +82,7 @@ pub struct PassthroughServer {
 }
 
 impl PassthroughServer {
-    fn new(args: &PassthroughArgs) -> anyhow::Result<Self> {
+    pub(super) fn new(args: &PassthroughArgs) -> anyhow::Result<Self> {
         let mut seen = std::collections::HashSet::new();
         if let Some(dup) = args.tools.iter().find(|t| !seen.insert(t.name.as_str())) {
             anyhow::bail!("mcp: --tool '{}' is declared twice", dup.name);
@@ -99,6 +102,7 @@ impl PassthroughServer {
         &self,
         tool: &PassthroughTool,
         arguments: serde_json::Map<String, serde_json::Value>,
+        headers: HeaderMap,
     ) -> CallToolResponse {
         let mut payload = tool.body.clone().unwrap_or_default();
         payload.extend(arguments);
@@ -108,6 +112,7 @@ impl PassthroughServer {
             .client
             .post(url)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .headers(headers)
             .body(serde_json::Value::Object(payload).to_string())
             .send()
             .await
@@ -186,7 +191,7 @@ impl ServerHandler for PassthroughServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let Some(tool) = self.tools.iter().find(|t| t.name == request.name.as_ref()) else {
             return Err(rmcp::ErrorData::new(
@@ -196,8 +201,40 @@ impl ServerHandler for PassthroughServer {
             ));
         };
 
-        Ok(self.forward(tool, request.arguments.unwrap_or_default()).await)
+        let headers = forwarded_headers(tool, inbound_headers(&context));
+
+        Ok(self.forward(tool, request.arguments.unwrap_or_default(), headers).await)
     }
+}
+
+/// rmcp's HTTP transport puts the request's `Parts` on every context; stdio
+/// has no request to read.
+#[cfg(feature = "http")]
+fn inbound_headers(context: &RequestContext<RoleServer>) -> Option<&HeaderMap> {
+    context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .map(|parts| &parts.headers)
+}
+
+#[cfg(not(feature = "http"))]
+fn inbound_headers(_: &RequestContext<RoleServer>) -> Option<&HeaderMap> {
+    None
+}
+
+/// The inbound headers `tool` names. One the caller did not send is simply
+/// absent, which lets the upstream fall back on its own default.
+fn forwarded_headers(tool: &PassthroughTool, inbound: Option<&HeaderMap>) -> HeaderMap {
+    inbound
+        .into_iter()
+        .flatten()
+        .filter(|(name, _)| {
+            tool.forward_headers
+                .iter()
+                .any(|forwarded| name.as_str().eq_ignore_ascii_case(forwarded))
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
 }
 
 /// Run the passthrough server.
@@ -306,6 +343,7 @@ mod tests {
                 .forward(
                     &passthrough.tools[0],
                     args(serde_json::json!({ "question": "q", "model": "override" })),
+                    HeaderMap::new(),
                 )
                 .await,
         );
@@ -325,7 +363,11 @@ mod tests {
         let (url, _upstream) = stub_upstream("503 Service Unavailable", "model loading").await;
         let passthrough = server(&url);
 
-        let (is_error, text) = outcome(passthrough.forward(&passthrough.tools[0], Default::default()).await);
+        let (is_error, text) = outcome(
+            passthrough
+                .forward(&passthrough.tools[0], Default::default(), HeaderMap::new())
+                .await,
+        );
 
         assert!(is_error);
         assert_eq!(text, format!("{url} returned 503: model loading"));
@@ -338,10 +380,29 @@ mod tests {
         drop(listener);
         let passthrough = server(&url);
 
-        let (is_error, text) = outcome(passthrough.forward(&passthrough.tools[0], Default::default()).await);
+        let (is_error, text) = outcome(
+            passthrough
+                .forward(&passthrough.tools[0], Default::default(), HeaderMap::new())
+                .await,
+        );
 
         assert!(is_error);
         assert!(text.starts_with(&format!("{url} unreachable: ")), "got: {text}");
+    }
+
+    #[test]
+    fn only_the_named_inbound_headers_are_forwarded() {
+        let mut tool = tool("http://127.0.0.1/");
+        tool.forward_headers = vec!["X-Upstream-Token".into(), "x-absent".into()];
+        let mut inbound = HeaderMap::new();
+        inbound.insert("x-upstream-token", "work".parse().unwrap());
+        inbound.insert("authorization", "Bearer gateway".parse().unwrap());
+
+        let forwarded = forwarded_headers(&tool, Some(&inbound));
+
+        assert_eq!(forwarded.len(), 1, "got: {forwarded:?}");
+        assert_eq!(forwarded["x-upstream-token"], "work");
+        assert!(forwarded_headers(&tool, None).is_empty(), "stdio has nothing to copy");
     }
 
     #[test]

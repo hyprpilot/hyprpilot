@@ -56,9 +56,26 @@ Enabling it inherits `autoAcceptTools = ['*']` from the `mcp` block unless you s
 
 ::: warning Tools ride the sidecar's argv
 
-The launcher hands each tool to the sidecar as a `--tool '<json>'` argument, the same way skill roots travel. A process's argv is world-readable through `/proc/<pid>/cmdline`, so **do not put credentials in `body` or the url**. There is no header support; front an authenticated API with something that holds the secret itself.
+The launcher hands each tool to the sidecar as a `--tool '<json>'` argument, the same way skill roots travel. A process's argv is world-readable through `/proc/<pid>/cmdline`, so **do not put credentials in `body` or the url**. The server sets no credentials of its own; front an authenticated API with something that holds the secret itself, or [forward the caller's](#forwarding-headers).
 
 :::
+
+## Forwarding headers
+
+`forward_headers` names inbound request headers to copy onto the upstream POST, so whoever calls the server over [HTTP](./mcp-http) can pick the upstream credential per request:
+
+```toml
+[[mcp.passthrough.tools]]
+name = "decide"
+url = "https://decide.internal.example/v1/decide"
+input_schema = { type = "object" }
+forward_headers = ["x-upstream-token"]
+```
+
+- **A header the caller did not send is left off**, so the upstream can fall back on its own default.
+- **Only names ride argv.** The values arrive per request and are never logged.
+- **Matching ignores case.** `connection`, `content-length`, `content-type`, `host` and `transfer-encoding` frame the upstream request and fail validation.
+- **A stdio sidecar forwards nothing**, because there is no inbound request to read.
 
 ## Running it by hand
 
