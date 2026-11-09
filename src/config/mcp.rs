@@ -234,6 +234,13 @@ pub struct PassthroughTool {
     #[garde(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<serde_json::Map<String, serde_json::Value>>,
+
+    /// Inbound request headers copied onto the upstream POST when the
+    /// caller sent them. Names only, so credentials stay off argv; only
+    /// `--transport http` has inbound headers to copy.
+    #[garde(custom(validate_forward_headers))]
+    #[serde(default, alias = "forward_headers", skip_serializing_if = "Vec::is_empty")]
+    pub forward_headers: Vec<String>,
 }
 
 /// MCP `2025-11-25` constrains tool names to this set, and a vendor
@@ -261,6 +268,31 @@ fn validate_http_url(url: &String, _: &()) -> garde::Result {
         ))),
         Err(err) => Err(garde::Error::new(format!("url '{url}' is not a valid url: {err}"))),
     }
+}
+
+/// The headers that frame the upstream POST belong to the server; a copied
+/// one would describe the caller's request, not this one.
+fn validate_forward_headers(names: &Vec<String>, _: &()) -> garde::Result {
+    const RESERVED: [&str; 5] = [
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "transfer-encoding",
+    ];
+
+    for name in names {
+        if reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+            return Err(garde::Error::new(format!("'{name}' is not a valid header name")));
+        }
+        if RESERVED.contains(&name.to_ascii_lowercase().as_str()) {
+            return Err(garde::Error::new(format!(
+                "'{name}' frames the upstream request and cannot be forwarded"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_unique_tool_names(tools: &Option<Vec<PassthroughTool>>, _: &()) -> garde::Result {
@@ -947,6 +979,35 @@ input_schema = { type = "object", properties = { question = { type = "string" } 
         assert_eq!(tool.name, "decide");
         assert_eq!(tool.input_schema["required"], serde_json::json!(["question"]));
         assert_eq!(tool.body.as_ref().expect("body")["stream"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn a_forwarded_header_parses_and_a_framing_one_rejects_at_load() {
+        let block = passthrough_with(
+            r#"
+[[tools]]
+name = "t"
+url = "http://127.0.0.1/"
+input_schema = { type = "object" }
+forward_headers = ["X-Upstream-Token"]
+"#,
+        )
+        .expect("a plain header name validates");
+        assert_eq!(block.tools()[0].forward_headers, ["X-Upstream-Token"]);
+
+        for name in ["Host", "not a header"] {
+            let err = passthrough_with(&format!(
+                r#"
+[[tools]]
+name = "t"
+url = "http://127.0.0.1/"
+inputSchema = {{ type = "object" }}
+forwardHeaders = ["{name}"]
+"#
+            ))
+            .expect_err("rejects at load");
+            assert!(err.contains(name), "got: {err}");
+        }
     }
 
     #[test]

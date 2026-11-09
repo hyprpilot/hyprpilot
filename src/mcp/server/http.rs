@@ -292,6 +292,7 @@ mod wire_tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+    use crate::mcp::server::passthrough::{PassthroughArgs, PassthroughServer};
     use crate::mcp::server::serve_args::Transport;
     use crate::mcp::server::tools::ToolsServer;
 
@@ -329,6 +330,18 @@ mod wire_tests {
         body: &str,
         token: Option<&str>,
     ) -> (u16, String) {
+        post_with(addr, version, method, body, token, "").await
+    }
+
+    /// `extra` is raw header lines, each ending in CRLF.
+    async fn post_with(
+        addr: std::net::SocketAddr,
+        version: &str,
+        method: &str,
+        body: &str,
+        token: Option<&str>,
+        extra: &str,
+    ) -> (u16, String) {
         let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
         let mut request = format!(
             "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
@@ -339,6 +352,7 @@ mod wire_tests {
         if let Some(token) = token {
             request.push_str(&format!("Authorization: Bearer {token}\r\n"));
         }
+        request.push_str(extra);
         request.push_str("\r\n");
         request.push_str(body);
         stream.write_all(request.as_bytes()).await.expect("write");
@@ -372,6 +386,77 @@ mod wire_tests {
             body.contains(crate::config::mcp::DEFAULT_TOOLS_SERVER_NAME),
             "the server must report its own name: {body}"
         );
+    }
+
+    /// rmcp handing the request's `Parts` to a tool call is what forwarding
+    /// rests on, and only a real HTTP request exercises it.
+    #[tokio::test]
+    async fn a_passthrough_call_forwards_the_named_header_upstream() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/decide", upstream.local_addr().unwrap());
+        let received = tokio::spawn(async move {
+            let (mut socket, _) = upstream.accept().await.unwrap();
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let head = loop {
+                let n = socket.read(&mut chunk).await.unwrap();
+                raw.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&raw).to_ascii_lowercase();
+                if text.ends_with("{}") {
+                    break text;
+                }
+            };
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+
+            head
+        });
+
+        let args = ServeArgs {
+            transport: Transport::Http,
+            listen: Some("127.0.0.1:0".into()),
+            ..ServeArgs::default()
+        };
+        let handler = PassthroughServer::new(&PassthroughArgs {
+            serve: args.clone(),
+            tools: vec![crate::mcp::server::passthrough::parse_tool_arg(
+                &serde_json::json!({
+                    "name": "decide",
+                    "inputSchema": { "type": "object" },
+                    "url": url,
+                    "forwardHeaders": ["x-upstream-token"],
+                })
+                .to_string(),
+            )
+            .unwrap()],
+            timeout_seconds: 5,
+        })
+        .unwrap();
+        let listener = bind(&args).await.expect("bind");
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = serve_bound(handler, &args, "hyprpilot-passthrough", listener).await;
+        });
+
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"decide","arguments":{{}},{META}}}}}"#
+        );
+        let (status, body) = post_with(
+            addr,
+            "2026-07-28",
+            "tools/call",
+            &request,
+            None,
+            "Mcp-Name: decide\r\nX-Upstream-Token: work\r\nX-Other: dropped\r\n",
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+
+        let head = received.await.unwrap();
+        assert!(head.contains("x-upstream-token: work"), "got: {head}");
+        assert!(!head.contains("x-other"), "got: {head}");
     }
 
     /// A stateless HTTP client that holds no subscription stream is

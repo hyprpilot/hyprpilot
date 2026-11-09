@@ -282,19 +282,20 @@ Because the fold is per key and not wholesale, a block naming only `skills.enabl
 
 ### `mcp.passthrough`
 
-| Field             | Type                                                 | Default | What it does                                                                          |
-| ----------------- | ---------------------------------------------------- | ------- | ------------------------------------------------------------------------------------- |
-| `enabled`         | bool                                                 | `false` | Inject the server. Also needs at least one tool.                                      |
-| `tools`           | `{ name, description?, input_schema, url, body? }[]` | unset   | The tools served. Keyed by `name`, so a later layer retargets a tool.                 |
-| `timeout_seconds` | int                                                  | `300`   | Per-request timeout, connect through the last byte. Seeded, so write it `snake_case`. |
+| Field             | Type                                                                   | Default | What it does                                                                          |
+| ----------------- | ---------------------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------- |
+| `enabled`         | bool                                                                   | `false` | Inject the server. Also needs at least one tool.                                      |
+| `tools`           | `{ name, description?, input_schema, url, body?, forward_headers? }[]` | unset   | The tools served. Keyed by `name`, so a later layer retargets a tool.                 |
+| `timeout_seconds` | int                                                                    | `300`   | Per-request timeout, connect through the last byte. Seeded, so write it `snake_case`. |
 
-| Tool field     | Type         | What it does                                                                                    |
-| -------------- | ------------ | ----------------------------------------------------------------------------------------------- |
-| `name`         | string       | MCP tool name, 1-128 characters of `[A-Za-z0-9_.-]`. Unique within the block.                   |
-| `description`  | string       | Listed as written. This is how the agent learns what the tool is for.                           |
-| `input_schema` | JSON object  | Listed as the tool's `inputSchema`. Advertised, not enforced.                                   |
-| `url`          | `http(s)://` | Every call POSTs here. Validated at config load.                                                |
-| `body`         | JSON object  | Static fields sent with every call; the call's arguments are laid over it and win on collision. |
+| Tool field        | Type         | What it does                                                                                                                                                       |
+| ----------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`            | string       | MCP tool name, 1-128 characters of `[A-Za-z0-9_.-]`. Unique within the block.                                                                                      |
+| `description`     | string       | Listed as written. This is how the agent learns what the tool is for.                                                                                              |
+| `input_schema`    | JSON object  | Listed as the tool's `inputSchema`. Advertised, not enforced.                                                                                                      |
+| `url`             | `http(s)://` | Every call POSTs here. Validated at config load.                                                                                                                   |
+| `body`            | JSON object  | Static fields sent with every call; the call's arguments are laid over it and win on collision.                                                                    |
+| `forward_headers` | string[]     | Inbound headers copied onto the upstream POST when the caller sent them. HTTP transport only. See [Forwarding headers](../runtime/passthrough#forwarding-headers). |
 
 ```toml
 [mcp.passthrough]
