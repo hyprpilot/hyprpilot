@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.1](https://github.com/hyprpilot/hyprpilot/compare/v4.6.0...v4.6.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **deps:** upgrade all dependencies ([7680186](https://github.com/hyprpilot/hyprpilot/commit/76801861ee06ef135c82e67f710ef52045226ecb))
+
 ## [4.6.0](https://github.com/hyprpilot/hyprpilot/compare/v4.5.0...v4.6.0) (2026-11-09)
 
 
