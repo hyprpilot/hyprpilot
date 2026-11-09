@@ -1034,6 +1034,25 @@ verified — check it by hand when you touch it.
   one session table, one set of ceilings, and any client can
   `session_send`, steer or kill another's conversation. Sessions still
   die with the process.
+- **The skills catalogue is filterable PER REQUEST** by two headers,
+  `x-hyprpilot-skills-include` / `x-hyprpilot-skills-exclude`
+  (`mcp/skills/filter.rs`). Each is a JSON array of strings: a plain
+  entry is an exact slug, `/<regex>/` is anchored to the WHOLE slug.
+  Exclude beats include; neither header means the full catalogue, so
+  stdio (which has no headers) is unchanged. One server, many callers,
+  each with its own slice — instead of one server per skill set.
+  `SkillsServer::view` is the single gate: every skill tool,
+  `resources/list`, `resources/read` and the SEP-2640 custom methods
+  (`skills/list`, `skills/get`, `resources/directory/read`) read the
+  cache through it, so a hidden skill is absent from every listing AND
+  unreadable by slug or `skill://` URI. `SkillsCache::filtered` also
+  drops `declared` entries only hidden skills cite, and every bundle file
+  whose MOST SPECIFIC owning skill is hidden — so a nested skill's files
+  follow the nested skill, not its parent. Prompts are not skills and
+  pass through unfiltered. A malformed header is a `-32602` error, never an
+  empty filter — dropping a bad include would WIDEN the view.
+  Notifications are NOT filtered: a subscriber may be told about a slug
+  it cannot read.
 
 ## The agent harness (`mcp harness`)
 

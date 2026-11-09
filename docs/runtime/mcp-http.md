@@ -84,6 +84,35 @@ So **every HTTP result carries `ttlMs: 0`** where the stdio path carries 24 hour
 
 An HTTP harness caller therefore polls `session_status`, or subscribes.
 
+## Filtering the skills catalogue per request
+
+One skills server can serve callers that each want a narrow slice of the catalogue. Two request headers pick the slice:
+
+| Header                       | Meaning                                                   |
+| ---------------------------- | --------------------------------------------------------- |
+| `x-hyprpilot-skills-include` | When present, only matching skills exist for the request. |
+| `x-hyprpilot-skills-exclude` | Matching skills never exist for the request.              |
+
+Each header is a JSON array of strings. A plain entry is an exact slug; an entry wrapped in slashes, `/git-.*/`, is a regular expression matched against the **whole** slug. Exclude beats include. A request with neither header sees the full catalogue.
+
+```json
+{
+  "mcpServers": {
+    "skills-http": {
+      "url": "http://127.0.0.1:7777/mcp",
+      "headers": {
+        "x-hyprpilot-skills-include": "[\"/git-.*/\", \"code-style\"]",
+        "x-hyprpilot-skills-exclude": "[\"git-push\"]"
+      }
+    }
+  }
+}
+```
+
+The filter covers every skill surface: `list_skills`, `resources/list` and `skills/list` omit hidden skills; `read_skill`, `skills/get`, `resources/read` and `resources/directory/read` refuse them and their `skill://` files; and a reference cited only by hidden skills cannot be fetched with `read_skill_references`. A nested skill's files follow the nested skill, so hiding `git-commit/fixup` hides its files even when `git-commit` is visible. Prompts are not skills and are never filtered. A header that is not a JSON array of strings, or carries an invalid regex, fails the request with `-32602` rather than being ignored, because ignoring a bad include would show more than was asked for.
+
+Notifications are not filtered: a subscriber can be told a hidden skill changed, and reading it is still refused.
+
 ## Building without it
 
 `--transport http` lives behind a cargo feature that is **on by default**. `cargo build --no-default-features` compiles it out; the flag still parses and says what to do:

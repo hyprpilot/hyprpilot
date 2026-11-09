@@ -71,6 +71,7 @@ use tokio::sync::RwLock;
 
 use crate::config::mcp::DEFAULT_SKILLS_SERVER_NAME;
 use crate::config::ResolvedSkillEntry;
+use crate::mcp::skills::filter::{self, SkillFilter};
 use crate::mcp::skills::prompts::{Prompt, PromptSources};
 use crate::mcp::skills::wire_files::{check_limits, read_bundle, shared_references, BundleFile};
 use crate::mcp::skills::SkillsRegistry;
@@ -355,6 +356,111 @@ impl SkillsCache {
     }
 }
 
+impl SkillsCache {
+    /// The catalogue as a filtered caller sees it. Excluded skills are
+    /// gone, and with them every reference only they cite and every
+    /// bundle file whose most specific owning skill is excluded, so no
+    /// `skill://` read or directory listing reaches past the filter.
+    /// Prompts are not skills and pass through.
+    fn filtered(&self, filter: &SkillFilter) -> Self {
+        let skills: HashMap<String, LoadedSkill> = self
+            .skills
+            .iter()
+            .filter(|(slug, _)| filter.allows(slug))
+            .map(|(slug, skill)| (slug.clone(), skill.clone()))
+            .collect();
+        let order = self
+            .order
+            .iter()
+            .filter(|slug| skills.contains_key(*slug))
+            .cloned()
+            .collect();
+        let declared = self
+            .declared
+            .iter()
+            .filter_map(|(path, reference)| {
+                let citers: Vec<String> = reference
+                    .citers
+                    .iter()
+                    .filter(|slug| skills.contains_key(*slug))
+                    .cloned()
+                    .collect();
+                (!citers.is_empty()).then(|| {
+                    (
+                        path.clone(),
+                        DeclaredReference {
+                            citers,
+                            stat: reference.stat.clone(),
+                        },
+                    )
+                })
+            })
+            .collect();
+        let files = self
+            .files
+            .iter()
+            .filter(|(key, _)| {
+                self.skills
+                    .keys()
+                    .filter(|slug| key.starts_with(&format!("{slug}/")))
+                    .max_by_key(|slug| slug.len())
+                    .is_some_and(|owner| skills.contains_key(owner))
+            })
+            .map(|(key, file)| (key.clone(), file.clone()))
+            .collect();
+        Self {
+            skills,
+            order,
+            declared,
+            files,
+            prompts: self.prompts.clone(),
+        }
+    }
+}
+
+/// What one request reads: the shared cache, or a filtered copy when the
+/// request carries a skills filter.
+enum CacheView<'a> {
+    Full(tokio::sync::RwLockReadGuard<'a, SkillsCache>),
+    Filtered(SkillsCache),
+}
+
+impl std::ops::Deref for CacheView<'_> {
+    type Target = SkillsCache;
+
+    fn deref(&self) -> &SkillsCache {
+        match self {
+            Self::Full(guard) => guard,
+            Self::Filtered(cache) => cache,
+        }
+    }
+}
+
+/// The filter the request's HTTP headers ask for. stdio carries no
+/// headers, so it always sees the full catalogue.
+#[cfg(feature = "http")]
+fn request_filter(context: &RequestContext<RoleServer>) -> Result<Option<SkillFilter>, rmcp::ErrorData> {
+    let Some(parts) = context.extensions.get::<axum::http::request::Parts>() else {
+        return Ok(None);
+    };
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .map(|value| value.to_str().map_err(|_| format!("`{name}` is not valid UTF-8")))
+            .transpose()
+    };
+    let parsed = header(filter::INCLUDE_HEADER)
+        .and_then(|include| Ok((include, header(filter::EXCLUDE_HEADER)?)))
+        .and_then(|(include, exclude)| SkillFilter::parse(include, exclude));
+    parsed.map_err(|message| rmcp::ErrorData::invalid_params(message, None))
+}
+
+#[cfg(not(feature = "http"))]
+fn request_filter(_context: &RequestContext<RoleServer>) -> Result<Option<SkillFilter>, rmcp::ErrorData> {
+    Ok(None)
+}
+
 /// One declared reference path, as the cache remembers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeclaredReference {
@@ -504,6 +610,17 @@ impl SkillsServer {
             reload_gate: Arc::new(tokio::sync::Mutex::new(())),
             watch_status: Arc::new(RwLock::new(crate::watch::WatchStatus::default())),
             transport,
+        })
+    }
+
+    /// The cache as this request may see it: filtered by the request's
+    /// skills headers, or the shared cache when it carries none.
+    async fn view(&self, context: &RequestContext<RoleServer>) -> Result<CacheView<'_>, rmcp::ErrorData> {
+        let filter = request_filter(context)?;
+        let cache = self.skills_cache.read().await;
+        Ok(match filter {
+            Some(filter) => CacheView::Filtered(cache.filtered(&filter)),
+            None => CacheView::Full(cache),
         })
     }
 
@@ -1576,7 +1693,7 @@ impl ServerHandler for SkillsServer {
         let args = request.arguments.unwrap_or_default();
         match request.name.as_ref() {
             "list_skills" => {
-                let cache = self.skills_cache.read().await;
+                let cache = self.view(&context).await?;
                 let watch = self.watch_status.read().await;
                 let mut payload = list_skills_payload(&cache);
                 if let Some(map) = payload.as_object_mut() {
@@ -1595,7 +1712,7 @@ impl ServerHandler for SkillsServer {
             "read_skill" => {
                 let slug = require_string(&args, "slug")?;
                 let want_bundle = args.get("bundle").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                let cache = self.skills_cache.read().await;
+                let cache = self.view(&context).await?;
                 let Some(skill) = cache.skills.get(slug) else {
                     return Ok(tool_error(format!("unknown skill: {slug}")));
                 };
@@ -1632,7 +1749,7 @@ impl ServerHandler for SkillsServer {
             }
             "list_skill_references" => {
                 let slug = require_string(&args, "slug")?;
-                let cache = self.skills_cache.read().await;
+                let cache = self.view(&context).await?;
                 let Some(skill) = cache.skills.get(slug) else {
                     return Ok(tool_error(format!("unknown skill: {slug}")));
                 };
@@ -1652,7 +1769,7 @@ impl ServerHandler for SkillsServer {
                          as listed in a skill's reference manifest",
                     ));
                 };
-                let cache = self.skills_cache.read().await;
+                let cache = self.view(&context).await?;
                 // Validate against the set of paths some skill actually
                 // declares, built once per reload. A caller-supplied
                 // path is CHECKED, never joined — so this reaches
@@ -1698,7 +1815,7 @@ impl ServerHandler for SkillsServer {
                          in a skill's file manifest",
                     ));
                 };
-                let cache = self.skills_cache.read().await;
+                let cache = self.view(&context).await?;
                 let mut found: Vec<(String, &BundleFile)> = Vec::new();
                 let mut unknown = Vec::new();
                 for item in items {
@@ -1782,9 +1899,9 @@ impl ServerHandler for SkillsServer {
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, rmcp::ErrorData> {
-        let cache = self.skills_cache.read().await;
+        let cache = self.view(&context).await?;
         let mut resources = Vec::with_capacity(cache.skills.len() + cache.prompts.len() + 1);
         // The index goes FIRST — it is the entry point, and it explains
         // how to load everything under it.
@@ -1853,10 +1970,10 @@ impl ServerHandler for SkillsServer {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
         let uri = &request.uri;
-        let cache = self.skills_cache.read().await;
+        let cache = self.view(&context).await?;
         let contents = match parse_uri(uri) {
             Some(ParsedUri::Catalogue) => ResourceContents::TextResourceContents {
                 uri: uri.clone(),
@@ -1984,7 +2101,7 @@ impl ServerHandler for SkillsServer {
         let params = request.params.as_ref();
         let modern = negotiated_modern(&context);
         let ttl = self.transport.result_ttl_ms();
-        let cache = self.skills_cache.read().await;
+        let cache = self.view(&context).await?;
         let mut body = serde_json::Map::new();
         match request.method.as_str() {
             "skills/list" => {
@@ -2163,6 +2280,38 @@ mod tests {
             cache.skills.insert((*slug).to_string(), skill);
         }
         cache
+    }
+
+    /// A filtered view drops the excluded skills, every reference only
+    /// they cite, and every bundle file whose most specific owner is
+    /// excluded; a reference a visible skill also cites keeps only its
+    /// visible citers, and a nested skill's files follow the nested skill.
+    #[test]
+    fn a_filtered_view_hides_excluded_skills_their_references_and_files() {
+        let mut cache = cache_of(&[
+            ("git-commit", "a"),
+            ("git-push", "b"),
+            ("hermes-cron", "c"),
+            ("git-commit/fixup", "d"),
+        ]);
+        cite(&mut cache, "/refs/shared.md", "t", &["git-commit", "hermes-cron"]);
+        cite(&mut cache, "/refs/hermes-only.md", "t", &["hermes-cron"]);
+        for key in [
+            "git-commit/SKILL.md",
+            "git-commit/fixup/SKILL.md",
+            "hermes-cron/SKILL.md",
+        ] {
+            cache.files.insert(key.to_string(), bundle_file("SKILL.md", "x"));
+        }
+        let filter = SkillFilter::parse(Some(r#"["/git-.*/"]"#), Some(r#"["git-push", "git-commit/fixup"]"#))
+            .unwrap()
+            .unwrap();
+        let view = cache.filtered(&filter);
+        assert_eq!(view.order, vec!["git-commit".to_string()]);
+        assert!(!view.skills.contains_key("hermes-cron"));
+        assert!(!view.declared.contains_key("/refs/hermes-only.md"));
+        assert_eq!(view.declared["/refs/shared.md"].citers, vec!["git-commit".to_string()]);
+        assert_eq!(view.files.keys().collect::<Vec<_>>(), vec!["git-commit/SKILL.md"]);
     }
 
     /// The `watch` payload and the summary line are what tell an
