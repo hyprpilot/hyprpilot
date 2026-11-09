@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.0](https://github.com/hyprpilot/hyprpilot/compare/v4.4.0...v4.5.0) (2026-11-09)
+
+
+### Features
+
+* **mcp:** forward named inbound headers from passthrough tools ([#286](https://github.com/hyprpilot/hyprpilot/issues/286)) ([4a88ea8](https://github.com/hyprpilot/hyprpilot/commit/4a88ea8b37114e946565232e38785b13e0281dbc))
+
 ## [4.4.0](https://github.com/hyprpilot/hyprpilot/compare/v4.3.0...v4.4.0) (2026-10-29)
 
 
