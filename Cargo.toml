@@ -60,7 +60,7 @@ merge = { version = "0.2.0", features = ["derive"] }
 # Skills MCP server. `transport-io` adds the stdio transport on top of the
 # default `server` + `macros` + `base64`. Used by `hyprpilot mcp serve`.
 # The `http` feature adds `transport-streamable-http-server` on top.
-rmcp = { version = "3.8", features = ["transport-io"] }
+rmcp = { version = "3.9", features = ["transport-io"] }
 # `--transport http` only. rmcp ships the protocol half as a
 # `tower_service::Service` and binds no socket of its own - every
 # `TcpListener` in its source is test code and its only axum dependency

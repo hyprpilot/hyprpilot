@@ -5,7 +5,7 @@ version: "3"
 
 vars:
   # Route node-based commands through `mise exec` so the mise-pinned
-  # node 24 + pnpm 10 always run the docs/ build, regardless of which
+  # node 26 + pnpm 12 always run the docs/ build, regardless of which
   # `node` / `pnpm` happens to come first on the developer's PATH
   # (system node, an older pnpm). Matches what CI does — node version
   # mismatches silently let TS errors slip locally that CI then catches.

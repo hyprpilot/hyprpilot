@@ -42,7 +42,7 @@ harness stays off unless `[mcp.harness].enabled` says otherwise.
 
 `mise install` at the repo root drops: `rust` (stable + `rustfmt` +
 `clippy`), `task` 3 (go-task), `usage` 7, `cargo-nextest`, plus
-`node` 24 + `pnpm` 12 **for the `docs/` VitePress site only** — that
+`node` 26 + `pnpm` 12 **for the `docs/` VitePress site only** — that
 is the sole Node consumer in the repo. `rust-toolchain.toml` pins the
 toolchain for `cargo` invocations outside mise.
 
@@ -574,26 +574,25 @@ negotiates down.
 
 **Every cacheable result MUST carry `ttlMs` + `cacheScope`**
 (`Transport::result_ttl_ms` / `rpc::RESULT_CACHE_SCOPE`, stamped at
-all THIRTEEN `with_ttl_ms` sites: `tools/list` on each server, plus
-`resources/list`, `resources/templates/list`, `resources/read` and
-`prompts/list` on skills, plus the harness's two indexes and its session
-views — ten of which take the transport's ttl and three of which are
-already `0` or computed). The skills server's SEP-2640 results
-(`skills/list`, `skills/get`, `resources/directory/read`) are hand-built
-`CustomResult`s stamped by `skills_server::custom_result` instead, which
-also adds `resultType: "complete"` ONLY for a peer at `2026-07-28` or
-later: rmcp strips that field from its own result types for an older
-peer but passes a custom result through untouched.
+all SIXTEEN `with_ttl_ms` sites: `tools/list` on each server, plus
+`resources/list`, `resources/templates/list`, `resources/read`,
+`prompts/list` and the three SEP-2640 results (`skills/list`,
+`skills/get`, `resources/directory/read`) on skills, plus the harness's
+two indexes and its session views — thirteen of which take the
+transport's ttl and three of which are already `0` or computed). rmcp
+adds `resultType: "complete"` to all of them ONLY for a peer at
+`2026-07-28` or later.
 `2026-07-28` makes them REQUIRED — `ListToolsResult extends
 PaginatedResult, CacheableResult`, and `CacheableResult` declares both
-without `?` — while rmcp models them `Option` for back-compat and
-defaults them to `None`. A server that just calls `with_all_items`
-emits neither, and a client validating the revision it negotiated
-rejects the listing: `ttlMs: expected number, received undefined`. That
-is not partial breakage — the listing is the door, so the session
-reports `connected` and has NO TOOLS AT ALL. Claude Code 2.2.x
-negotiates `2026-07-28` and hit exactly this against the harness, which
-was the one server that had opted in.
+without `?` — while rmcp models them `Option` for back-compat. Before
+rmcp 3.5.1 a server that just called `with_all_items` emitted neither,
+and a client validating the revision it negotiated rejected the listing:
+`ttlMs: expected number, received undefined` — the session reported
+`connected` with NO TOOLS AT ALL (Claude Code 2.2.x hit exactly this).
+rmcp now back-fills a missing pair (`fill_missing_cache_hints`, rust-sdk
+#1308), but only for a `2026-07-28` peer and only as `0` / `private`, so
+the stamps stay: they carry the 24h stdio ttl below, and the hints an
+older peer gets.
 
 `ttlMs` is **24h — longer than any sidecar lives**, so a client that
 honours it never re-fetches on a timer; every real change arrives as a
@@ -814,7 +813,9 @@ Skills reach the agent **only** through the skills server.
   frontmatter against the listing, so the old rendered body + footer
   would fail both, and re-reading the disk at serve time could hand back
   bytes matching nothing inside the debounce window or follow a
-  post-scan symlink swap. Custom methods via `on_custom_request`:
+  post-scan symlink swap. rmcp's typed SEP-2640 handlers (`list_skills`
+  / `get_skill` / `read_resource_directory`, which validate every entry
+  against the spec before it is sent):
   `skills/list` (every `{ uri, frontmatter, resources: [{ uri, digest,
   size }] }`, single page, a cursor is refused), `skills/get { uri }`,
   `resources/directory/read { uri }` (direct children of ANY directory
@@ -1042,7 +1043,7 @@ verified — check it by hand when you touch it.
   stdio (which has no headers) is unchanged. One server, many callers,
   each with its own slice — instead of one server per skill set.
   `SkillsServer::view` is the single gate: every skill tool,
-  `resources/list`, `resources/read` and the SEP-2640 custom methods
+  `resources/list`, `resources/read` and rmcp's typed SEP-2640 handlers
   (`skills/list`, `skills/get`, `resources/directory/read`) read the
   cache through it, so a hidden skill is absent from every listing AND
   unreadable by slug or `skill://` URI. `SkillsCache::filtered` also
