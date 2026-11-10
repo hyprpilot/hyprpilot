@@ -232,6 +232,14 @@ fields they set (`merge` crate derive).
    extension search + multi-format rejection. **Distinct** from the
    session `[[profiles]]` registry (addressed per-launch via the
    positional `[PROFILE]` argument).
+4. **Directory layers** (`config/directory.rs`) —
+   `.hyprpilot.{ext}` then `.hyprpilot.<overlay>.{ext}` per folder,
+   walking from the anchor (`--cwd`, else the current dir; the harness
+   passes the session's `cwd`) up to `/`, folded outermost first. Read
+   only when the folder matches a `project_config.trusted` glob, which
+   comes from layers 2-3 alone: a directory layer setting
+   `project_config` fails the load. Untrusted files come back in
+   `Loaded::directory_layers` and are warned about after logging init.
 
 `Config::validate()` runs `garde` after merge and fails startup with a
 readable field-path error. `#[serde(deny_unknown_fields)]` + closed

@@ -14,7 +14,8 @@ Hyprpilot reads layered config. Each source overrides the one before it for the 
 1. **Compiled defaults** — every knob has a working default, baked into the binary from `src/config/defaults.toml`.
 2. **Global config** — `~/.config/hyprpilot/config.{toml,json,yaml,yml}`, or an explicit `--config <path>`.
 3. **Config-layer overlays** — `~/.config/hyprpilot/profiles/<name>.{ext}`, picked with `--config-profile <name>` (repeatable) or `HYPRPILOT_CONFIG_PROFILE=<name>[,<name>…]`. Overlays fold in the order given, each on top of the one before; flags on the command line replace the env list rather than extending it.
-4. **`patches` and `--with-config`** — profile overlays applied at resolve time. See [Patches](./patches) and [Ad-hoc Overlays](../runtime/with-config).
+4. **Directory layers** — `.hyprpilot.{ext}` and `.hyprpilot.<overlay>.{ext}` files found walking up from the launch directory, only in folders `project_config.trusted` covers. See [Directory layers](#directory-layers).
+5. **`patches` and `--with-config`** — profile overlays applied at resolve time. See [Patches](./patches) and [Ad-hoc Overlays](../runtime/with-config).
 
 Any layer can be any supported format — a YAML global config composes with a TOML config-layer profile. See [Formats](./#formats) for extension discovery.
 
@@ -46,6 +47,39 @@ hyprpilot --config-profile personal claude/opus  # the personal one
 
 The selection follows the launch into the [Agent Harness](../runtime/harness): the injected `hyprpilot mcp harness` entry carries `--config` and every `--config-profile` explicitly, so its `list_profiles` / `spawn` read the same layers even when the vendor filters the environment it hands MCP servers, and the sessions it spawns pass the selection on again.
 
+## Directory layers
+
+A folder can carry its own config: a `.hyprpilot.{toml,json,yaml,yml}` file, plus `.hyprpilot.<overlay>.{ext}` files that load only under that `--config-profile`. Use them for what one project needs and nothing else does, such as an MCP server for one employer's code host.
+
+```yaml
+# ~/development/acme/.hyprpilot.yaml
+patches:
+  - mcps:
+      - mcpServers:
+          acme-git:
+            url: https://mcp.example.com/mcp
+            headers:
+              Authorization: 'Bearer ${ACME_TOKEN}'
+```
+
+**Discovery.** Hyprpilot walks from the launch directory (`--cwd` when given, otherwise the current directory) up to `/`, and folds every file it finds **outermost folder first**, so the folder closest to the launch wins. Within one folder the plain `.hyprpilot.*` file folds first, then one `.hyprpilot.<overlay>.*` per active overlay in `--config-profile` order. The [Agent Harness](../runtime/harness) walks from the session's own `cwd`, so a delegate gets its folder's layers.
+
+**Trust.** A directory layer can add stdio MCP servers and agent commands, so hyprpilot reads one only when its folder matches a glob in `project_config.trusted`. That list is read from the global config and the overlays only; a directory layer that sets `project_config` fails the load, so a folder can never trust itself. A file in an untrusted folder is skipped with one warning naming it.
+
+```yaml
+# ~/.config/hyprpilot/config.yaml
+project_config:
+  trusted:
+    - ~/development/acme
+    - ~/development/acme/**
+```
+
+Globs match the folder path the same way `$match.profile` matches ids: `*` crosses `/`, `~` and `${VAR}` expand first. `~/development/acme/**` covers everything **below** `acme` but not `acme` itself, so list both. With no `trusted` entries there is no walk at all.
+
+**Merge.** A directory layer is an ordinary layer with the [merge rules](#merge-rules) below, and may set every section except `project_config`. Its `patches` append after the overlays' patches, so an unscoped one reaches every profile, including those an overlay patch meant to keep bare; scope it with `$match` when that matters. Two formats of one file in the same folder (`.hyprpilot.toml` beside `.hyprpilot.yaml`) fail the load, as they do for the global config.
+
+`hyprpilot --log-level debug profiles` names every directory layer it loaded.
+
 ## Validation
 
 After the layers merge, the whole config is validated in one pass:
@@ -59,9 +93,10 @@ Validation failures abort startup with a readable field-path error, so a broken 
 
 ## Where things live
 
-| Path                                              | What                                    |
-| ------------------------------------------------- | --------------------------------------- |
-| `~/.config/hyprpilot/config.{toml,json,yaml,yml}` | Global config.                          |
-| `~/.config/hyprpilot/profiles/*.{ext}`            | Named config-layer overlays.            |
-| `~/.config/hyprpilot/skills/<path>/SKILL.md`      | Skill bundles (default catalogue root). |
-| `~/.config/hyprpilot/mcps/*.json`                 | MCP catalogue files (your convention).  |
+| Path                                                | What                                    |
+| --------------------------------------------------- | --------------------------------------- |
+| `~/.config/hyprpilot/config.{toml,json,yaml,yml}`   | Global config.                          |
+| `~/.config/hyprpilot/profiles/*.{ext}`              | Named config-layer overlays.            |
+| `<any trusted folder>/.hyprpilot[.<overlay>].{ext}` | Directory layers.                       |
+| `~/.config/hyprpilot/skills/<path>/SKILL.md`        | Skill bundles (default catalogue root). |
+| `~/.config/hyprpilot/mcps/*.json`                   | MCP catalogue files (your convention).  |

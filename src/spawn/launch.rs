@@ -105,6 +105,11 @@ impl LaunchArgs {
         Ok(())
     }
 
+    /// The explicit `--cwd`, which anchors the directory-layer walk.
+    pub fn cwd(&self) -> Option<&std::path::Path> {
+        self.cwd.as_deref()
+    }
+
     /// The overlay selection for the launch: `current` untouched, or the
     /// one `--select-config-profile` picks, with `current` under the cursor.
     pub fn config_profiles(&self, current: Vec<String>) -> Result<Vec<String>> {

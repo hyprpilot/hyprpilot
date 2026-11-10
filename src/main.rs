@@ -86,18 +86,21 @@ impl Cli {
     /// (e.g. `--log-level error` / `[logging] level = "error"` suppress
     /// it along with every other info line).
     fn load_config(&self) -> Result<config::Config> {
-        let cfg = config::load(self.config.as_deref(), &self.config_profiles)?;
+        let loaded = config::load(self.config.as_deref(), &self.config_profiles, self.launch.cwd())?;
+        let cfg = &loaded.config;
         logging::init(self.log_level, cfg.logging.level)?;
         tracing::info!(
             config = ?self.config,
             config_profiles = ?self.config_profiles,
+            directory_layers = loaded.directory_layers.iter().filter(|layer| layer.trusted).count(),
             agents = cfg.agents.agents.len(),
             profiles = cfg.profiles.len(),
             default_profile = ?cfg.profile.default,
             "config: loaded"
         );
+        loaded.log();
 
-        Ok(cfg)
+        Ok(loaded.config)
     }
 
     /// The layer selection, for the sidecars this launch injects.

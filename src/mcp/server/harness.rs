@@ -405,7 +405,7 @@ impl Harness {
         self.check_capacity()?;
         reject_executable_overrides(&args.with_config)?;
 
-        let cfg = self.config.load().map_err(|err| {
+        let cfg = self.config.load(args.cwd.as_deref()).map_err(|err| {
             format!(
                 "could not load hyprpilot config: {err:#}. The skills surface is unaffected; fix the config and retry."
             )
@@ -714,7 +714,7 @@ impl Harness {
     pub(crate) fn list_profiles(&self) -> Result<(String, Value), String> {
         let cfg = self
             .config
-            .load()
+            .load(None)
             .map_err(|err| format!("could not load hyprpilot config: {err:#}"))?;
         // A profile the captain took off the harness is absent here AND
         // refused by `launch` — the listing is the discoverability half,

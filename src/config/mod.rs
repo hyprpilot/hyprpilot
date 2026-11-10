@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod directory;
 pub mod extensions;
 pub mod mcp;
 pub(crate) mod merge_strategies;
@@ -17,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths;
 pub use agents::{AgentConfig, AgentProvider, AgentsConfig, ProfileConfig, ProfileDefaults, ProfileHarnessConfig};
+pub use directory::{DirectoryLayer, ProjectConfig};
 pub use extensions::{McpFile, SkillEntry};
 pub use mcp::McpConfig;
 use merge_strategies::{append_layers, merge_profiles_by_id, overwrite_some};
@@ -95,6 +97,11 @@ pub struct Config {
     #[garde(skip)]
     #[merge(strategy = append_layers)]
     pub patches: Option<Vec<serde_json::Value>>,
+    /// `[project_config]` — the folders whose `.hyprpilot.*` files fold
+    /// in as directory layers. See `directory::ProjectConfig`.
+    #[garde(dive)]
+    #[serde(alias = "projectConfig")]
+    pub project_config: ProjectConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Validate, Merge)]
@@ -245,6 +252,29 @@ fn parse_layer_body(body: &str, format: ConfigFormat, src: Option<&Path>) -> Res
     }
 }
 
+/// A loaded config plus every directory layer the walk met, trusted or
+/// not, so the caller can report them once logging is up.
+#[derive(Debug)]
+pub struct Loaded {
+    pub config: Config,
+    pub directory_layers: Vec<DirectoryLayer>,
+}
+
+impl Loaded {
+    pub fn log(&self) {
+        for layer in &self.directory_layers {
+            if layer.trusted {
+                tracing::debug!(path = %layer.path.display(), "config: directory layer loaded");
+            } else {
+                tracing::warn!(
+                    path = %layer.path.display(),
+                    "config: directory layer skipped; its folder is not covered by project_config.trusted"
+                );
+            }
+        }
+    }
+}
+
 /// Load + merge the config layers. Runs BEFORE the tracing subscriber
 /// is installed (its `[logging] level` feeds the filter), so it stays
 /// quiet: failures surface through the returned `Result` and `main`
@@ -252,8 +282,9 @@ fn parse_layer_body(body: &str, format: ConfigFormat, src: Option<&Path>) -> Res
 ///
 /// `profiles` are the config-layer overlays, folded in the given order
 /// after the root config — a later overlay wins by id, and its
-/// `[[patches]]` append after the earlier ones'.
-pub fn load(cli_path: Option<&Path>, profiles: &[String]) -> Result<Config> {
+/// `[[patches]]` append after the earlier ones'. Directory layers fold
+/// last, discovered from `anchor` (the current directory when `None`).
+pub fn load(cli_path: Option<&Path>, profiles: &[String], anchor: Option<&Path>) -> Result<Loaded> {
     let root_layer_path: Option<PathBuf> = match cli_path {
         Some(p) => {
             if !p.exists() {
@@ -278,7 +309,27 @@ pub fn load(cli_path: Option<&Path>, profiles: &[String]) -> Result<Config> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    load_layers(root_layer_path.as_deref(), &overlays)
+    let mut config = load_layers(root_layer_path.as_deref(), &overlays)?;
+    let anchor = match anchor {
+        Some(dir) => paths::resolve_user(&dir.to_string_lossy()),
+        None => std::env::current_dir().context("failed to read the current directory")?,
+    };
+    let directory_layers = directory::discover(&anchor, profiles, &config.project_config)?;
+    for layer in directory_layers.iter().filter(|layer| layer.trusted) {
+        let parsed = parse_layer_file(&layer.path)?;
+        if parsed.project_config != ProjectConfig::default() {
+            bail!(
+                "{} sets project_config; trust is read from the root config and overlays only",
+                layer.path.display()
+            );
+        }
+        config.merge(parsed);
+    }
+
+    Ok(Loaded {
+        config,
+        directory_layers,
+    })
 }
 
 /// Fold the compiled defaults, the root layer and the overlay files, in
@@ -445,7 +496,7 @@ mod tests {
 level = "debug"
 "#,
         );
-        let cfg = load(Some(&p), &[]).expect("load");
+        let cfg = load(Some(&p), &[], None).expect("load").config;
         assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
         fs::remove_file(&p).ok();
     }
@@ -453,14 +504,14 @@ level = "debug"
     #[test]
     fn load_errors_when_cli_path_missing() {
         let missing = PathBuf::from("/nonexistent/hyprpilot-test-never.toml");
-        let err = load(Some(&missing), &[]).expect_err("should error");
+        let err = load(Some(&missing), &[], None).expect_err("should error");
         assert!(err.to_string().contains("config file not found"));
     }
 
     #[test]
     fn load_rejects_unknown_fields() {
         let p = write_tmp("unknown.toml", "bogus = true\n");
-        let err = load(Some(&p), &[]).expect_err("should error");
+        let err = load(Some(&p), &[], None).expect_err("should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("failed to parse TOML config"), "got: {msg}");
         fs::remove_file(&p).ok();
@@ -472,7 +523,7 @@ level = "debug"
     #[test]
     fn load_accepts_json_extension() {
         let p = write_tmp("json-cli.json", r#"{"logging": {"level": "debug"}}"#);
-        let cfg = load(Some(&p), &[]).expect("load json");
+        let cfg = load(Some(&p), &[], None).expect("load json").config;
         assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
         fs::remove_file(&p).ok();
     }
@@ -482,7 +533,7 @@ level = "debug"
     #[test]
     fn load_accepts_yaml_extension() {
         let p = write_tmp("yaml-cli.yaml", "logging:\n  level: debug\n");
-        let cfg = load(Some(&p), &[]).expect("load yaml");
+        let cfg = load(Some(&p), &[], None).expect("load yaml").config;
         assert_eq!(cfg.logging.level, Some(crate::logging::LogLevel::Debug));
         fs::remove_file(&p).ok();
     }
@@ -493,7 +544,7 @@ level = "debug"
     #[test]
     fn load_rejects_unknown_fields_in_json() {
         let p = write_tmp("unknown.json", r#"{"bogus": true}"#);
-        let err = load(Some(&p), &[]).expect_err("should error");
+        let err = load(Some(&p), &[], None).expect_err("should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("failed to parse JSON config"), "got: {msg}");
         fs::remove_file(&p).ok();
@@ -502,7 +553,7 @@ level = "debug"
     #[test]
     fn load_rejects_unknown_fields_in_yaml() {
         let p = write_tmp("unknown.yaml", "bogus: true\n");
-        let err = load(Some(&p), &[]).expect_err("should error");
+        let err = load(Some(&p), &[], None).expect_err("should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("failed to parse YAML config"), "got: {msg}");
         fs::remove_file(&p).ok();
@@ -514,7 +565,7 @@ level = "debug"
     #[test]
     fn load_rejects_unsupported_extension() {
         let p = write_tmp("unsupported.ini", "ignored\n");
-        let err = load(Some(&p), &[]).expect_err("should error");
+        let err = load(Some(&p), &[], None).expect_err("should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("unsupported config extension"), "got: {msg}");
         fs::remove_file(&p).ok();
@@ -533,7 +584,7 @@ level = "debug"
 level = "verbose"
 "#,
         );
-        let err = load(Some(&p), &[]).expect_err("should error on parse");
+        let err = load(Some(&p), &[], None).expect_err("should error on parse");
         let chain = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
         assert!(chain.contains("verbose") || chain.contains("level"), "{chain}");
         fs::remove_file(&p).ok();
@@ -549,7 +600,9 @@ level = "{lvl}"
 "#
             );
             let p = write_tmp(&format!("level-{lvl}.toml"), &body);
-            let cfg = load(Some(&p), &[]).unwrap_or_else(|e| panic!("{lvl} parse: {e}"));
+            let cfg = load(Some(&p), &[], None)
+                .unwrap_or_else(|e| panic!("{lvl} parse: {e}"))
+                .config;
             with_stub_profile(&cfg)
                 .validate()
                 .unwrap_or_else(|e| panic!("{lvl} validate: {e}"));
@@ -576,7 +629,7 @@ file = "~/.config/hyprpilot/prompts/global.md"
 inject = false
 "#,
         );
-        let cfg = load(Some(&p), &[]).expect("parses");
+        let cfg = load(Some(&p), &[], None).expect("parses").config;
         with_stub_profile(&cfg).validate().expect("root patches validate");
 
         let patches = cfg.patches.as_deref().expect("set");
@@ -619,7 +672,7 @@ agent = "claude-code"
 autoAcceptTools = ["read_*"]
 "#,
         );
-        let cfg = load(Some(&p), &[]).expect("load");
+        let cfg = load(Some(&p), &[], None).expect("load").config;
         fs::remove_file(&p).ok();
 
         // Both the defaults-seeded patch AND the user layer's patch
@@ -681,7 +734,7 @@ dir = "~/.config/hyprpilot/skills"
 watch = false
 "#,
         );
-        let cfg = load(Some(&p), &[]).expect("load");
+        let cfg = load(Some(&p), &[], None).expect("load").config;
         fs::remove_file(&p).ok();
 
         let patched = crate::resolve::resolve_effective_profile(&cfg, Some("engineer"), &[]).expect("resolve");
@@ -716,7 +769,7 @@ agent = "claude-code"
 dir = "~/.team/shared-skills"
 "#,
         );
-        let cfg = load(Some(&p), &[]).expect("load");
+        let cfg = load(Some(&p), &[], None).expect("load").config;
         fs::remove_file(&p).ok();
 
         let patched = crate::resolve::resolve_effective_profile(&cfg, Some("engineer"), &[]).expect("resolve");
@@ -800,6 +853,92 @@ patches:
 
         for p in [root, personal, work] {
             fs::remove_file(&p).ok();
+        }
+    }
+
+    mod directory_layers {
+        use super::*;
+
+        fn layout(directory_layer: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let project = tmp.path().join("work/project");
+            fs::create_dir_all(&project).expect("mkdir");
+            let root = tmp.path().join("config.yaml");
+            fs::write(
+                &root,
+                format!(
+                    r#"
+agents:
+  - id: claude
+    provider: claude-code
+    command: claude
+profiles:
+  - id: claude/opus
+    agent: claude
+    model: root-opus
+patches:
+  - env:
+      LAYER: root
+project_config:
+  trusted:
+    - "{}/**"
+"#,
+                    tmp.path().join("work").display()
+                ),
+            )
+            .expect("write root");
+            fs::write(project.join(".hyprpilot.yaml"), directory_layer).expect("write layer");
+
+            (tmp, root, project)
+        }
+
+        #[test]
+        fn folds_after_the_root_by_the_usual_rules() {
+            let (_tmp, root, project) = layout(
+                r#"
+profiles:
+  - id: claude/opus
+    agent: claude
+    model: project-opus
+patches:
+  - env:
+      LAYER: project
+"#,
+            );
+
+            let loaded = load(Some(&root), &[], Some(&project)).expect("load");
+
+            assert_eq!(loaded.directory_layers.len(), 1);
+            assert_eq!(loaded.config.profiles[0].model.as_deref(), Some("project-opus"));
+            let layers: Vec<&str> = loaded
+                .config
+                .patches
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|p| p.pointer("/env/LAYER")?.as_str())
+                .collect();
+            assert_eq!(layers, ["root", "project"]);
+        }
+
+        #[test]
+        fn a_directory_layer_cannot_set_trust() {
+            let (_tmp, root, project) = layout("project_config:\n  trusted: [\"/**\"]\n");
+
+            let err = load(Some(&root), &[], Some(&project)).expect_err("rejected");
+
+            assert!(err.to_string().contains("sets project_config"), "{err}");
+        }
+
+        #[test]
+        fn an_anchor_outside_the_trusted_glob_loads_nothing() {
+            let (tmp, root, _project) =
+                layout("profiles:\n  - id: claude/opus\n    agent: claude\n    model: project-opus\n");
+
+            let loaded = load(Some(&root), &[], Some(tmp.path())).expect("load");
+
+            assert!(loaded.directory_layers.is_empty());
+            assert_eq!(loaded.config.profiles[0].model.as_deref(), Some("root-opus"));
         }
     }
 }

@@ -52,21 +52,22 @@ logging:
 
 ## Root sections
 
-| Section        | Shape               | Purpose                                                                     |
-| -------------- | ------------------- | --------------------------------------------------------------------------- |
-| `agents`       | list, keyed by `id` | Vendor CLI registry. See [Agents](./agents).                                |
-| `profile`      | singleton           | Picks the default session profile. See [Profiles](./profiles).              |
-| `profiles`     | list, keyed by `id` | Session presets — at least one is required. See [Profiles](./profiles).     |
-| `mcp` / `mcps` | block / list        | Skills channel + MCP catalogue. See [MCP](./mcp).                           |
-| `patches`      | list                | Partial-profile overlays, additive across layers. See [Patches](./patches). |
-| `multiplexer`  | singleton           | tmux/zellij title rename. See [Multiplexer](./multiplexer).                 |
-| `logging`      | singleton           | Tracing filter level. See [Logging](./logging).                             |
+| Section          | Shape               | Purpose                                                                                       |
+| ---------------- | ------------------- | --------------------------------------------------------------------------------------------- |
+| `agents`         | list, keyed by `id` | Vendor CLI registry. See [Agents](./agents).                                                  |
+| `profile`        | singleton           | Picks the default session profile. See [Profiles](./profiles).                                |
+| `profiles`       | list, keyed by `id` | Session presets — at least one is required. See [Profiles](./profiles).                       |
+| `mcp` / `mcps`   | block / list        | Skills channel + MCP catalogue. See [MCP](./mcp).                                             |
+| `patches`        | list                | Partial-profile overlays, additive across layers. See [Patches](./patches).                   |
+| `multiplexer`    | singleton           | tmux/zellij title rename. See [Multiplexer](./multiplexer).                                   |
+| `logging`        | singleton           | Tracing filter level. See [Logging](./logging).                                               |
+| `project_config` | singleton           | Folders whose `.hyprpilot.*` files load. See [Directory layers](./layering#directory-layers). |
 
 There is **no** root-level `system_prompt` / `mcps` / `mcp` / `cwd` field — those are per-profile, or shared via [`patches`](./patches).
 
 ## Layers
 
-Config resolves in layers — compiled defaults → global config → named config-layer profile → `patches` / `--with-config` — with later layers overriding earlier ones per field (and `patches` **accumulating** across layers). [Layering](./layering) covers discovery, the merge rules, and validation.
+Config resolves in layers — compiled defaults → global config → named config-layer profile → trusted directory layers → `patches` / `--with-config` — with later layers overriding earlier ones per field (and `patches` **accumulating** across layers). [Layering](./layering) covers discovery, the merge rules, and validation.
 
 Defaults quoted in the reference tables come from the compiled `src/config/defaults.toml`, the single source of truth (the binary embeds TOML internally — your own config can be any of the three formats):
 
