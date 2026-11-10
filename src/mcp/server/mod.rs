@@ -110,9 +110,10 @@ pub struct ConfigSource {
 impl ConfigSource {
     /// Load + validate on demand. Called per harness tool call, so a
     /// config the captain fixes mid-session is picked up without
-    /// restarting the sidecar.
-    pub fn load(&self) -> anyhow::Result<crate::config::Config> {
-        let cfg = crate::config::load(self.path.as_deref(), &self.profiles)?;
+    /// restarting the sidecar. `anchor` is the directory the delegate
+    /// will run in; `None` walks from the sidecar's own.
+    pub fn load(&self, anchor: Option<&std::path::Path>) -> anyhow::Result<crate::config::Config> {
+        let cfg = crate::config::load(self.path.as_deref(), &self.profiles, anchor)?.config;
         cfg.validate()?;
 
         Ok(cfg)

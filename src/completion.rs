@@ -172,7 +172,9 @@ impl CommandLine {
     }
 
     fn load(&self) -> Option<Config> {
-        let cfg = crate::config::load(self.config.as_deref(), &self.overlays).ok()?;
+        let cfg = crate::config::load(self.config.as_deref(), &self.overlays, None)
+            .ok()?
+            .config;
         cfg.validate().ok()?;
 
         Some(cfg)

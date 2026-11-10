@@ -40,24 +40,9 @@ pub const CONFIG_EXTENSIONS: &[&str] = &["toml", "json", "yaml", "yml"];
 ///   so the loader refuses to pick a winner silently.
 pub fn find_config_file() -> Result<Option<PathBuf>> {
     let dir = config_dir();
-    let matches: Vec<PathBuf> = CONFIG_EXTENSIONS
-        .iter()
-        .map(|ext| dir.join(format!("config.{ext}")))
-        .filter(|p| p.exists())
-        .collect();
-    match matches.len() {
-        0 => Ok(None),
-        1 => Ok(Some(matches.into_iter().next().expect("len == 1"))),
-        _ => Err(anyhow!(
-            "multiple config files exist in {}; keep exactly one of: {}",
-            dir.display(),
-            matches
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
-    }
+    single_config_file(existing_config_files(&dir, "config"), || {
+        format!("multiple config files exist in {}", dir.display())
+    })
 }
 
 /// Conventional path for a named profile when authored as TOML.
@@ -76,18 +61,31 @@ pub fn profile_config_file(name: &str) -> PathBuf {
 /// - `Err(anyhow)` — multiple coexist; captain must pick.
 pub fn find_profile_config_file(name: &str) -> Result<Option<PathBuf>> {
     let dir = config_dir().join("profiles");
-    let matches: Vec<PathBuf> = CONFIG_EXTENSIONS
+    single_config_file(existing_config_files(&dir, name), || {
+        format!("multiple profile files exist for '{name}' in {}", dir.display())
+    })
+}
+
+/// Every `<stem>.<ext>` under `dir` that exists, in `CONFIG_EXTENSIONS`
+/// order.
+pub fn existing_config_files(dir: &Path, stem: &str) -> Vec<PathBuf> {
+    CONFIG_EXTENSIONS
         .iter()
-        .map(|ext| dir.join(format!("{name}.{ext}")))
+        .map(|ext| dir.join(format!("{stem}.{ext}")))
         .filter(|p| p.exists())
-        .collect();
+        .collect()
+}
+
+/// `None` for no match, the path for exactly one, and an error led by
+/// `ambiguity` naming every match when formats coexist — the loader never
+/// picks a winner silently.
+pub fn single_config_file(matches: Vec<PathBuf>, ambiguity: impl FnOnce() -> String) -> Result<Option<PathBuf>> {
     match matches.len() {
         0 => Ok(None),
-        1 => Ok(Some(matches.into_iter().next().expect("len == 1"))),
+        1 => Ok(matches.into_iter().next()),
         _ => Err(anyhow!(
-            "multiple profile files exist for '{}' in {}; keep exactly one of: {}",
-            name,
-            dir.display(),
+            "{}; keep exactly one of: {}",
+            ambiguity(),
             matches
                 .iter()
                 .map(|p| p.display().to_string())
