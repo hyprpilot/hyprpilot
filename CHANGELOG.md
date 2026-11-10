@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.0](https://github.com/hyprpilot/hyprpilot/compare/v4.6.1...v4.7.0) (2026-11-10)
+
+
+### Features
+
+* **config:** load trusted .hyprpilot directory layers ([#292](https://github.com/hyprpilot/hyprpilot/issues/292)) ([877e8b7](https://github.com/hyprpilot/hyprpilot/commit/877e8b7f6c86fdbfaabd5688982ef4e7c0ac5f82))
+
 ## [4.6.1](https://github.com/hyprpilot/hyprpilot/compare/v4.6.0...v4.6.1) (2026-11-09)
 
 
