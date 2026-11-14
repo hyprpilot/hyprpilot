@@ -59,6 +59,8 @@ Prompts reach a client two ways, because clients disagree about prompts:
 | Codex       | ignored                                                         | resource tools                         |
 | Hermes      | model-callable `get_prompt` tools                               | resource tools                         |
 
+A client that reaches neither, such as Amp, which serves only MCP tools, reads the same prompts through the `list_prompts` and `read_prompt` tools.
+
 Prompt files are watched: a prompt directory directly, and a single prompt file through its parent directory, so an editor's atomic save — which replaces the file — is still seen.
 
 ## Auto-injection
@@ -117,6 +119,8 @@ Measured against a real 127-skill catalogue: listing one entry per skill costs 1
 | `list_skill_references` | One skill's reference metadata, without bodies.                                                                  |
 | `read_skill_references` | Fetch reference bodies by path.                                                                                  |
 | `read_skill_files`      | Fetch files a skill ships — scripts, templates, its own references — by `skill://` URI.                          |
+| `list_prompts`          | The served prompts' names, titles, descriptions and sizes, without bodies.                                       |
+| `read_prompt`           | Fetch a served prompt's current body by name — `AGENTS` for an `AGENTS.md` system prompt.                        |
 | `reload`                | Force a rescan. The roots are watched, so this is the fallback for a root reported degraded or off.              |
 
 `read_skill_files` is what makes a bundle's own files reachable for a client that only calls tools, or one talking to the server over HTTP that cannot read the bundle's directory. A file that is not UTF-8 is described rather than inlined; read it with `resources/read`, which serves it as a blob.
