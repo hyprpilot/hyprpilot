@@ -843,7 +843,9 @@ Skills reach the agent **only** through the skills server.
   reference manifest and a `files` manifest, both also as text
   footers), `list_skill_references`, `read_skill_references`,
   `read_skill_files { uris }` (bundle files for tool-only and HTTP
-  clients), `reload`.
+  clients), `list_prompts` / `read_prompt { name }` (served prompts for
+  clients that reach neither `prompts/get` nor resources, such as Amp),
+  `reload`.
 - **A reference is addressed by its canonical PATH**, not a slug or a
   name. A path is what the citation IS; a slug-and-name is one of many
   addresses for one shared file, which is exactly what makes double

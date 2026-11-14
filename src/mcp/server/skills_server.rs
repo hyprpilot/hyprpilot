@@ -38,7 +38,9 @@
 //!   `list_skills`, `read_skill` (rendered body plus a manifest of its
 //!   references and files), `list_skill_references`,
 //!   `read_skill_references` (bodies by path), `read_skill_files`
-//!   (bundle files by `skill://` URI) and `reload`.
+//!   (bundle files by `skill://` URI), `list_prompts`, `read_prompt`
+//!   (a served prompt's body by name, for clients that cannot reach
+//!   `prompts/get` or resources) and `reload`.
 //!
 //! The harness tools (`spawn` / `session_*`) live on a SEPARATE server
 //! — `hyprpilot mcp harness`, see `super::harness_server`, which makes
@@ -648,7 +650,8 @@ impl SkillsServer {
              `skill://<path>/SKILL.md` and every bundle file as `skill://<path>/<file>`, plus \
              `skills/list`, `skills/get` and `resources/directory/read`; a shared reference reads as \
              its `file://` uri. Prompts (including this profile's system prompt) are served as MCP \
-             prompts and as `hyprpilot://prompts/<name>` resources, so an edited system prompt can be \
+             prompts, as `hyprpilot://prompts/<name>` resources, and through `list_prompts` / \
+             `read_prompt { name }` for tool-only clients, so an edited system prompt can be \
              re-read mid-session. Roots are WATCHED: edits announce themselves as \
              `resources/updated` + `resources/list_changed` (and `prompts/list_changed`), so you \
              never need `reload` unless `list_skills` reports a root degraded or off.",
@@ -1300,6 +1303,35 @@ fn string_array_schema(key: &str, description: &str) -> Arc<serde_json::Map<Stri
     Arc::new(map)
 }
 
+/// `read_prompt`'s schema — a REQUIRED prompt `name`.
+fn read_prompt_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
+    let serde_json::Value::Object(map) = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "The prompt's name, as `list_prompts` lists it - `AGENTS` for an `AGENTS.md` system prompt.",
+            },
+        },
+        "required": ["name"],
+        "additionalProperties": false,
+    }) else {
+        unreachable!("json! object literal")
+    };
+    Arc::new(map)
+}
+
+/// One served prompt's descriptor, as `list_prompts` returns it.
+fn prompt_entry(prompt: &Prompt) -> serde_json::Value {
+    serde_json::json!({
+        "name": prompt.name,
+        "uri": prompt_uri(&prompt.name),
+        "title": prompt.title,
+        "description": prompt.description,
+        "size": prompt.body.len(),
+    })
+}
+
 /// `read_skill`'s schema — `slug`, plus an opt-IN for the full bundle.
 fn read_skill_object_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
     object_schema(serde_json::json!({
@@ -1631,6 +1663,27 @@ impl ServerHandler for SkillsServer {
                 ),
             ),
             Tool::new_with_raw(
+                "list_prompts",
+                Some(
+                    "List the prompts this server serves - the session's system prompt files and \
+                     any configured prompt directory - with name, title, description and size, no \
+                     bodies. Read one with `read_prompt`."
+                        .into(),
+                ),
+                empty_object_schema(),
+            ),
+            Tool::new_with_raw(
+                "read_prompt",
+                Some(
+                    "Read a served prompt's body by name, as it is on disk now - the same text \
+                     `prompts/get` and the `hyprpilot://prompts/<name>` resource return, for \
+                     clients that only call tools. A system prompt baked in at launch goes stale \
+                     when its file is edited; this returns the current one."
+                        .into(),
+                ),
+                read_prompt_object_schema(),
+            ),
+            Tool::new_with_raw(
                 "reload",
                 Some(
                     "Force a rescan of every skill and prompt source. The roots are WATCHED, \
@@ -1812,6 +1865,42 @@ impl ServerHandler for SkillsServer {
                         })).collect::<Vec<_>>(),
                     }),
                 ))
+            }
+            "list_prompts" => {
+                let cache = self.view(&context).await?;
+                let summary = if cache.prompts.is_empty() {
+                    "No prompts are served.".to_string()
+                } else {
+                    cache
+                        .prompts
+                        .iter()
+                        .map(|p| match &p.description {
+                            Some(description) => format!("- {}: {description}", p.name),
+                            None => format!("- {}", p.name),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                Ok(structured_with_text(
+                    summary,
+                    serde_json::json!({
+                        "prompts": cache.prompts.iter().map(prompt_entry).collect::<Vec<_>>(),
+                    }),
+                ))
+            }
+            "read_prompt" => {
+                let name = require_string(&args, "name")?;
+                let cache = self.view(&context).await?;
+                let Some(prompt) = cache.prompt(name) else {
+                    return Ok(tool_error(format!(
+                        "unknown prompt: {name}. Call `list_prompts` for the names this server serves."
+                    )));
+                };
+                let mut payload = prompt_entry(prompt);
+                if let Some(map) = payload.as_object_mut() {
+                    map.insert("body".into(), prompt.body.clone().into());
+                }
+                Ok(structured_with_text(prompt.body.clone(), payload))
             }
             "reload" => {
                 let delta = self.reload_skills().await;
@@ -3603,6 +3692,16 @@ mod sep_tests {
     /// Serve the seeded root, send `requests` (one JSON-RPC line each,
     /// ids 1..), and collect each id's reply.
     async fn exchange(root: &std::path::Path, opener: Option<&str>, requests: &[String]) -> Vec<serde_json::Value> {
+        exchange_with_prompts(root, Vec::new(), opener, requests).await
+    }
+
+    /// `exchange`, also serving `prompt_files` as prompts.
+    async fn exchange_with_prompts(
+        root: &std::path::Path,
+        prompt_files: Vec<std::path::PathBuf>,
+        opener: Option<&str>,
+        requests: &[String],
+    ) -> Vec<serde_json::Value> {
         let handler = SkillsServer::new(
             SkillsArgs {
                 serve: Default::default(),
@@ -3613,7 +3712,7 @@ mod sep_tests {
                     watch: false,
                 }],
                 prompt_dirs: Vec::new(),
-                prompt_files: Vec::new(),
+                prompt_files,
             },
             crate::mcp::server::ConfigSource::default(),
         )
@@ -3897,5 +3996,49 @@ mod sep_tests {
         assert_eq!(replies[0]["result"]["capabilities"]["prompts"]["listChanged"], true);
         assert!(replies[1]["result"].get("resultType").is_none(), "{}", replies[1]);
         assert_eq!(replies[1]["result"]["skills"].as_array().map(Vec::len), Some(2));
+    }
+    /// A tool-only client reaches the system prompt the way `prompts/get`
+    /// does: listed by name, read back as its body without frontmatter,
+    /// and an unknown name is a tool error rather than a protocol one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prompts_are_readable_through_tools() {
+        let root = seed();
+        let prompts = tempfile::tempdir().unwrap();
+        let file = prompts.path().join("AGENTS.md");
+        std::fs::write(
+            &file,
+            "---\ndescription: the system prompt\n---\n\n# Rules\n\nbe terse\n",
+        )
+        .unwrap();
+        let call =
+            |name: &str, args: &str| modern("tools/call", &format!(r#","name":"{name}","arguments":{{{args}}}"#));
+
+        let replies = exchange_with_prompts(
+            root.path(),
+            vec![file],
+            None,
+            &[
+                call("list_prompts", ""),
+                call("read_prompt", r#""name":"AGENTS""#),
+                call("read_prompt", r#""name":"NOPE""#),
+            ],
+        )
+        .await;
+
+        let listed = &replies[0]["result"]["structuredContent"]["prompts"];
+        assert_eq!(listed[0]["name"], "AGENTS", "{}", replies[0]);
+        assert_eq!(listed[0]["uri"], "hyprpilot://prompts/AGENTS");
+        assert_eq!(listed[0]["description"], "the system prompt");
+        assert!(listed[0].get("body").is_none(), "the listing carries no bodies");
+
+        let read = &replies[1]["result"];
+        assert_eq!(
+            read["structuredContent"]["body"], "# Rules\n\nbe terse",
+            "{}",
+            replies[1]
+        );
+        assert_eq!(read["content"][0]["text"], "# Rules\n\nbe terse");
+
+        assert_eq!(replies[2]["result"]["isError"], true, "{}", replies[2]);
     }
 }
