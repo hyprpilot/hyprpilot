@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.0](https://github.com/hyprpilot/hyprpilot/compare/v4.7.0...v4.8.0) (2026-11-14)
+
+
+### Features
+
+* **skills:** serve prompts through list_prompts and read_prompt tools ([#294](https://github.com/hyprpilot/hyprpilot/issues/294)) ([0376bf0](https://github.com/hyprpilot/hyprpilot/commit/0376bf044e9a33bd78e38a7342b54e2e149778e8))
+
 ## [4.7.0](https://github.com/hyprpilot/hyprpilot/compare/v4.6.1...v4.7.0) (2026-11-10)
 
 
